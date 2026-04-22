@@ -47,6 +47,7 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
     assert "stock.search_catalogue" in tool_names
+    assert "stock.inventory_snapshot" in tool_names
     assert "resolver.disambiguate_candidates" in tool_names
     assert "weather.current" in tool_names
     assert "news.search" in tool_names
@@ -68,6 +69,30 @@ def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
     assert payload["tool"] == "stock.search_catalogue"
     names = [item["name"] for item in payload["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
+
+
+def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> None:
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock.inventory_snapshot",
+                "args": {"page": 1, "pageSize": 100},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool"] == "stock.inventory_snapshot"
+    assert payload["data"]["coverage"]["matchedProducts"] == 40
+    assert payload["data"]["coverage"]["matchedPages"] == 1
+    assert payload["data"]["coverage"]["enrichedVariants"] == 60
+
+    row = next(item for item in payload["data"]["rows"] if item["sku"] == "fl-ca-ca-10m")
+    assert row["size"] == "1 x 1 x 0.01 m"
+    assert "total=2566" in row["stock"]
+    assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
+    assert any(spec.startswith("salesNote=") for spec in row["knownSpecs"])
 
 
 def test_rest_tool_endpoint_returns_structured_bad_request_for_invalid_args() -> None:

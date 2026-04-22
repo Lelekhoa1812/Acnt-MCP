@@ -161,6 +161,8 @@ class NormalizedEvidence(BaseModel):
     variant_id: str | None = None
     variant_name: str | None = None
     sku: str | None = None
+    variation_options: list[str] = Field(default_factory=list)
+    salesNote: str | None = None
     departmentId: int | None = None
     subDepartmentId: int | None = None
     categoryId: str | None = None
@@ -173,6 +175,33 @@ class NormalizedEvidence(BaseModel):
     components: list[ProductComponentAllocationDto] = Field(default_factory=list)
     provenance: ProvenanceSnapshot
     evidence_paths: dict[str, str] = Field(default_factory=dict)
+
+
+class InventorySnapshotRow(BaseModel):
+    product: str | None = None
+    variant: str | None = None
+    sku: str | None = None
+    attributeEvidence: list[str] = Field(default_factory=list)
+    size: str | None = None
+    stock: str | None = None
+    knownSpecs: list[str] = Field(default_factory=list)
+
+
+class InventorySnapshotCoverage(BaseModel):
+    requestedPage: int = 1
+    requestedPageSize: int = 20
+    matchedProducts: int = 0
+    matchedPages: int = 0
+    enrichedProducts: int = 0
+    enrichedVariants: int = 0
+    isPartial: bool = False
+    limitations: list[str] = Field(default_factory=list)
+
+
+class InventorySnapshotResponse(BaseModel):
+    rows: list[InventorySnapshotRow] = Field(default_factory=list)
+    evidence: list[NormalizedEvidence] = Field(default_factory=list)
+    coverage: InventorySnapshotCoverage = Field(default_factory=InventorySnapshotCoverage)
 
 
 class CandidateOption(BaseModel):
@@ -239,6 +268,7 @@ class ToolResult(BaseModel):
     tool: str
     status: str = "ok"
     data: Any
+    llm_content: Any | None = Field(default=None, exclude=True)
     normalization_notes: list[str] = Field(default_factory=list)
     trace: ToolTrace | None = None
 
@@ -321,6 +351,14 @@ class StockExtractVariantEvidenceArgs(BaseModel):
 
 class StockCompareVariantsArgs(BaseModel):
     identifiers: list[str] = Field(min_length=2, max_length=5)
+
+
+class StockInventorySnapshotArgs(BaseModel):
+    page: int = Field(1, ge=1)
+    pageSize: int = Field(20, ge=1, le=100)
+    search: str | None = None
+    departmentId: int | None = None
+    categoryId: str | None = None
 
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):

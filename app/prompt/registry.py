@@ -53,7 +53,7 @@ Assistant: use stock.search_catalogue to gather a small sample, then reuse each 
 
 Example 7:
 User: List all stock with sizes, colours, and specs in a table.
-Assistant: use stock.get_departments and stock.get_categories if that helps scope, then stock.search_catalogue with pagination to cover as much of the catalogue as the run allows. For each row, enrich with stock.get_product and/or stock.get_variant_evidence using SKUs from the search. Present a Markdown table (headers such as product, variant, SKU, size, colour, other specs, stock) grounded only in returned fields; state explicitly if the listing is partial because of page limits. Your last assistant turn must include the full user-facing answer text, not only a <thought> block.
+Assistant: prefer stock.inventory_snapshot for broad inventory tables because it returns compact variant-level evidence rows plus coverage. Use stock.search_catalogue or stock.get_product only when you need narrower follow-up resolution. When snapshot rows are already present, render them directly into the final Markdown table instead of asking for more tools. Infer colour/finish only when product_name, variant_name, or variation_options make it explicit; otherwise say unknown. Your last assistant turn must include the full user-facing answer text, not only a <thought> block.
 """.strip()
 
 
@@ -66,6 +66,9 @@ Return a JSON object with these keys only:
 
 If clarification is needed, set status to needs_clarification and make answer a concise user-facing clarification prompt.
 If the request is about bookings, quotes, reservations, or event line items, set status to out_of_scope.
+Do not invent a new clarification topic unless the provided clarification payload already requires it.
+Do not ask for data sources, tools, or setup details when the draft already came from completed tool retrieval.
+If the draft says the run is partial or incomplete, prefer limited or error over answered.
 """.strip()
 
 
@@ -112,6 +115,7 @@ Behavior rules:
 - When stock.search_catalogue returns variant SKUs, reuse those SKUs for follow-up size, colour, and details lookups.
 - Do not call stock.get_variant_evidence with variantId alone; pair variantId with sku or product id, or just use sku directly.
 - If a tool call fails, do not repeat the same failing argument pattern. Adjust the next call using identifiers already returned by prior tools.
+- When many products or variants are needed, prefer answer-ready tools that return compact evidence rows over repeating raw single-product lookups.
 - For broad or exhaustive inventory questions, plan paginated catalogue search and optional department/category discovery; after tools return, answer with structured Markdown (including tables when many rows) and name any incompleteness (e.g. not all pages retrieved).
 - When you are done calling tools, your very next assistant message must contain the full reply to the user in natural language (after any <thought> if you use it). Never end the run with only <thought> and no substantive answer.
 - Before every tool call, include a concise <thought> block in assistant content.

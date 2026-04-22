@@ -42,6 +42,7 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert initialize.serverInfo.name == "hth-stock-intelligence"
     tool_names = {tool.name for tool in tools.tools}
     assert "stock.search_catalogue" in tool_names
+    assert "stock.inventory_snapshot" in tool_names
     assert "resolver.disambiguate_candidates" in tool_names
     assert "weather.current" in tool_names
     assert "news.search" in tool_names
@@ -66,6 +67,25 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     assert result.structuredContent is not None
     names = [item["name"] for item in result.structuredContent["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
+
+
+@pytest.mark.anyio
+async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock.inventory_snapshot",
+            {"page": 1, "pageSize": 100},
+        )
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["data"]["coverage"]["matchedProducts"] == 40
+    row = next(item for item in result.structuredContent["data"]["rows"] if item["sku"] == "fl-ca-ca-10m")
+    assert row["size"] == "1 x 1 x 0.01 m"
+    assert "total=2566" in row["stock"]
 
 
 @pytest.mark.anyio

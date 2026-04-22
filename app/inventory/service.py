@@ -9,6 +9,9 @@ from app.config import Settings
 from app.errors import InventoryNotFoundError, ParameterMappingError
 from app.inventory.source import HarmoniseInventorySource
 from app.schemas import (
+    InventorySnapshotCoverage,
+    InventorySnapshotResponse,
+    InventorySnapshotRow,
     NormalizedEvidence,
     PricingSnapshot,
     DimensionsSnapshot,
@@ -25,6 +28,7 @@ from app.schemas import (
     StockGetCategoriesArgs,
     StockGetDepartmentsArgs,
     StockGetProductArgs,
+    StockInventorySnapshotArgs,
     StockSearchCatalogueArgs,
     StockSnapshot,
 )
@@ -172,10 +176,81 @@ class InventoryService:
             evidence_items.append(evidence)
             cache_statuses.append(cache_status)
             notes.extend(extract_notes)
-        combined_status = "cache_mixed"
-        if cache_statuses and len(set(cache_statuses)) == 1:
-            combined_status = cache_statuses[0]
-        return evidence_items, combined_status, notes
+        return evidence_items, self._combine_cache_statuses(cache_statuses), notes
+
+    async def inventory_snapshot(
+        self,
+        args: StockInventorySnapshotArgs,
+    ) -> tuple[InventorySnapshotResponse, str, list[str]]:
+        # Motivation vs Logic: broad inventory questions were forcing the model
+        # to chain dozens of raw `stock.get_product` calls, which ballooned the
+        # context window and often ended with an empty synthesis turn. This
+        # composition path keeps tool choice LLM-driven while returning a single
+        # compact, answer-ready evidence bundle for large table requests.
+        catalogue_args = StockSearchCatalogueArgs(
+            page=args.page,
+            pageSize=args.pageSize,
+            search=args.search,
+            departmentId=args.departmentId,
+            categoryId=args.categoryId,
+        )
+        catalogue_response, catalogue_cache_status, notes = await self.search_catalogue(catalogue_args)
+
+        evidence_items: list[NormalizedEvidence] = []
+        cache_statuses = [catalogue_cache_status]
+        coverage_limitations: list[str] = []
+        enriched_products = 0
+
+        for product in catalogue_response.items:
+            detail_args = StockGetProductArgs(
+                id=product.id,
+                page=1,
+                pageSize=max(20, len(product.variants) or 1),
+            )
+            product_response, product_cache_status, product_notes = await self.get_product(detail_args)
+            cache_statuses.append(product_cache_status)
+            notes.extend(product_notes)
+
+            if not product_response.items:
+                coverage_limitations.append(
+                    f"No detail payload was returned for product id {product.id}; its variants were skipped."
+                )
+                continue
+
+            detail_product = product_response.items[0]
+            enriched_products += 1
+            for variant_index, variant in enumerate(detail_product.variants):
+                evidence_items.append(
+                    self._normalize_variant_evidence(
+                        product=detail_product,
+                        variant=variant,
+                        variant_index=variant_index,
+                        matched_on=["catalogue_snapshot", "product_id"],
+                        confidence=0.96,
+                        tool_name="stock.inventory_snapshot",
+                    )
+                )
+
+        if catalogue_response.totalPages > args.page:
+            coverage_limitations.append(
+                "Only the requested catalogue page was enriched. Additional matched pages remain outside this snapshot."
+            )
+
+        response = InventorySnapshotResponse(
+            rows=[self._build_inventory_row(item) for item in evidence_items],
+            evidence=evidence_items,
+            coverage=InventorySnapshotCoverage(
+                requestedPage=args.page,
+                requestedPageSize=args.pageSize,
+                matchedProducts=catalogue_response.totalCount,
+                matchedPages=catalogue_response.totalPages,
+                enrichedProducts=enriched_products,
+                enrichedVariants=len(evidence_items),
+                isPartial=bool(coverage_limitations),
+                limitations=coverage_limitations,
+            ),
+        )
+        return response, self._combine_cache_statuses(cache_statuses), notes
 
     @staticmethod
     def looks_like_uuid(value: str | None) -> bool:
@@ -223,10 +298,13 @@ class InventoryService:
         product_path = "items[0]"
         variant_path = f"{product_path}.variants[{variant_index}]"
         details_path = f"{variant_path}.details"
+        option_labels = self._resolve_option_labels(product, variant)
         evidence_paths = {
             "product_name": f"{product_path}.name",
             "variant_name": f"{variant_path}.name",
             "sku": f"{variant_path}.sku",
+            "variation_options": f"{product_path}.variations[*].options[*].name",
+            "salesNote": f"{details_path}.salesNote",
             "totalHirable": f"{variant_path}.totalHirable",
             "generalRate": f"{details_path}.generalRate",
             "expoRate": f"{details_path}.expoRate",
@@ -254,6 +332,8 @@ class InventoryService:
             variant_id=variant.id,
             variant_name=(variant.name or "").strip() or None,
             sku=variant.sku,
+            variation_options=option_labels,
+            salesNote=details.salesNote if details else None,
             departmentId=details.departmentId if details else product.departmentId,
             subDepartmentId=details.subDepartmentId if details else product.subDepartmentId,
             categoryId=(details.assignedCategoryId if details else None) or product.categoryId,
@@ -296,3 +376,138 @@ class InventoryService:
             ),
             evidence_paths=evidence_paths,
         )
+
+    def _resolve_option_labels(self, product: ProductListItemDto, variant: ProductVariantDto) -> list[str]:
+        option_lookup = {
+            option.id: (option.name or "").strip()
+            for variation in product.variations
+            for option in variation.options
+            if (option.name or "").strip()
+        }
+        return [option_lookup[option_id] for option_id in variant.optionIds if option_id in option_lookup]
+
+    def _build_inventory_row(self, evidence: NormalizedEvidence) -> InventorySnapshotRow:
+        return InventorySnapshotRow(
+            product=evidence.product_name,
+            variant=evidence.variant_name,
+            sku=evidence.sku,
+            attributeEvidence=self._dedupe_text(
+                [
+                    evidence.variant_name,
+                    evidence.product_name,
+                    *evidence.variation_options,
+                ]
+            ),
+            size=self._format_dimensions(evidence),
+            stock=self._format_stock(evidence),
+            knownSpecs=self._build_known_specs(evidence),
+        )
+
+    def _format_dimensions(self, evidence: NormalizedEvidence) -> str | None:
+        parts = [
+            value
+            for value in [
+                evidence.dimensions.length,
+                evidence.dimensions.width,
+                evidence.dimensions.height,
+            ]
+            if value is not None
+        ]
+        if not parts:
+            return None
+        rendered = " x ".join(f"{value:g}" for value in parts)
+        return f"{rendered} m"
+
+    def _format_stock(self, evidence: NormalizedEvidence) -> str | None:
+        segments: list[str] = []
+        if evidence.stock.totalStock is not None:
+            segments.append(f"total={evidence.stock.totalStock}")
+        if evidence.stock.totalHirable is not None:
+            segments.append(f"hirable={evidence.stock.totalHirable}")
+
+        for label, stock_value, hirable_value in [
+            ("VIC", evidence.stock.vicStock, evidence.stock.vicHirable),
+            ("NSW", evidence.stock.nswStock, evidence.stock.nswHirable),
+            ("QLD", evidence.stock.qldStock, evidence.stock.qldHirable),
+        ]:
+            region_bits: list[str] = []
+            if stock_value is not None:
+                region_bits.append(f"stock {stock_value}")
+            if hirable_value is not None:
+                region_bits.append(f"hirable {hirable_value}")
+            if region_bits:
+                segments.append(f"{label} {' / '.join(region_bits)}")
+
+        return "; ".join(segments) or None
+
+    def _build_known_specs(self, evidence: NormalizedEvidence) -> list[str]:
+        # Motivation vs Logic: Non-technical consumers read the table more easily when
+        # the known specs are spelled out in plain language instead of raw keys+values.
+        specs: list[str] = [
+            self._describe_activation(evidence.isActive),
+            self._describe_dimensionality(evidence.dimensions.dimensional),
+            self._describe_portions(evidence.dimensions.canBeSoldInPortions),
+            self._describe_pricing("generalRate", evidence.pricing.generalRate),
+            self._describe_pricing("expoRate", evidence.pricing.expoRate),
+            self._describe_pricing("cost", evidence.pricing.cost),
+            self._describe_components(evidence.components),
+            self._describe_sales_note(evidence.salesNote),
+        ]
+        return [spec for spec in specs if spec]
+
+    def _combine_cache_statuses(self, cache_statuses: list[str]) -> str:
+        if cache_statuses and len(set(cache_statuses)) == 1:
+            return cache_statuses[0]
+        return "cache_mixed"
+
+    def _dedupe_text(self, values: list[str | None]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = (value or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    @staticmethod
+    def _describe_activation(is_active: bool | None) -> str | None:
+        if is_active is None:
+            return None
+        return "This variant is active on the current catalogue." if is_active else "This variant is currently inactive."
+
+    @staticmethod
+    def _describe_dimensionality(dimensional: bool | None) -> str | None:
+        if dimensional is None:
+            return None
+        return "Dimensional handling is required for this item." if dimensional else "Dimensional handling does not apply."
+
+    @staticmethod
+    def _describe_portions(can_be_sold: bool | None) -> str | None:
+        if can_be_sold is None:
+            return None
+        return "Can be sold in portions." if can_be_sold else "Must be sold as a whole unit."
+
+    def _describe_pricing(self, key: str, value: float | None) -> str | None:
+        if value is None:
+            return None
+        return f"{self._humanize_label(key)} is {value:g}."
+
+    @staticmethod
+    def _describe_components(components: list[ProductComponentAllocationDto]) -> str | None:
+        if not components:
+            return None
+        parts = ", ".join(f"{component.componentId} ×{component.quantity}" for component in components)
+        return f"Components included: {parts}."
+
+    @staticmethod
+    def _describe_sales_note(note: str | None) -> str | None:
+        if not note:
+            return None
+        return f"Sales note: {note}."
+
+    def _humanize_label(self, label: str) -> str:
+        words = label.replace("_", " ")
+        words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", words)
+        return words.strip().title()

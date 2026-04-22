@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # durable source of truth; set HTH_REDIS_FALLBACK_ENABLED=true for dev without Redis.
     redis_fallback_enabled: bool = Field(False, alias="HTH_REDIS_FALLBACK_ENABLED")
     agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
+    # Motivation vs Logic: broad inventory answers can legitimately need large
+    # Markdown tables, so the agent completion budget is configurable instead of
+    # hard-coded to a small single-paragraph default.
+    agent_completion_tokens: int = Field(3600, alias="HTH_AGENT_COMPLETION_TOKENS")
     foundry_endpoint: str | None = Field(None, alias="AZURE_AI_FOUNDRY_ENDPOINT")
     foundry_api_key: str | None = Field(None, alias="AZURE_AI_FOUNDRY_API_KEY")
     foundry_model: str = Field("gpt-5.4-mini", alias="AZURE_AI_FOUNDRY_MODEL")

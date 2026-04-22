@@ -10,6 +10,10 @@
   const SESSION_STORAGE_KEY = "hth-claude-desktop-sessions-v4";
   const DEBUG_STORAGE_KEY = "hth-claude-debug-mode-v4";
   const SIDEBAR_STORAGE_KEY = "hth-claude-sidebar-collapsed-v4";
+  const PENDING_REQUEST_STORAGE_KEY = "hth-claude-pending-request-v1";
+  const PENDING_REQUEST_STALE_MS = 20 * 60 * 1000;
+  const STREAM_PERSIST_INTERVAL_MS = 180;
+  const STREAM_LAYOUT_SYNC_INTERVAL_MS = 900;
   const GROUP_ORDER = ["Today", "Yesterday", "Last 7 Days", "Earlier"];
   const MAX_DEBUG_FRAMES = 120;
   const QUICK_PROMPTS = [
@@ -116,12 +120,14 @@
     lastUpdated: "No request sent yet.",
     debugFrames: [],
     runtimeSpec: null,
+    recoveryNotice: "",
   };
 
   const uiFlags = {
     renderQueued: false,
     focusRenameInput: false,
     focusComposer: false,
+    feedShouldAutoScroll: true,
   };
 
   function createId(prefix) {
@@ -172,7 +178,8 @@
       return "";
     }
     const escaped = escapeHtml(text);
-    return formatInlineMarkdown(escaped).replace(/\n/g, "<br />");
+    const normalizedHeadings = escaped.replace(/^#{1,6}\s+(.+)$/gm, "**$1**");
+    return formatInlineMarkdown(normalizedHeadings).replace(/\n/g, "<br />");
   }
 
   function renderTableSegment(headers, rows) {
@@ -316,6 +323,8 @@
       title,
       createdAt,
       updatedAt: options.updatedAt || createdAt,
+      backendName: options.backendName || null,
+      manualTitle: Boolean(options.manualTitle),
       messages: options.messages?.length
         ? options.messages
         : [
@@ -344,16 +353,26 @@
       return null;
     }
 
-    const title = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : "New chat";
+    const baseTitle = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : "New chat";
     const messages = Array.isArray(raw.messages) ? raw.messages.map(sanitizeMessage).filter(Boolean) : [];
     const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString();
     const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
+    const manualTitle = raw.manualTitle === true;
+    const backendName =
+      typeof raw.backendName === "string"
+        ? raw.backendName
+        : typeof raw.session_name === "string"
+        ? raw.session_name
+        : null;
+    const title = backendName && !manualTitle ? backendName : baseTitle;
 
     return createSession(title, {
       id: typeof raw.id === "string" ? raw.id : undefined,
       createdAt,
       updatedAt,
       messages,
+      backendName,
+      manualTitle,
     });
   }
 
@@ -419,8 +438,97 @@
     }
   }
 
+  function parsePendingRequest() {
+    try {
+      const raw = window.localStorage.getItem(PENDING_REQUEST_STORAGE_KEY);
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        return null;
+      }
+
+      const requestPayload = parsed.requestPayload;
+      if (!requestPayload || typeof requestPayload !== "object") {
+        return null;
+      }
+      if (typeof requestPayload.message !== "string" || !requestPayload.message.trim()) {
+        return null;
+      }
+      if (typeof requestPayload.sessionId !== "string" || !requestPayload.sessionId.trim()) {
+        return null;
+      }
+
+      const sessionId = typeof parsed.sessionId === "string" ? parsed.sessionId : requestPayload.sessionId;
+      const assistantMessageId = typeof parsed.assistantMessageId === "string" ? parsed.assistantMessageId : "";
+      if (!sessionId || !assistantMessageId) {
+        return null;
+      }
+
+      return {
+        sessionId,
+        assistantMessageId,
+        userMessageId: typeof parsed.userMessageId === "string" ? parsed.userMessageId : null,
+        requestPayload: {
+          message: requestPayload.message,
+          sessionId: requestPayload.sessionId,
+          includeThoughts: requestPayload.includeThoughts !== false,
+          renderMockUi: requestPayload.renderMockUi !== false,
+        },
+        startedAt: typeof parsed.startedAt === "string" ? parsed.startedAt : new Date().toISOString(),
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+        lastKnownAnswer: typeof parsed.lastKnownAnswer === "string" ? parsed.lastKnownAnswer : "",
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function savePendingRequest(record) {
+    try {
+      window.localStorage.setItem(PENDING_REQUEST_STORAGE_KEY, JSON.stringify(record));
+    } catch (_error) {
+      // no-op, localStorage quota/privacy mode
+    }
+  }
+
+  function updatePendingRequest(update) {
+    const current = parsePendingRequest();
+    if (!current) {
+      return;
+    }
+    savePendingRequest({
+      ...current,
+      ...update,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  function clearPendingRequest() {
+    try {
+      window.localStorage.removeItem(PENDING_REQUEST_STORAGE_KEY);
+    } catch (_error) {
+      // no-op
+    }
+  }
+
   function saveSessions() {
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state.sessions));
+  }
+
+  function renderFatalScreen(error) {
+    const detail = error instanceof Error ? error.message : String(error || "Unknown error");
+    root.innerHTML = `
+      <section class="fatal-screen">
+        <div class="fatal-card">
+          <p class="fatal-eyebrow">UI Recovery</p>
+          <h1>We hit a rendering issue.</h1>
+          <p>The interface did not disappear permanently. Refresh to continue, or reopen the session.</p>
+          <pre>${escapeHtml(detail)}</pre>
+        </div>
+      </section>
+    `;
   }
 
   function persistUiToggles() {
@@ -458,6 +566,113 @@
       return "";
     }
     return candidate.trim();
+  }
+
+  function applyBackendSessionTitle(sessionId, payload) {
+    const backendSessionTitle = getBackendSessionTitle(payload);
+    if (!backendSessionTitle) {
+      return;
+    }
+
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    session.backendName = backendSessionTitle;
+    if (!session.manualTitle) {
+      session.title = backendSessionTitle;
+    }
+    session.updatedAt = new Date().toISOString();
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
+    queueRender();
+  }
+
+  function mutateStreamingMessage(sessionId, messageId, content, streaming) {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!session) {
+      return false;
+    }
+    const message = session.messages.find((entry) => entry.id === messageId);
+    if (!message) {
+      return false;
+    }
+    message.content = content;
+    message.streaming = streaming;
+    session.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  function patchStreamingMessage(messageId, content, streaming) {
+    const contentNode = root.querySelector(`[data-role="bubble-content"][data-message-id="${messageId}"]`);
+    if (contentNode) {
+      contentNode.innerHTML = renderMarkdown(content || "");
+    }
+
+    const row = root.querySelector(`.message-row[data-message-id="${messageId}"]`);
+    if (!row) {
+      return;
+    }
+
+    const bubble = row.querySelector(".bubble");
+    if (!bubble) {
+      return;
+    }
+
+    let cursor = row.querySelector('[data-role="stream-cursor"]');
+    if (streaming) {
+      if (!cursor) {
+        cursor = document.createElement("span");
+        cursor.className = "stream-cursor";
+        cursor.dataset.role = "stream-cursor";
+        bubble.appendChild(cursor);
+      }
+    } else if (cursor) {
+      cursor.remove();
+    }
+  }
+
+  function ensurePendingConversationState(pending) {
+    const session = state.sessions.find((entry) => entry.id === pending.sessionId);
+    if (!session) {
+      return { ok: false, completed: false };
+    }
+
+    const assistantMessage = session.messages.find((entry) => entry.id === pending.assistantMessageId);
+    if (assistantMessage && !assistantMessage.streaming && String(assistantMessage.content || "").trim()) {
+      return { ok: false, completed: true };
+    }
+
+    if (!session.messages.some((entry) => entry.id === pending.userMessageId) && pending.requestPayload.message) {
+      session.messages.push(
+        createMessage("user", pending.requestPayload.message, {
+          id: pending.userMessageId || createId("msg"),
+          createdAt: pending.startedAt,
+        }),
+      );
+    }
+
+    if (!assistantMessage) {
+      session.messages.push(
+        createMessage("assistant", pending.lastKnownAnswer || "", {
+          id: pending.assistantMessageId,
+          createdAt: pending.startedAt,
+          streaming: true,
+        }),
+      );
+    } else {
+      if (pending.lastKnownAnswer && pending.lastKnownAnswer.length > String(assistantMessage.content || "").length) {
+        assistantMessage.content = pending.lastKnownAnswer;
+      }
+      assistantMessage.streaming = true;
+    }
+
+    session.updatedAt = new Date().toISOString();
+    state.activeSessionId = pending.sessionId;
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
+    return { ok: true, completed: false };
   }
 
   function updateSession(sessionId, updater) {
@@ -530,7 +745,12 @@
     uiFlags.renderQueued = true;
     window.requestAnimationFrame(() => {
       uiFlags.renderQueued = false;
-      render();
+      try {
+        render();
+      } catch (error) {
+        console.error("HTH UI render failure", error);
+        renderFatalScreen(error);
+      }
     });
   }
 
@@ -649,16 +869,20 @@
         const animateClass = index >= messages.length - 2 ? "message-enter" : "";
         const avatar = message.role === "user" ? icon("user") : icon("sparkle");
         return `
-          <article class="message-row ${roleClass} ${animateClass}" style="--stagger:${Math.max(index - (messages.length - 2), 0) * 34}ms">
+          <article
+            class="message-row ${roleClass} ${animateClass}"
+            data-message-id="${escapeHtml(message.id)}"
+            style="--stagger:${Math.max(index - (messages.length - 2), 0) * 34}ms"
+          >
             <div class="message-unit ${roleClass}">
               <div class="avatar ${roleClass}">${avatar}</div>
               <div class="bubble ${roleClass}">
-                <div class="bubble-content">${renderMarkdown(message.content)}</div>
+                <div class="bubble-content" data-role="bubble-content" data-message-id="${escapeHtml(message.id)}">${renderMarkdown(message.content)}</div>
                 <div class="bubble-meta ${roleClass}">
                   <span class="bubble-role">${message.role === "user" ? "You" : "Claude"}</span>
                   <span class="bubble-time">${escapeHtml(formatClock(message.createdAt || new Date().toISOString()))}</span>
                 </div>
-                ${message.streaming ? `<span class="stream-cursor"></span>` : ""}
+                ${message.streaming ? `<span class="stream-cursor" data-role="stream-cursor"></span>` : ""}
               </div>
             </div>
           </article>
@@ -687,6 +911,17 @@
         </div>
       </section>
     `;
+  }
+
+  function captureFeedScrollState() {
+    const feed = root.querySelector('[data-role="message-feed"]');
+    if (!feed) {
+      return null;
+    }
+    return {
+      scrollTop: feed.scrollTop,
+      distanceFromBottom: feed.scrollHeight - (feed.scrollTop + feed.clientHeight),
+    };
   }
 
   function renderDebugStream() {
@@ -744,7 +979,9 @@
   }
 
   function render() {
+    const preservedFeedState = captureFeedScrollState();
     const activeSession = getActiveSession();
+    const assignedSessionName = activeSession?.backendName;
 
     root.innerHTML = `
       <div class="claude-shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
@@ -800,6 +1037,12 @@
               <div class="stage-title">
                 <p class="eyebrow">Unified Conversation</p>
                 <h1>${escapeHtml(activeSession?.title || "New chat")}</h1>
+                ${
+                  assignedSessionName
+                    ? `<p class="stage-session-name">Assigned: ${escapeHtml(assignedSessionName)}</p>`
+                    : ""
+                }
+                ${state.recoveryNotice ? `<p class="stage-recovery">${escapeHtml(state.recoveryNotice)}</p>` : ""}
               </div>
               <div class="stage-status">
                 ${renderStatusPill()}
@@ -842,13 +1085,32 @@
       </div>
     `;
 
-    postRenderEffects();
+    postRenderEffects(preservedFeedState);
   }
 
-  function postRenderEffects() {
+  function postRenderEffects(preservedFeedState) {
     const feed = root.querySelector('[data-role="message-feed"]');
     if (feed) {
-      feed.scrollTop = feed.scrollHeight;
+      const clampScroll = 32;
+      const updateAutoScrollFlag = () => {
+        const distanceFromBottom = feed.scrollHeight - (feed.scrollTop + feed.clientHeight);
+        uiFlags.feedShouldAutoScroll = distanceFromBottom <= clampScroll;
+      };
+
+      feed.addEventListener("scroll", updateAutoScrollFlag);
+      const shouldAlwaysStickToBottom =
+        uiFlags.feedShouldAutoScroll ||
+        (preservedFeedState?.distanceFromBottom !== undefined && preservedFeedState.distanceFromBottom <= clampScroll);
+
+      if (shouldAlwaysStickToBottom) {
+        feed.scrollTop = feed.scrollHeight;
+      } else if (preservedFeedState) {
+        // Root Cause vs Logic: re-rendering replaces the DOM nodes, so we must restore the
+        // remembered scroll offset when auto-scroll is off instead of jumping back to the top.
+        const maxScrollTop = Math.max(0, feed.scrollHeight - feed.clientHeight);
+        feed.scrollTop = Math.min(preservedFeedState.scrollTop, maxScrollTop);
+      }
+      updateAutoScrollFlag();
     }
 
     const composerInput = root.querySelector('[data-role="composer-input"]');
@@ -893,6 +1155,7 @@
     updateSession(targetSessionId, (session) => ({
       ...session,
       title: nextName,
+      manualTitle: true,
       updatedAt: new Date().toISOString(),
     }));
   }
@@ -904,6 +1167,11 @@
   }
 
   function removeSession(sessionId) {
+    const pending = parsePendingRequest();
+    if (pending && pending.sessionId === sessionId) {
+      clearPendingRequest();
+    }
+
     state.sessions = state.sessions.filter((session) => session.id !== sessionId);
 
     if (!state.sessions.length) {
@@ -922,12 +1190,15 @@
   }
 
   function resetForNewChat() {
+    clearPendingRequest();
     state.renameSessionId = null;
     state.renameDraft = "";
     state.draftMessage = "";
+    state.recoveryNotice = "";
     state.requestState = { tone: "idle", label: "Ready" };
     state.lastUpdated = "No request sent yet.";
     uiFlags.focusComposer = true;
+    uiFlags.feedShouldAutoScroll = true;
     queueRender();
   }
 
@@ -1089,41 +1360,62 @@
     }
   }
 
-  async function streamAssistantText(sessionId, messageId, text) {
+  async function streamAssistantText(sessionId, messageId, text, onProgress) {
     if (!text) {
-      updateSession(sessionId, (session) => ({
-        ...session,
-        messages: session.messages.map((message) =>
-          message.id === messageId ? { ...message, content: "", streaming: false } : message,
-        ),
-      }));
+      if (mutateStreamingMessage(sessionId, messageId, "", false)) {
+        saveSessions();
+        patchStreamingMessage(messageId, "", false);
+        state.sessions = sortSessions(state.sessions);
+        queueRender();
+      }
+      if (onProgress) {
+        onProgress("", true);
+      }
       return;
     }
 
     let cursor = 0;
+    let lastPersist = 0;
+    let lastLayoutSync = 0;
+
     while (cursor < text.length) {
-      const step = Math.min(text.length - cursor, 1 + Math.floor(Math.random() * 5));
+      const step = Math.min(text.length - cursor, 2 + Math.floor(Math.random() * 9));
       cursor += step;
       const chunk = text.slice(0, cursor);
+      const now = performance.now();
 
-      updateSession(sessionId, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        messages: session.messages.map((message) =>
-          message.id === messageId ? { ...message, content: chunk, streaming: true } : message,
-        ),
-      }));
+      if (!mutateStreamingMessage(sessionId, messageId, chunk, true)) {
+        break;
+      }
 
-      await new Promise((resolve) => window.setTimeout(resolve, 16));
+      patchStreamingMessage(messageId, chunk, true);
+
+      if (now - lastPersist >= STREAM_PERSIST_INTERVAL_MS) {
+        saveSessions();
+        if (onProgress) {
+          onProgress(chunk, false);
+        }
+        lastPersist = now;
+      }
+
+      if (now - lastLayoutSync >= STREAM_LAYOUT_SYNC_INTERVAL_MS) {
+        state.sessions = sortSessions(state.sessions);
+        queueRender();
+        lastLayoutSync = now;
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 22));
     }
 
-    updateSession(sessionId, (session) => ({
-      ...session,
-      updatedAt: new Date().toISOString(),
-      messages: session.messages.map((message) =>
-        message.id === messageId ? { ...message, streaming: false } : message,
-      ),
-    }));
+    if (mutateStreamingMessage(sessionId, messageId, text, false)) {
+      saveSessions();
+      patchStreamingMessage(messageId, text, false);
+      state.sessions = sortSessions(state.sessions);
+      queueRender();
+    }
+    if (onProgress) {
+      onProgress(text, true);
+    }
   }
 
   async function submitQuery(requestPayload) {
@@ -1181,10 +1473,22 @@
       renderMockUi: true,
     };
 
+    savePendingRequest({
+      sessionId: currentSessionId,
+      assistantMessageId: assistantMessage.id,
+      userMessageId: userMessage.id,
+      requestPayload,
+      startedAt: nowIso,
+      updatedAt: nowIso,
+      lastKnownAnswer: "",
+    });
+
     state.draftMessage = "";
     state.isSubmitting = true;
+    state.recoveryNotice = "";
     state.requestState = { tone: "running", label: "Running" };
     state.lastUpdated = `Sent at ${formatClock(nowIso)}`;
+    uiFlags.feedShouldAutoScroll = true;
     queueRender();
 
     const startedAt = performance.now();
@@ -1208,17 +1512,10 @@
     try {
       const payload = await submitQuery(requestPayload);
       const answer = payload.answer?.trim() || "No answer returned.";
-      const backendSessionTitle = getBackendSessionTitle(payload);
       const latencyMs = Math.round(performance.now() - startedAt);
       const tokenUsage = extractTokenUsage(payload, requestPayload, answer);
       const modelMetadata = buildModelMetadata(payload, currentSessionId);
-
-      if (backendSessionTitle) {
-        updateSession(currentSessionId, (session) => ({
-          ...session,
-          title: backendSessionTitle,
-        }));
-      }
+      applyBackendSessionTitle(currentSessionId, payload);
 
       pushDebugFrame({
         timestamp: new Date().toISOString(),
@@ -1229,7 +1526,13 @@
         modelMetadata,
       });
 
-      await streamAssistantText(currentSessionId, assistantMessage.id, answer);
+      await streamAssistantText(currentSessionId, assistantMessage.id, answer, (chunk, done) => {
+        updatePendingRequest({
+          lastKnownAnswer: chunk,
+          completed: done === true,
+        });
+      });
+      clearPendingRequest();
       state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
       state.lastUpdated = `Last response at ${formatClock(new Date())}`;
     } catch (error) {
@@ -1265,10 +1568,104 @@
 
       state.requestState = { tone: "error", label: "Error" };
       state.lastUpdated = `Request failed at ${formatClock(new Date())}`;
+      clearPendingRequest();
     } finally {
       state.isSubmitting = false;
       queueRender();
     }
+  }
+
+  async function recoverPendingRequest(pending) {
+    const startedAt = performance.now();
+    try {
+      const payload = await submitQuery(pending.requestPayload);
+      const answer = payload.answer?.trim() || "No answer returned.";
+      const latencyMs = Math.round(performance.now() - startedAt);
+      const tokenUsage = extractTokenUsage(payload, pending.requestPayload, answer);
+      const modelMetadata = buildModelMetadata(payload, pending.sessionId);
+
+      applyBackendSessionTitle(pending.sessionId, payload);
+
+      pushDebugFrame({
+        timestamp: new Date().toISOString(),
+        event: "Recovered Response",
+        rawApiRequest: pending.requestPayload,
+        tokenUsage,
+        latencyMs,
+        modelMetadata,
+      });
+
+      await streamAssistantText(pending.sessionId, pending.assistantMessageId, answer, (chunk, done) => {
+        updatePendingRequest({
+          lastKnownAnswer: chunk,
+          completed: done === true,
+        });
+      });
+
+      state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
+      state.lastUpdated = `Recovered at ${formatClock(new Date())}`;
+    } catch (error) {
+      const fallback = "The previous response was interrupted after refresh. Retry to continue.";
+      mutateStreamingMessage(pending.sessionId, pending.assistantMessageId, fallback, false);
+      patchStreamingMessage(pending.assistantMessageId, fallback, false);
+      saveSessions();
+      state.sessions = sortSessions(state.sessions);
+      pushDebugFrame({
+        timestamp: new Date().toISOString(),
+        event: "Recovery Error",
+        rawApiRequest: pending.requestPayload,
+        tokenUsage: {
+          prompt: estimateTokens(pending.requestPayload.message),
+          completion: 0,
+          total: estimateTokens(pending.requestPayload.message),
+          source: "estimated",
+        },
+        latencyMs: Math.round(performance.now() - startedAt),
+        modelMetadata: {
+          status: "error",
+          detail: error instanceof Error ? error.message : "Unknown error",
+          service: state.runtimeSpec?.server_name || config.serviceName || "HTH MCP",
+          serviceVersion: state.runtimeSpec?.server_version || config.serviceVersion || "unknown",
+        },
+      });
+      state.requestState = { tone: "error", label: "Recovery failed" };
+      state.lastUpdated = `Recovery failed at ${formatClock(new Date())}`;
+    } finally {
+      clearPendingRequest();
+      state.isSubmitting = false;
+      queueRender();
+    }
+  }
+
+  function resumePendingRequestIfNeeded() {
+    const pending = parsePendingRequest();
+    if (!pending) {
+      return;
+    }
+
+    const startedMs = new Date(pending.startedAt).getTime();
+    if (Number.isNaN(startedMs) || Date.now() - startedMs > PENDING_REQUEST_STALE_MS) {
+      clearPendingRequest();
+      return;
+    }
+
+    const ensured = ensurePendingConversationState(pending);
+    if (ensured.completed) {
+      clearPendingRequest();
+      return;
+    }
+    if (!ensured.ok) {
+      clearPendingRequest();
+      return;
+    }
+
+    state.isSubmitting = true;
+    state.requestState = { tone: "running", label: "Recovering" };
+    state.lastUpdated = "Recovering interrupted response…";
+    state.recoveryNotice = "Recovered an in-progress response after refresh.";
+    uiFlags.feedShouldAutoScroll = true;
+    queueRender();
+    void recoverPendingRequest(pending);
   }
 
   async function hydrateRuntimeSummary() {
@@ -1290,7 +1687,13 @@
   }
 
   function boot() {
-    render();
+    try {
+      render();
+    } catch (error) {
+      console.error("HTH UI initial render failure", error);
+      renderFatalScreen(error);
+      return;
+    }
 
     window.setTimeout(() => {
       state.sessions = parseStoredSessions();
@@ -1298,6 +1701,7 @@
       state.loadingSessions = false;
       saveSessions();
       queueRender();
+      resumePendingRequestIfNeeded();
     }, 320);
 
     hydrateRuntimeSummary();
@@ -1310,6 +1714,12 @@
   root.addEventListener("focusout", handleRootFocusOut);
   root.addEventListener("submit", handleRootSubmit);
   window.addEventListener("keydown", handleGlobalShortcuts);
+  window.addEventListener("error", (event) => {
+    console.error("HTH UI runtime error", event.error || event.message);
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    console.error("HTH UI unhandled rejection", event.reason);
+  });
 
   boot();
 })();

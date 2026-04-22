@@ -21,6 +21,10 @@ from app.inventory.service import InventoryService
 from app.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.resolver import ResolverService
 from app.schemas import (
+    InventorySnapshotResponse,
+    NormalizedEvidence,
+    ProductListItemDto,
+    ProductListItemDtoPagedResponse,
     ResolverDisambiguateCandidatesArgs,
     SessionToolArgs,
     StockCompareVariantsArgs,
@@ -28,6 +32,7 @@ from app.schemas import (
     StockGetCategoriesArgs,
     StockGetDepartmentsArgs,
     StockGetProductArgs,
+    StockInventorySnapshotArgs,
     StockSearchCatalogueArgs,
     ToolDefinition,
     ToolResult,
@@ -180,6 +185,7 @@ class ToolRegistry:
             return ToolResult(
                 tool="stock.search_catalogue",
                 data=data.model_dump(mode="json"),
+                llm_content=self._catalogue_model_view(data),
                 normalization_notes=notes,
                 trace=trace,
             )
@@ -199,6 +205,7 @@ class ToolRegistry:
             return ToolResult(
                 tool="stock.get_product",
                 data=data.model_dump(mode="json"),
+                llm_content=self._product_model_view(data),
                 normalization_notes=notes,
                 trace=trace,
             )
@@ -218,6 +225,7 @@ class ToolRegistry:
             return ToolResult(
                 tool="stock.extract_variant_evidence",
                 data=data.model_dump(mode="json"),
+                llm_content=self._evidence_model_view(data),
                 normalization_notes=notes,
                 trace=trace,
             )
@@ -237,7 +245,28 @@ class ToolRegistry:
             return ToolResult(
                 tool="stock.compare_variants",
                 data=[item.model_dump(mode="json") for item in data],
+                llm_content=[self._evidence_model_view(item) for item in data],
                 normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def inventory_snapshot(validated: StockInventorySnapshotArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.inventory_service.inventory_snapshot(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock.inventory_snapshot",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> inventory_snapshot.rows[*]",
+                result_count=len(data.rows),
+                normalization_notes=notes + data.coverage.limitations,
+            )
+            return ToolResult(
+                tool="stock.inventory_snapshot",
+                data=data.model_dump(mode="json"),
+                llm_content=self._inventory_snapshot_model_view(data),
+                normalization_notes=notes + data.coverage.limitations,
                 trace=trace,
             )
 
@@ -283,6 +312,146 @@ class ToolRegistry:
             StockCompareVariantsArgs,
             compare_variants,
         )
+        self._register(
+            "stock.inventory_snapshot",
+            "Retrieve a compact, answer-ready inventory evidence snapshot for a catalogue page, including variant-level specs and stock summaries.",
+            StockInventorySnapshotArgs,
+            inventory_snapshot,
+        )
+
+    def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
+        return {
+            "page": data.page,
+            "pageSize": data.pageSize,
+            "totalCount": data.totalCount,
+            "totalPages": data.totalPages,
+            "items": [self._product_catalogue_model_view(item) for item in data.items],
+        }
+
+    def _product_catalogue_model_view(self, item: ProductListItemDto) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "name": item.name,
+            "departmentId": item.departmentId,
+            "subDepartmentId": item.subDepartmentId,
+            "categoryId": item.categoryId,
+            "isActive": item.isActive,
+            "variationNames": [
+                variation.name for variation in item.variations if (variation.name or "").strip()
+            ],
+            "variants": [
+                {
+                    "id": variant.id,
+                    "name": variant.name,
+                    "sku": variant.sku,
+                    "totalHirable": variant.totalHirable,
+                }
+                for variant in item.variants
+            ],
+        }
+
+    def _product_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
+        return {
+            "page": data.page,
+            "pageSize": data.pageSize,
+            "totalCount": data.totalCount,
+            "totalPages": data.totalPages,
+            "items": [
+                {
+                    **self._product_catalogue_model_view(item),
+                    "variants": [self._product_variant_model_view(variant) for variant in item.variants],
+                }
+                for item in data.items
+            ],
+        }
+
+    def _product_variant_model_view(self, variant) -> dict[str, Any]:
+        details = variant.details
+        return {
+            "id": variant.id,
+            "name": variant.name,
+            "sku": variant.sku,
+            "totalHirable": variant.totalHirable,
+            "details": {
+                "isActive": details.isActive if details else None,
+                "length": details.length if details else None,
+                "width": details.width if details else None,
+                "height": details.height if details else None,
+                "totalStock": details.totalStock if details else None,
+                "vicStock": details.vicStock if details else None,
+                "nswStock": details.nswStock if details else None,
+                "qldStock": details.qldStock if details else None,
+                "salesNote": details.salesNote if details else None,
+                "generalRate": details.generalRate if details else None,
+                "expoRate": details.expoRate if details else None,
+                "cost": details.cost if details else None,
+                "dimensional": details.dimensional if details else None,
+                "canBeSoldInPortions": details.canBeSoldInPortions if details else None,
+            },
+        }
+
+    def _evidence_model_view(self, evidence: NormalizedEvidence) -> dict[str, Any]:
+        return {
+            "product": evidence.product_name,
+            "variant": evidence.variant_name,
+            "sku": evidence.sku,
+            "variationOptions": evidence.variation_options,
+            "salesNote": evidence.salesNote,
+            "dimensions": evidence.dimensions.model_dump(mode="json"),
+            "stock": evidence.stock.model_dump(mode="json"),
+            "pricing": evidence.pricing.model_dump(mode="json"),
+            "isActive": evidence.isActive,
+            "provenance": evidence.provenance.model_dump(mode="json"),
+        }
+
+    def _inventory_snapshot_model_view(self, data: InventorySnapshotResponse) -> dict[str, Any]:
+        return {
+            "rows": [self._compact_snapshot_row(row.model_dump(mode="json")) for row in data.rows],
+            "coverage": data.coverage.model_dump(mode="json"),
+        }
+
+    def _compact_snapshot_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "product": row.get("product"),
+            "variant": row.get("variant"),
+            "sku": row.get("sku"),
+            "attributeEvidence": self._compact_attribute_evidence(row),
+            "size": row.get("size"),
+            "stock": row.get("stock"),
+            "knownSpecs": self._compact_known_specs(row.get("knownSpecs", [])),
+        }
+
+    def _compact_attribute_evidence(self, row: dict[str, Any]) -> list[str]:
+        product = (row.get("product") or "").strip()
+        variant = (row.get("variant") or "").strip()
+        compact: list[str] = []
+        for value in row.get("attributeEvidence", []):
+            normalized = (value or "").strip()
+            if not normalized:
+                continue
+            if normalized in {product, variant} and compact:
+                continue
+            if normalized not in compact:
+                compact.append(normalized)
+        return compact[:2]
+
+    def _compact_known_specs(self, specs: list[str]) -> list[str]:
+        compact: list[str] = []
+        for spec in specs:
+            if spec.startswith("salesNote="):
+                compact.append(self._truncate_spec(spec, 96))
+                continue
+            if spec.startswith("components="):
+                component_count = spec.count(",") + 1
+                compact.append(f"components={component_count} items")
+                continue
+            compact.append(spec)
+        return compact[:6]
+
+    def _truncate_spec(self, spec: str, limit: int) -> str:
+        if len(spec) <= limit:
+            return spec
+        return spec[: limit - 3].rstrip() + "..."
 
     def _register_resolver(self) -> None:
         async def disambiguate(validated: ResolverDisambiguateCandidatesArgs, _: str | None, thought: str) -> ToolResult:

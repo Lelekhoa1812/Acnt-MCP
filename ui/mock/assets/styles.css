@@ -19,6 +19,7 @@ html,
 body,
 #root {
   height: 100%;
+  min-height: 100%;
 }
 
 body {
@@ -30,6 +31,57 @@ body {
   font-family: Inter, "SF Pro Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
   font-feature-settings: "ss01" 1, "ss02" 1;
   letter-spacing: 0.002em;
+  overflow: hidden;
+}
+
+.fatal-screen {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 14% -6%, rgba(217, 200, 177, 0.42), transparent 40%),
+    linear-gradient(180deg, #fbf8f3 0%, #f5f2ea 100%);
+}
+
+.fatal-card {
+  width: min(680px, 100%);
+  border: 1px solid rgba(214, 205, 191, 0.9);
+  border-radius: 18px;
+  background: var(--claude-paper);
+  box-shadow: var(--claude-shadow);
+  padding: 24px;
+}
+
+.fatal-eyebrow {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--claude-muted);
+}
+
+.fatal-card h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.fatal-card p {
+  margin: 0 0 12px;
+  color: var(--claude-muted);
+  line-height: 1.55;
+}
+
+.fatal-card pre {
+  margin: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(224, 216, 203, 0.9);
+  background: #fbf8f2;
+  padding: 11px 12px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 code {
@@ -53,10 +105,11 @@ code {
 }
 
 .claude-shell {
+  /* Root Cause vs Logic: Without forcing the shell to fill the viewport and anchoring the composer, session swaps pushed the feed down, hiding the input and leaving no scroll. */
   --sidebar-width: 298px;
   display: grid;
-  height: 100%;
-  min-height: 0;
+  height: 100vh;
+  min-height: 100vh;
   overflow: hidden;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   transition: grid-template-columns 0.2s ease-out;
@@ -439,6 +492,7 @@ code {
 
 .claude-main {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -450,6 +504,8 @@ code {
   flex-direction: column;
   flex: 1;
   transition: flex-basis 0.2s ease-out;
+  position: relative;
+  overflow: hidden;
 }
 
 .claude-main.debug-open .stage {
@@ -470,6 +526,20 @@ code {
   font-size: 19px;
   font-weight: 620;
   line-height: 1.3;
+}
+
+.stage-session-name {
+  margin: 4px 0 0;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--claude-muted);
+  text-transform: none;
+}
+
+.stage-recovery {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  color: #6e5c44;
 }
 
 .stage-status {
@@ -535,6 +605,7 @@ code {
   flex: 1;
   overflow-y: auto;
   padding: 28px 32px;
+  padding-bottom: 160px;
   scrollbar-width: thin;
   scrollbar-color: #d2cbc0 transparent;
 }
@@ -744,6 +815,11 @@ code {
 .composer-wrap {
   border-top: 1px solid rgba(220, 212, 200, 0.86);
   padding: 14px 32px 22px;
+  position: sticky;
+  bottom: 0;
+  background: #fffcf7;
+  z-index: 2;
+  box-shadow: 0 -12px 30px rgba(72, 63, 53, 0.08);
 }
 
 .composer-form {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import Settings
 from app.errors import InventoryNotFoundError, ParameterMappingError, UpstreamServiceError
+from app.inventory.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_formatter, render_system
 from app.schemas import (
     AgentQueryRequest,
@@ -19,6 +21,9 @@ from app.schemas import (
     ToolTrace,
 )
 from app.tool.registry import ToolRegistry
+
+
+THOUGHT_BLOCK_PATTERN = re.compile(r"<thought>.*?</thought>", re.IGNORECASE | re.DOTALL)
 
 
 class AgentEnvelope(BaseModel):
@@ -67,6 +72,9 @@ class AgentEngine:
         resolved_items: list[NormalizedEvidence] = []
         limitations: list[str] = []
         clarification: ClarificationPayload | None = None
+        status_hint = "answered"
+        inventory_snapshot: dict[str, Any] | None = None
+        used_grounded_snapshot_fallback = False
 
         messages: list[dict[str, Any]] = [
             {
@@ -90,7 +98,10 @@ class AgentEngine:
 
             tool_calls = assistant.get("tool_calls") or []
             if not tool_calls:
-                draft_answer = (content or "").strip()
+                draft_answer = self._extract_user_facing_answer(content)
+                if not draft_answer:
+                    limitations.append("The model returned an empty final assistant message after tool retrieval.")
+                    status_hint = "limited"
                 break
 
             messages.append(
@@ -116,6 +127,8 @@ class AgentEngine:
                         session_id=session_state.session_id,
                         thought=(assistant.get("content") or "").strip(),
                     )
+                    if result.tool == "stock.inventory_snapshot" and isinstance(result.llm_content, dict):
+                        inventory_snapshot = result.llm_content
                     if result.trace:
                         traces.append(result.trace)
                     new_limitations, new_clarification, new_evidence = self._capture(result.data)
@@ -123,11 +136,12 @@ class AgentEngine:
                     if new_clarification is not None:
                         clarification = new_clarification
                         session_state.last_candidate_list = new_clarification.options
+                        status_hint = "needs_clarification"
                     if new_evidence:
                         for evidence in new_evidence:
                             self._update_session_with_evidence(session_state, evidence)
                         resolved_items = self._merge_evidence(resolved_items, new_evidence)
-                    tool_content = json.dumps(result.data, ensure_ascii=False)
+                    tool_content = self._render_tool_content(result)
                 except (InventoryNotFoundError, ParameterMappingError, UpstreamServiceError, ValueError) as exc:
                     error_trace = ToolTrace(
                         thought=(assistant.get("content") or "").strip(),
@@ -159,44 +173,60 @@ class AgentEngine:
         else:
             draft_answer = "I reached the tool-step limit before I could finish safely."
             limitations.append("The agent hit the configured max-step limit.")
+            status_hint = "limited"
 
         # Root Cause vs Logic: the model sometimes returns its last turn with
         # no tool_calls but also empty `content`, which left `draft_answer` blank
         # and forced a generic fallback. A single no-tools completion asks the
         # model to synthesize from the thread (still LLM-orchestrated, no keyword routing).
         if not (draft_answer or "").strip() and (traces or resolved_items) and self._client:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "The run ended without a final user-facing answer in the last assistant message, "
-                        "but tool results are present above. Write the complete answer now: ground every "
-                        "factual claim in the tool JSON, use Markdown tables when listing many products "
-                        "or variants, and clearly state any coverage limits (e.g. pagination or partial "
-                        "catalogue). Do not call tools."
-                    ),
-                }
+            draft_answer, synthesis_limitations = await self._synthesize_answer(
+                messages=messages,
+                include_thoughts=request.includeThoughts,
+                thoughts=thoughts,
             )
-            try:
-                response = await self._complete(messages=messages, enable_tools=False)
-                assistant = response["choices"][0]["message"]
-                synth = (assistant.get("content") or "").strip()
-                synth_tool_calls = assistant.get("tool_calls") or []
-                if synth and not synth_tool_calls:
-                    draft_answer = synth
-                    if request.includeThoughts:
-                        thoughts.append(synth)
-                elif synth_tool_calls:
-                    limitations.append("The model attempted further tool calls during the final synthesis pass; those were not executed.")
-            except UpstreamServiceError as exc:
-                self.logger.warning("Agent synthesis pass failed: %s", exc)
+            limitations.extend(synthesis_limitations)
+            if draft_answer:
+                if status_hint != "needs_clarification":
+                    status_hint = "answered"
+            else:
+                fallback_answer, fallback_status, fallback_limitations = self._grounded_fallback_answer(
+                    clarification=clarification,
+                    inventory_snapshot=inventory_snapshot,
+                )
+                draft_answer = fallback_answer
+                status_hint = fallback_status
+                limitations.extend(fallback_limitations)
+                used_grounded_snapshot_fallback = bool(inventory_snapshot and not clarification)
 
-        envelope = await self._format(
-            request=request.message,
-            draft=draft_answer or "I need one more step or clarification before I can answer safely.",
-            limitations=limitations,
-            clarification=clarification,
-        )
+        if used_grounded_snapshot_fallback:
+            envelope = AgentEnvelope(
+                status=status_hint,
+                answer=draft_answer,
+                limitations=self._dedupe(limitations),
+                clarification=clarification,
+            )
+        else:
+            try:
+                envelope = await self._format(
+                    request=request.message,
+                    draft=draft_answer or self._default_incomplete_answer(clarification is not None),
+                    limitations=limitations,
+                    clarification=clarification,
+                    fallback_status=status_hint,
+                )
+            except UpstreamServiceError as exc:
+                # Root Cause vs Logic: formatting is a polish pass, not source-of-truth
+                # retrieval. If it times out we should still return the grounded draft
+                # and truthful status instead of turning a successful tool run into a 5xx.
+                self.logger.warning("Agent formatter pass failed: %s", exc)
+                limitations.append(str(exc))
+                envelope = AgentEnvelope(
+                    status=status_hint,
+                    answer=draft_answer or self._default_incomplete_answer(clarification is not None),
+                    limitations=self._dedupe(limitations),
+                    clarification=clarification,
+                )
         return AgentRun(
             status=envelope.status,
             answer=envelope.answer,
@@ -218,7 +248,7 @@ class AgentEngine:
         payload: dict[str, Any] = {
             "model": self.settings.foundry_model,
             "messages": messages,
-            "max_completion_tokens": 1400,
+            "max_completion_tokens": self.settings.agent_completion_tokens,
         }
         if enable_tools:
             payload["tools"] = self.tool_registry.tool_payloads()
@@ -246,6 +276,7 @@ class AgentEngine:
         draft: str,
         limitations: list[str],
         clarification: ClarificationPayload | None,
+        fallback_status: str,
     ) -> AgentEnvelope:
         if self._client is None:
             raise UpstreamServiceError(503, "Azure AI Foundry is not configured for `/api/v1/query`.")
@@ -274,7 +305,6 @@ class AgentEngine:
                 raw["clarification"] = clarification.model_dump(mode="json")
             return AgentEnvelope.model_validate(raw)
         except (json.JSONDecodeError, ValidationError):
-            fallback_status = "needs_clarification" if clarification else "answered"
             return AgentEnvelope(
                 status=fallback_status,
                 answer=draft,
@@ -323,14 +353,7 @@ class AgentEngine:
             clarification = ClarificationPayload.model_validate(data)
             return limitations, clarification, evidence
 
-        if isinstance(data, dict) and "provenance" in data and "evidence_paths" in data:
-            evidence.append(NormalizedEvidence.model_validate(data))
-            return limitations, clarification, evidence
-
-        if isinstance(data, list):
-            for item in data:
-                if isinstance(item, dict) and "provenance" in item and "evidence_paths" in item:
-                    evidence.append(NormalizedEvidence.model_validate(item))
+        self._collect_evidence(data, evidence)
 
         if isinstance(data, dict) and data.get("error"):
             error = data["error"]
@@ -365,6 +388,115 @@ class AgentEngine:
                 merged.append(item)
                 seen.add(identifier)
         return merged
+
+    async def _synthesize_answer(
+        self,
+        messages: list[dict[str, Any]],
+        include_thoughts: bool,
+        thoughts: list[str],
+    ) -> tuple[str, list[str]]:
+        limitations: list[str] = []
+        synthesis_messages = list(messages)
+        prompts = [
+            (
+                "The tool outputs above are the authoritative inventory source for this run. "
+                "Write the final user-facing answer now using only those tool results. Ground every "
+                "claim in the returned JSON, use Markdown tables when listing many items, clearly "
+                "state any coverage limits, and do not call tools or ask for new data sources."
+            ),
+            (
+                "Your previous response did not contain a user-facing answer. Produce it now. "
+                "If the retrieved evidence is partial, say that plainly and summarize only the "
+                "retrieved rows. Do not call tools. Do not ask for clarification unless a "
+                "clarification payload already exists in the conversation."
+            ),
+        ]
+
+        for prompt in prompts:
+            synthesis_messages.append({"role": "user", "content": prompt})
+            try:
+                response = await self._complete(messages=synthesis_messages, enable_tools=False)
+            except UpstreamServiceError as exc:
+                self.logger.warning("Agent synthesis pass failed: %s", exc)
+                limitations.append(str(exc))
+                return "", limitations
+
+            assistant = response["choices"][0]["message"]
+            content = assistant.get("content")
+            if content and include_thoughts:
+                thoughts.append(content.strip())
+
+            synth_tool_calls = assistant.get("tool_calls") or []
+            if synth_tool_calls:
+                limitations.append(
+                    "The model attempted further tool calls during the final synthesis pass; those were not executed."
+                )
+                continue
+
+            rendered = self._extract_user_facing_answer(content)
+            if rendered:
+                return rendered, limitations
+
+            synthesis_messages.append({"role": "assistant", "content": content})
+
+        limitations.append("The model ended the synthesis pass without a user-facing answer.")
+        return "", limitations
+
+    def _render_tool_content(self, result) -> str:
+        payload = result.llm_content if result.llm_content is not None else result.data
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _extract_user_facing_answer(self, content: str | None) -> str:
+        if not content:
+            return ""
+        rendered = THOUGHT_BLOCK_PATTERN.sub("", content).strip()
+        return rendered
+
+    def _default_incomplete_answer(self, has_clarification: bool) -> str:
+        if has_clarification:
+            return "I need one more clarification before I can answer safely."
+        return (
+            "I retrieved inventory evidence, but I could not complete a grounded final answer from it. "
+            "Please retry or narrow the scope so I can finish cleanly."
+        )
+
+    def _grounded_fallback_answer(
+        self,
+        clarification: ClarificationPayload | None,
+        inventory_snapshot: dict[str, Any] | None,
+    ) -> tuple[str, str, list[str]]:
+        if clarification is not None:
+            return self._default_incomplete_answer(True), "needs_clarification", []
+
+        if inventory_snapshot:
+            coverage = inventory_snapshot.get("coverage") or {}
+            limitations = [
+                "The model finished retrieval but did not produce a final answer, so the runtime rendered the grounded inventory snapshot directly."
+            ]
+            status = "limited" if coverage.get("isPartial") or coverage.get("limitations") else "answered"
+            return (
+                render_inventory_snapshot_markdown(
+                    rows=inventory_snapshot.get("rows", []),
+                    coverage=coverage,
+                ),
+                status,
+                limitations,
+            )
+
+        return self._default_incomplete_answer(False), "limited", []
+
+    def _collect_evidence(self, data: Any, evidence: list[NormalizedEvidence]) -> None:
+        if isinstance(data, dict):
+            if "provenance" in data and "evidence_paths" in data:
+                evidence.append(NormalizedEvidence.model_validate(data))
+                return
+            for value in data.values():
+                self._collect_evidence(value, evidence)
+            return
+
+        if isinstance(data, list):
+            for item in data:
+                self._collect_evidence(item, evidence)
 
     def _append_unique(self, values: list[str], new_value: str, limit: int = 6) -> list[str]:
         deduped = [item for item in values if item != new_value]
