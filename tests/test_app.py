@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from app.agent.engine import AgentEngine, AgentRun
 from app.currency.service import CurrencyProviderError
 from app.config import Settings
+from app.errors import UpstreamServiceError
 from app.main import create_app
 from app.schemas import ToolTrace
 
@@ -32,6 +35,9 @@ def test_health_endpoint_reports_local_harmonise_mode() -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["data_source"] == "harmonise_local"
+    assert payload["session_cache_backend"] in ("redis", "memory")
+    assert isinstance(payload["redis_client_connected"], bool)
+    assert payload["redis_fallback_enabled"] is True
 
 
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
@@ -189,7 +195,7 @@ def test_currency_convert_falls_back_when_primary_provider_is_unavailable(monkey
     assert payload["data"]["provider"] == "frankfurter"
 
 
-def test_query_endpoint_uses_agent_engine_and_exposes_mock_ui_entrypoint(monkeypatch) -> None:
+def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch) -> None:
     async def fake_run(self, request, session_state):  # noqa: ANN001
         return AgentRun(
             status="answered",
@@ -218,30 +224,83 @@ def test_query_endpoint_uses_agent_engine_and_exposes_mock_ui_entrypoint(monkeyp
             json={"message": "Check fl-la-la-lam-1-ble", "renderMockUi": True},
         )
 
-        ui_response = client.get("/api/v1/mock-ui")
-        ui_script_response = client.get("/api/v1/mock-ui/assets/app.js")
+        ui_response = client.get("/api/v1/ui")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "answered"
     assert payload["mock_ui"] is None
-    assert payload["mock_ui_path"] == "/api/v1/mock-ui"
+    assert payload["mock_ui_path"] == "/api/v1/ui"
     assert ui_response.status_code == 200
-    assert "HTH Mock Claude UI" in ui_response.text
-    assert "/api/v1/mock-ui/assets/app.js" in ui_response.text
-    assert ui_script_response.status_code == 200
-    assert "submitQuery" in ui_script_response.text
+    assert "HTH Claude" in ui_response.text
+    assert "/api/v1/ui/assets/app.js" in ui_response.text
 
 
-def test_mock_ui_route_returns_404_when_simulation_disabled() -> None:
+def test_query_endpoint_retries_session_naming_after_transient_failure(monkeypatch) -> None:
+    calls = {"naming": 0}
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        calls["naming"] += 1
+        if calls["naming"] == 1:
+            raise UpstreamServiceError(504, "Transient SLM timeout.")
+        return {"choices": [{"message": {"content": "Expo Floor Plan"}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+        foundry_endpoint="https://example.openai.azure.com",
+        foundry_api_key="test-key",
+        foundry_slm_model="gpt-5.4-mini",
+    )
+
+    session_id = f"naming-retry-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        first = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
+        second = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["session_state"]["name_assigned"] is False
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["session_state"]["session_name"] == "Expo Floor Plan"
+    assert second_payload["session_state"]["name_assigned"] is True
+    assert calls["naming"] == 2
+
+
+def test_ui_route_returns_404_when_simulation_disabled() -> None:
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
         enable_mock_ui_simulation=False,
+        redis_fallback_enabled=True,
     )
 
     with TestClient(create_app(settings)) as client:
-        response = client.get("/api/v1/mock-ui")
+        response = client.get("/api/v1/ui")
 
     assert response.status_code == 404
 

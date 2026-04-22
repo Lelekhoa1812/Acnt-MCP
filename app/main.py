@@ -50,9 +50,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mock_ui_assets_path = resolved_settings.resolve_path(resolved_settings.mock_ui_path).parent / "assets"
         if mock_ui_assets_path.exists():
             app.mount(
+                f"{resolved_settings.api_prefix}/ui/assets",
+                StaticFiles(directory=mock_ui_assets_path),
+                name="ui-assets",
+            )
+            # Root Cause vs Logic: callers are migrating from `/mock-ui` to
+            # `/ui`; we mount both asset paths so old links do not white-screen.
+            app.mount(
                 f"{resolved_settings.api_prefix}/mock-ui/assets",
                 StaticFiles(directory=mock_ui_assets_path),
-                name="mock-ui-assets",
+                name="mock-ui-assets-legacy",
             )
 
     @app.exception_handler(ParameterMappingError)

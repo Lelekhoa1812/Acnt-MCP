@@ -194,11 +194,13 @@ class ClarificationPayload(BaseModel):
 
 class SessionState(BaseModel):
     session_id: str
+    session_name: str | None = None
     recent_product_names: list[str] = Field(default_factory=list)
     recent_resolved_identifiers: list[str] = Field(default_factory=list)
     last_candidate_list: list[CandidateOption] = Field(default_factory=list)
     last_filters: dict[str, Any] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
+    name_assigned: bool = False
 
 
 class ThoughtBlock(BaseModel):

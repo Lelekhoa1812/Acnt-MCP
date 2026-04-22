@@ -41,6 +41,21 @@ class AppKeyValueStore:
         self._redis: Redis | None = None
         self._using_memory_fallback = False
 
+    @property
+    def redis_client_connected(self) -> bool:
+        """True when a Redis client was successfully established (ping OK)."""
+        return self._redis is not None
+
+    @property
+    def using_memory_fallback(self) -> bool:
+        """True when reads/writes use in-process TTL storage instead of Redis."""
+        return self._using_memory_fallback
+
+    @property
+    def persistence_backend(self) -> str:
+        """Human-readable backend label for logs and health checks."""
+        return "memory" if self._using_memory_fallback else "redis"
+
     async def connect(self) -> None:
         try:
             redis_client = Redis.from_url(self.settings.redis_url, encoding="utf-8", decode_responses=True)
@@ -83,6 +98,10 @@ class AppKeyValueStore:
                 await self._redis.delete(namespaced_key)
                 return "redis_delete"
             except RedisError as exc:
+                # Root Cause vs Logic: when fallback is disabled, avoid silent loss of
+                # persistent session state; surface the error instead of memory switch.
+                if not self.settings.redis_fallback_enabled:
+                    raise
                 self._using_memory_fallback = True
                 self.logger.warning("Redis delete failed; switching to memory fallback. reason=%s", exc)
         await self._memory.delete(namespaced_key)
@@ -107,6 +126,8 @@ class AppKeyValueStore:
             try:
                 return await self._redis.get(key)
             except RedisError as exc:
+                if not self.settings.redis_fallback_enabled:
+                    raise
                 self._using_memory_fallback = True
                 self.logger.warning("Redis get failed; switching to memory fallback. reason=%s", exc)
         return await self._memory.get(key)
@@ -117,6 +138,8 @@ class AppKeyValueStore:
                 await self._redis.set(key, value, ex=ttl_seconds)
                 return "redis_set"
             except RedisError as exc:
+                if not self.settings.redis_fallback_enabled:
+                    raise
                 self._using_memory_fallback = True
                 self.logger.warning("Redis set failed; switching to memory fallback. reason=%s", exc)
         await self._memory.set(key, value, ttl_seconds)

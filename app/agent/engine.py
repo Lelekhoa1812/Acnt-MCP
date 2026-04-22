@@ -82,7 +82,7 @@ class AgentEngine:
 
         draft_answer = ""
         for step in range(self.settings.agent_max_steps):
-            response = await self._complete(messages=messages, tools=self.tool_registry.tool_payloads())
+            response = await self._complete(messages=messages, enable_tools=True)
             assistant = response["choices"][0]["message"]
             content = assistant.get("content")
             if content:
@@ -160,6 +160,37 @@ class AgentEngine:
             draft_answer = "I reached the tool-step limit before I could finish safely."
             limitations.append("The agent hit the configured max-step limit.")
 
+        # Root Cause vs Logic: the model sometimes returns its last turn with
+        # no tool_calls but also empty `content`, which left `draft_answer` blank
+        # and forced a generic fallback. A single no-tools completion asks the
+        # model to synthesize from the thread (still LLM-orchestrated, no keyword routing).
+        if not (draft_answer or "").strip() and (traces or resolved_items) and self._client:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "The run ended without a final user-facing answer in the last assistant message, "
+                        "but tool results are present above. Write the complete answer now: ground every "
+                        "factual claim in the tool JSON, use Markdown tables when listing many products "
+                        "or variants, and clearly state any coverage limits (e.g. pagination or partial "
+                        "catalogue). Do not call tools."
+                    ),
+                }
+            )
+            try:
+                response = await self._complete(messages=messages, enable_tools=False)
+                assistant = response["choices"][0]["message"]
+                synth = (assistant.get("content") or "").strip()
+                synth_tool_calls = assistant.get("tool_calls") or []
+                if synth and not synth_tool_calls:
+                    draft_answer = synth
+                    if request.includeThoughts:
+                        thoughts.append(synth)
+                elif synth_tool_calls:
+                    limitations.append("The model attempted further tool calls during the final synthesis pass; those were not executed.")
+            except UpstreamServiceError as exc:
+                self.logger.warning("Agent synthesis pass failed: %s", exc)
+
         envelope = await self._format(
             request=request.message,
             draft=draft_answer or "I need one more step or clarification before I can answer safely.",
@@ -176,20 +207,38 @@ class AgentEngine:
             resolved_items=resolved_items,
         )
 
-    async def _complete(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        enable_tools: bool = True,
+    ) -> dict[str, Any]:
         if self._client is None:
             raise UpstreamServiceError(503, "Azure AI Foundry is not configured for `/api/v1/query`.")
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.settings.foundry_model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
             "max_completion_tokens": 1400,
         }
-        response = await self._client.post("/chat/completions", json=payload)
-        if response.status_code >= 400:
-            raise UpstreamServiceError(response.status_code, response.text)
-        return response.json()
+        if enable_tools:
+            payload["tools"] = self.tool_registry.tool_payloads()
+            payload["tool_choice"] = "auto"
+        return await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
+
+    async def complete_with_model(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_completion_tokens: int = 40,
+    ) -> dict[str, Any]:
+        if self._client is None:
+            raise UpstreamServiceError(503, "Azure AI Foundry is not configured for `/api/v1/name-session`.")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": max_completion_tokens,
+        }
+        return await self._post_chat_completion(payload, endpoint_name="/api/v1/name-session")
 
     async def _format(
         self,
@@ -217,10 +266,8 @@ class AgentEngine:
             "response_format": {"type": "json_object"},
             "max_completion_tokens": 600,
         }
-        response = await self._client.post("/chat/completions", json=payload)
-        if response.status_code >= 400:
-            raise UpstreamServiceError(response.status_code, response.text)
-        content = response.json()["choices"][0]["message"]["content"]
+        response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
+        content = response_payload["choices"][0]["message"]["content"]
         try:
             raw = json.loads(content)
             if clarification and raw.get("clarification") is None:
@@ -234,6 +281,35 @@ class AgentEngine:
                 limitations=self._dedupe(limitations),
                 clarification=clarification,
             )
+
+    async def _post_chat_completion(self, payload: dict[str, Any], endpoint_name: str) -> dict[str, Any]:
+        if self._client is None:
+            raise UpstreamServiceError(503, "Azure AI Foundry is not configured.")
+        # Root Cause vs Logic: Foundry read/network timeouts were escaping as raw
+        # httpx exceptions and FastAPI returned 500. We normalize transport faults
+        # into UpstreamServiceError so the API responds with stable 5xx semantics.
+        try:
+            response = await self._client.post("/chat/completions", json=payload)
+        except httpx.ReadTimeout as exc:
+            raise UpstreamServiceError(
+                504,
+                f"Azure AI Foundry timed out while handling `{endpoint_name}`.",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise UpstreamServiceError(
+                502,
+                f"Azure AI Foundry request failed while handling `{endpoint_name}`: {exc}",
+            ) from exc
+
+        if response.status_code >= 400:
+            raise UpstreamServiceError(response.status_code, response.text)
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise UpstreamServiceError(
+                502,
+                f"Azure AI Foundry returned non-JSON while handling `{endpoint_name}`.",
+            ) from exc
 
     def _capture(
         self,

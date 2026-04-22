@@ -11,12 +11,16 @@ router = APIRouter()
 
 
 @router.get("/health")
-async def health(container = Depends(get_container)) -> dict[str, str]:
+async def health(container = Depends(get_container)) -> dict[str, str | bool]:
+    kvs = container.key_value_store
     return {
         "status": "ok",
         "service": container.settings.server_name,
         "version": container.settings.server_version,
         "data_source": container.settings.data_source_label,
+        "session_cache_backend": kvs.persistence_backend,
+        "redis_client_connected": kvs.redis_client_connected,
+        "redis_fallback_enabled": container.settings.redis_fallback_enabled,
     }
 
 
@@ -58,13 +62,22 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
     }
 
 
-@router.get("/mock-ui", response_class=HTMLResponse)
-async def mock_ui(container = Depends(get_container)) -> HTMLResponse:
+def _build_ui_response(container) -> HTMLResponse:
     if not container.settings.enable_mock_ui_simulation:
-        return HTMLResponse("<p>Mock UI simulation is disabled.</p>", status_code=404)
+        return HTMLResponse("<p>UI simulation is disabled.</p>", status_code=404)
 
     path = container.settings.resolve_path(container.settings.mock_ui_path)
     if not path.exists():
-        return HTMLResponse("<p>Mock UI template is missing.</p>", status_code=404)
+        return HTMLResponse("<p>UI template is missing.</p>", status_code=404)
 
     return HTMLResponse(render_mock(path=path, settings=container.settings))
+
+
+@router.get("/ui", response_class=HTMLResponse)
+async def ui(container = Depends(get_container)) -> HTMLResponse:
+    return _build_ui_response(container)
+
+
+@router.get("/mock-ui", response_class=HTMLResponse)
+async def mock_ui_legacy(container = Depends(get_container)) -> HTMLResponse:
+    return _build_ui_response(container)

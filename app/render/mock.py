@@ -20,13 +20,16 @@ def render_mock(path: Path, settings: Settings) -> str:
             "queryEndpoint": f"{settings.api_prefix}/query",
             "systemSpecEndpoint": f"{settings.api_prefix}/system/spec",
             "toolsEndpoint": f"{settings.api_prefix}/tools",
-            "mockUiEndpoint": f"{settings.api_prefix}/mock-ui",
-            "assetBaseUrl": f"{settings.api_prefix}/mock-ui/assets",
+            "uiEndpoint": f"{settings.api_prefix}/ui",
+            # Root Cause vs Logic: callers now navigate via `/ui`; we keep
+            # `mockUiEndpoint` in config for client backward compatibility.
+            "mockUiEndpoint": f"{settings.api_prefix}/ui",
+            "assetBaseUrl": f"{settings.api_prefix}/ui/assets",
         }
     )
     replacements = {
-        "__HTH_MOCK_UI_STYLE_HREF__": f"{settings.api_prefix}/mock-ui/assets/styles.css",
-        "__HTH_MOCK_UI_SCRIPT_SRC__": f"{settings.api_prefix}/mock-ui/assets/app.js",
+        "__HTH_MOCK_UI_STYLE_HREF__": f"{settings.api_prefix}/ui/assets/styles.css",
+        "__HTH_MOCK_UI_SCRIPT_SRC__": f"{settings.api_prefix}/ui/assets/app.js",
         "__HTH_MOCK_UI_CONFIG__": config,
     }
     for marker, replacement in replacements.items():

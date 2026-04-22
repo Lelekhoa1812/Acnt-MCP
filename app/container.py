@@ -45,6 +45,13 @@ async def build_container(settings: Settings) -> AppContainer:
     logger = logging.getLogger("hth")
     key_value_store = AppKeyValueStore(settings=settings, logger=logger)
     await key_value_store.connect()
+    # Motivation vs Logic: explicit log line so operators can confirm persistent
+    # Redis before any session traffic (matches default no-fallback policy).
+    logger.info(
+        "key_value_store backend=%s redis_client_connected=%s",
+        key_value_store.persistence_backend,
+        key_value_store.redis_client_connected,
+    )
 
     inventory_source = HarmoniseInventorySource(settings=settings, logger=logger)
 

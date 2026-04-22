@@ -14,7 +14,7 @@ The MCP server reuses the existing tool registry and service container. It does 
 The standards-based MCP runtime is launched with:
 
 ```bash
-python3 -m app.mcp_server
+python3 -m app.mcp.server
 ```
 
 It exposes only MCP `tools` in this refactor:
@@ -38,9 +38,26 @@ The FastAPI app remains available for local testing and demo workflows:
 - `GET /api/v1/tools`
 - `POST /api/v1/tools/call`
 - `POST /api/v1/query`
-- `GET /api/v1/mock-ui`
+- `GET /api/v1/ui`
 
 These routes are custom REST endpoints, not MCP.
+
+## Session and cache persistence
+
+Session state and shared tool caches flow through `SessionStore` → `AppKeyValueStore` → **Redis** (see `app/session/store.py` and `app/store.py`). By default `HTH_REDIS_FALLBACK_ENABLED=false`, so the process **requires** a reachable Redis at `HTH_REDIS_URL`; there is no silent in-memory substitute across restarts.
+
+- **TTL:** `HTH_SESSION_TTL_SECONDS` (default 1800) controls how long each session key is kept in Redis. Increase it if you need longer conversational memory per `sessionId`.
+- **Health:** `GET /api/v1/health` returns `session_cache_backend` (`redis` or `memory` if fallback is on), `redis_client_connected`, and `redis_fallback_enabled`.
+- **Verify Redis:** `redis-cli -u "$HTH_REDIS_URL" ping` should respond with `PONG`. On startup, logs include `key_value_store backend=redis ...` when the persistent path is active.
+
+```mermaid
+flowchart LR
+  AgentQuery["AgentQueryRequest"] --> SessionStore
+  SessionStore["SessionStore"] --> KVS["AppKeyValueStore"]
+  KVS --> Redis["Redis"]
+```
+
+For local development **without** Redis, set `HTH_REDIS_FALLBACK_ENABLED=true` in `.env` (in-memory only; not durable across process restarts).
 
 ## Setup
 
@@ -59,7 +76,7 @@ Use `.env.example` as the starting point.
 Inventory-only local development works with:
 
 - `LOCAL_HARMONISE=true`
-- `HTH_REDIS_FALLBACK_ENABLED=true`
+- A running Redis at `HTH_REDIS_URL` (default `redis://localhost:6379`), **or** `HTH_REDIS_FALLBACK_ENABLED=true` if you accept non-persistent in-memory cache only
 
 `/api/v1/query` additionally requires:
 
@@ -81,7 +98,7 @@ uvicorn app.main:app --reload --port 3000
 ### 4. Run the MCP server
 
 ```bash
-python3 -m app.mcp_server
+python3 -m app.mcp.server
 ```
 
 ### 5. Optional: run the Harmonise simulator directly
@@ -101,10 +118,10 @@ The repo includes a working example at `.mcp.json`:
   "mcpServers": {
     "hth-stock-intelligence": {
       "command": "python3",
-      "args": ["-m", "app.mcp_server"],
+      "args": ["-m", "app.mcp.server"],
       "env": {
         "LOCAL_HARMONISE": "true",
-        "HTH_REDIS_FALLBACK_ENABLED": "true",
+        "HTH_REDIS_FALLBACK_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
       }
     }
@@ -112,7 +129,7 @@ The repo includes a working example at `.mcp.json`:
 }
 ```
 
-This assumes the coding app launches the server from the repo root so `.env` is available automatically.
+This assumes the coding app launches the server from the repo root so `.env` is available automatically, and that Redis is running unless you override `HTH_REDIS_FALLBACK_ENABLED` to `true` for in-memory-only mode.
 
 ### Claude Desktop example
 
@@ -123,11 +140,11 @@ Use the same command in the Claude Desktop MCP config and replace the path with 
   "mcpServers": {
     "hth-stock-intelligence": {
       "command": "python3",
-      "args": ["-m", "app.mcp_server"],
+      "args": ["-m", "app.mcp.server"],
       "cwd": "/absolute/path/to/hth-mcp",
       "env": {
         "LOCAL_HARMONISE": "true",
-        "HTH_REDIS_FALLBACK_ENABLED": "true",
+        "HTH_REDIS_FALLBACK_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
       }
     }
@@ -175,8 +192,10 @@ curl -X POST http://localhost:3000/api/v1/query \
 When `HTH_ENABLE_MOCK_UI_SIMULATION=true`, the FastAPI app serves the local mock UI at:
 
 ```text
-GET /api/v1/mock-ui
+GET /api/v1/ui
 ```
+
+Legacy `/api/v1/mock-ui` remains available as a compatibility alias.
 
 This is a demo shell for the REST `/api/v1/query` flow. It is not part of the MCP integration surface.
 
@@ -208,7 +227,7 @@ The tests now cover:
 
 ## Important files
 
-- `app/mcp_server.py`: stdio MCP server entrypoint and lifecycle
+- `app/mcp/server.py`: stdio MCP server entrypoint and lifecycle
 - `app/mcp_adapter.py`: MCP tool schema/result adapter over the shared registry
 - `app/tool/registry.py`: validated business tool registry
 - `app/main.py`: REST-only FastAPI app

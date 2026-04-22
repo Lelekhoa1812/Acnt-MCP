@@ -38,11 +38,14 @@ class Settings(BaseSettings):
     mock_categories_path: str = Field("./mock/categories.json", alias="HTH_MOCK_CATEGORIES_PATH")
     enable_mock_ui_simulation: bool = Field(True, alias="HTH_ENABLE_MOCK_UI_SIMULATION")
     mock_ui_path: str = Field("./ui/mock/index.html", alias="HTH_MOCK_UI_PATH")
-    redis_fallback_enabled: bool = Field(True, alias="HTH_REDIS_FALLBACK_ENABLED")
+    # Motivation vs Logic: default false so session/tool caches use Redis as the
+    # durable source of truth; set HTH_REDIS_FALLBACK_ENABLED=true for dev without Redis.
+    redis_fallback_enabled: bool = Field(False, alias="HTH_REDIS_FALLBACK_ENABLED")
     agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
     foundry_endpoint: str | None = Field(None, alias="AZURE_AI_FOUNDRY_ENDPOINT")
     foundry_api_key: str | None = Field(None, alias="AZURE_AI_FOUNDRY_API_KEY")
     foundry_model: str = Field("gpt-5.4-mini", alias="AZURE_AI_FOUNDRY_MODEL")
+    foundry_slm_model: str | None = Field(None, alias="AZURE_AI_FOUNDRY_SLM")
     foundry_timeout_ms: int = Field(60000, alias="AZURE_AI_FOUNDRY_TIMEOUT_MS")
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
     open_weather_api_key: str | None = Field(None, alias="OPEN_WEATHER_API")
@@ -73,6 +76,10 @@ class Settings(BaseSettings):
         return bool(self.foundry_endpoint and self.foundry_api_key)
 
     @property
+    def has_slm_model(self) -> bool:
+        return bool(self.foundry_slm_model)
+
+    @property
     def harmonise_header_map(self) -> dict[str, str]:
         try:
             parsed: Any = json.loads(self.harmonise_headers)
@@ -101,6 +108,11 @@ class Settings(BaseSettings):
             notes.append(
                 "LOCAL_HARMONISE=true; the service runtimes will call the in-process Harmonise simulator "
                 "instead of reading mock JSON directly."
+            )
+        if not self.redis_fallback_enabled:
+            notes.append(
+                "HTH_REDIS_FALLBACK_ENABLED=false; session and shared caches require a reachable Redis at "
+                f"HTH_REDIS_URL ({self.redis_url}). Startup fails if Redis is down."
             )
         return notes
 

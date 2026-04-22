@@ -131,7 +131,7 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
     )
 
     process = subprocess.Popen(
-        [sys.executable, "-m", "app.mcp_server"],
+        [sys.executable, "-m", "app.mcp.server"],
         cwd=REPO_ROOT,
         env=env,
         stdin=subprocess.PIPE,

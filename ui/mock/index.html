@@ -3,48 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>HTH Mock Claude UI</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
+    <title>HTH Claude</title>
     <link rel="stylesheet" href="__HTH_MOCK_UI_STYLE_HREF__" />
-    <script>
-      window.tailwind = window.tailwind || {};
-      window.tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              claude: {
-                ghost: "#F7F6F3",
-                paper: "#FFFCF7",
-                ink: "#27251F",
-                muted: "#69655B",
-                line: "#E7E3DA",
-                soft: "#F1EEE7",
-                accent: "#6E5B43",
-              },
-            },
-            borderRadius: {
-              xl4: "1rem",
-            },
-            boxShadow: {
-              claude: "0 22px 64px rgba(49, 43, 33, 0.07)",
-              composer: "0 6px 22px rgba(42, 37, 28, 0.08)",
-            },
-          },
-        },
-      };
-    </script>
-    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
   </head>
-  <body class="h-screen overflow-hidden bg-claude-ghost text-claude-ink antialiased">
+  <body>
     <div id="root" class="h-full"></div>
     <script id="mock-ui-config" type="application/json">__HTH_MOCK_UI_CONFIG__</script>
-    <!-- Root Cause vs Logic: runtime Babel transpilation can fail in some browser environments and leave a blank page.
-         We now ship a precompiled ESM client script so the UI mounts directly without client-side transpile steps. -->
-    <script src="__HTH_MOCK_UI_SCRIPT_SRC__" type="module" defer></script>
+    <script src="__HTH_MOCK_UI_SCRIPT_SRC__" defer></script>
   </body>
 </html>
