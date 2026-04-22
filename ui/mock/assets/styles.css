@@ -709,6 +709,166 @@ code {
   color: #8a8274;
 }
 
+.bubble-meta-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.bubble-actions {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.version-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.version-nav {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #675f52;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.version-nav:hover:not(:disabled) {
+  color: #3f392f;
+}
+
+.version-nav:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.version-nav:focus-visible {
+  outline: 3px solid rgba(165, 146, 118, 0.34);
+  outline-offset: 0;
+}
+
+.version-count {
+  min-width: 0;
+  text-align: center;
+  color: #736a5d;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.message-action-btn {
+  border: 1px solid #ddd4c4;
+  border-radius: 8px;
+  background: #fffdf7;
+  color: #5f574a;
+  font-size: 12px;
+  font-weight: 620;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.message-action-btn:hover:not(:disabled) {
+  background: #f8f3ea;
+}
+
+.message-action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.message-action-btn:focus-visible,
+.message-edit-btn:focus-visible {
+  outline: 3px solid rgba(165, 146, 118, 0.34);
+  outline-offset: 1px;
+}
+
+.icon-only {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-only .ui-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.message-edit-shell {
+  display: grid;
+  gap: 8px;
+}
+
+.message-edit-input {
+  width: 100%;
+  border: 1px solid #d9d1c2;
+  border-radius: 10px;
+  background: #fffdf8;
+  color: #2d2922;
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 76px;
+  max-height: 220px;
+}
+
+.message-edit-input:focus {
+  outline: none;
+  border-color: #c8bdab;
+  box-shadow: 0 0 0 3px rgba(165, 146, 118, 0.2);
+}
+
+.message-edit-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.message-edit-btn {
+  border: 1px solid #ddd4c4;
+  border-radius: 8px;
+  background: #fffdf7;
+  color: #5f574a;
+  font-size: 12px;
+  font-weight: 620;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.message-edit-btn.primary {
+  border-color: #b8ad9b;
+  background: #f2ece2;
+  color: #3a3328;
+}
+
+.message-row.user.message-editing .message-unit {
+  max-width: min(96%, 960px);
+}
+
+.message-row.user.message-editing .bubble {
+  width: 100%;
+}
+
+.message-row.user.message-editing .message-edit-input {
+  min-height: 164px;
+}
+
 .bubble-content .markdown-table {
   width: 100%;
   border-collapse: collapse;
@@ -864,6 +1024,12 @@ code {
   gap: 10px;
 }
 
+.composer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .composer-hints {
   display: flex;
   flex-wrap: wrap;
@@ -907,6 +1073,18 @@ code {
   transition: transform 0.16s ease-out, box-shadow 0.16s ease-out;
 }
 
+.send-btn.icon-only {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  padding: 0;
+}
+
+.send-btn.icon-only .ui-icon {
+  width: 18px;
+  height: 18px;
+}
+
 .send-btn:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 10px 20px rgba(42, 35, 25, 0.24);
@@ -920,6 +1098,27 @@ code {
 .send-btn:disabled {
   opacity: 0.75;
   cursor: wait;
+}
+
+.stop-btn {
+  border: 1px solid #d9c2be;
+  border-radius: 11px;
+  background: #fff4f2;
+  color: #8a3f35;
+  min-width: 84px;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.stop-btn:hover {
+  background: #ffeae6;
+}
+
+.stop-btn:focus-visible {
+  outline: 3px solid rgba(165, 146, 118, 0.34);
+  outline-offset: 1px;
 }
 
 .debug-drawer {
@@ -1120,8 +1319,20 @@ code {
     align-items: stretch;
   }
 
+  .composer-actions {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .stop-btn,
   .send-btn {
     width: 100%;
+  }
+
+  .send-btn.icon-only {
+    width: 44px;
+    align-self: flex-end;
   }
 }
 

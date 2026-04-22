@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/health")
-async def health(container = Depends(get_container)) -> dict[str, str | bool]:
+async def health(container = Depends(get_container)) -> dict[str, object]:
     kvs = container.key_value_store
     return {
         "status": "ok",
@@ -21,6 +21,8 @@ async def health(container = Depends(get_container)) -> dict[str, str | bool]:
         "session_cache_backend": kvs.persistence_backend,
         "redis_client_connected": kvs.redis_client_connected,
         "redis_fallback_enabled": container.settings.redis_fallback_enabled,
+        "local_chat_memory_enabled": container.settings.local_chat_memory_enabled,
+        "local_chat_memory_turns": container.settings.local_chat_memory_turns,
     }
 
 

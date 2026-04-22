@@ -47,7 +47,9 @@ These routes are custom REST endpoints, not MCP.
 Session state and shared tool caches flow through `SessionStore` → `AppKeyValueStore` → **Redis** (see `app/session/store.py` and `app/store.py`). By default `HTH_REDIS_FALLBACK_ENABLED=false`, so the process **requires** a reachable Redis at `HTH_REDIS_URL`; there is no silent in-memory substitute across restarts.
 
 - **TTL:** `HTH_SESSION_TTL_SECONDS` (default 1800) controls how long each session key is kept in Redis. Increase it if you need longer conversational memory per `sessionId`.
-- **Health:** `GET /api/v1/health` returns `session_cache_backend` (`redis` or `memory` if fallback is on), `redis_client_connected`, and `redis_fallback_enabled`.
+- **Local chat memory (REST only):** `HTH_LOCAL_CHAT_MEMORY_ENABLED=true` stores a short recent transcript in process memory on the local device (never Redis) for `/api/v1/query` follow-up context. Window size is `HTH_LOCAL_CHAT_MEMORY_TURNS` turn pairs.
+- **MCP behavior:** Claude/Cursor MCP runs already carry their own conversation thread, so set `HTH_LOCAL_CHAT_MEMORY_ENABLED=false` in MCP config if you do not need the local REST transcript buffer.
+- **Health:** `GET /api/v1/health` returns `session_cache_backend` (`redis` or `memory` if fallback is on), `redis_client_connected`, `redis_fallback_enabled`, plus `local_chat_memory_enabled` and `local_chat_memory_turns`.
 - **Verify Redis:** `redis-cli -u "$HTH_REDIS_URL" ping` should respond with `PONG`. On startup, logs include `key_value_store backend=redis ...` when the persistent path is active.
 
 ```mermaid
@@ -58,6 +60,7 @@ flowchart LR
 ```
 
 For local development **without** Redis, set `HTH_REDIS_FALLBACK_ENABLED=true` in `.env` (in-memory only; not durable across process restarts).
+For local development **with REST query follow-ups**, keep `HTH_LOCAL_CHAT_MEMORY_ENABLED=true` so `/api/v1/query` can replay recent turns even when Claude browser memory is not in the loop.
 
 ## Setup
 
@@ -122,6 +125,7 @@ The repo includes a working example at `.mcp.json`:
       "env": {
         "LOCAL_HARMONISE": "true",
         "HTH_REDIS_FALLBACK_ENABLED": "false",
+        "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
       }
     }
@@ -145,6 +149,7 @@ Use the same command in the Claude Desktop MCP config and replace the path with 
       "env": {
         "LOCAL_HARMONISE": "true",
         "HTH_REDIS_FALLBACK_ENABLED": "false",
+        "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
       }
     }

@@ -14,13 +14,18 @@
   const PENDING_REQUEST_STALE_MS = 20 * 60 * 1000;
   const STREAM_PERSIST_INTERVAL_MS = 180;
   const STREAM_LAYOUT_SYNC_INTERVAL_MS = 900;
+  const MAX_SESSION_NAME_WORDS_FALLBACK = 4;
+  const NEW_CHAT_TITLE = "New chat";
+  const UNTITLED_CHAT_TITLE = "Untitled chat";
+  const LEGACY_READY_MESSAGE =
+    "I’m ready. Ask about stock, compare variants, or inspect the current session with grounded tool calls.";
   const GROUP_ORDER = ["Today", "Yesterday", "Last 7 Days", "Earlier"];
   const MAX_DEBUG_FRAMES = 120;
   const QUICK_PROMPTS = [
-    "Compare fl-la-la-lam-1-ble vs fl-da-dan with stock and pricing.",
-    "Show top low-stock variants from today’s catalogue search.",
-    "Summarize weather and currency risk for supplier planning this week.",
-    "Explain why a product request needs clarification and how to fix it.",
+    "Check stock for Laminate Bleached Elm.",
+    "Compare Laminate Bleached Elm and Dark Ash stock levels.",
+    "Show products that are low in stock today.",
+    "List the most available products right now.",
   ];
 
   const ICONS = {
@@ -60,6 +65,16 @@
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M22 2L11 13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         <path d="M22 2l-7 20-4-9-9-4 20-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      </svg>
+    `,
+    check: `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    `,
+    x: `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
       </svg>
     `,
     sparkle: `
@@ -113,6 +128,7 @@
     renameDraft: "",
     draftMessage: "",
     isSubmitting: false,
+    activeRequest: null,
     debugEnabled: parseStoredBoolean(DEBUG_STORAGE_KEY, false),
     sidebarCollapsed: parseStoredBoolean(SIDEBAR_STORAGE_KEY, false),
     runtimeSummary: "Loading system metadata...",
@@ -121,12 +137,15 @@
     debugFrames: [],
     runtimeSpec: null,
     recoveryNotice: "",
+    editingMessageId: null,
+    editDraft: "",
   };
 
   const uiFlags = {
     renderQueued: false,
     focusRenameInput: false,
     focusComposer: false,
+    focusEditInput: false,
     feedShouldAutoScroll: true,
   };
 
@@ -158,8 +177,11 @@
       .replace(/_(.+?)_/g, "<em>$1</em>");
   }
 
+  // Root Cause vs Logic: markdown tables using alignment markers (e.g. `---:`)
+  // were parsed as plain text because divider detection only accepted hyphens.
+  // Accept standard markdown alignment syntax so table rows render as HTML tables.
   function isTableDividerLine(line) {
-    return /^\s*\|?(\s*-+\s*\|)+\s*-*\s*$/.test(line);
+    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
   }
 
   function parseTableRow(line) {
@@ -316,6 +338,78 @@
     };
   }
 
+  function cloneMessage(message, options = {}) {
+    return createMessage(message.role === "user" ? "user" : "assistant", String(message.content || ""), {
+      id: message.id,
+      createdAt: message.createdAt,
+      streaming: options.streaming ?? false,
+    });
+  }
+
+  function cloneMessages(messages, options = {}) {
+    const keepStreaming = options.keepStreaming === true;
+    if (!Array.isArray(messages)) {
+      return [];
+    }
+    return messages
+      .map((entry) => {
+        const sanitized = sanitizeMessage(entry);
+        if (!sanitized) {
+          return null;
+        }
+        return cloneMessage(sanitized, { streaming: keepStreaming ? Boolean(sanitized.streaming) : false });
+      })
+      .filter(Boolean);
+  }
+
+  function createMessageVersion(userContent, assistantMessageId, options = {}) {
+    return {
+      id: options.id || createId("ver"),
+      userContent: String(userContent || ""),
+      assistantMessageId: typeof assistantMessageId === "string" ? assistantMessageId : null,
+      createdAt: options.createdAt || new Date().toISOString(),
+      status: options.status || "completed",
+      snapshotMessages: cloneMessages(options.snapshotMessages || []),
+    };
+  }
+
+  function sanitizeMessageVersion(raw) {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+    return createMessageVersion(String(raw.userContent || ""), typeof raw.assistantMessageId === "string" ? raw.assistantMessageId : null, {
+      id: typeof raw.id === "string" ? raw.id : undefined,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined,
+      status: typeof raw.status === "string" ? raw.status : undefined,
+      snapshotMessages: Array.isArray(raw.snapshotMessages) ? raw.snapshotMessages : [],
+    });
+  }
+
+  function sanitizeMessageVersions(raw) {
+    if (!raw || typeof raw !== "object") {
+      return {};
+    }
+    const branches = {};
+    Object.entries(raw).forEach(([messageId, branch]) => {
+      if (!messageId || !branch || typeof branch !== "object") {
+        return;
+      }
+      const versions = Array.isArray(branch.versions) ? branch.versions.map(sanitizeMessageVersion).filter(Boolean) : [];
+      if (!versions.length) {
+        return;
+      }
+      const currentVersionId =
+        typeof branch.currentVersionId === "string" && versions.some((entry) => entry.id === branch.currentVersionId)
+          ? branch.currentVersionId
+          : versions[versions.length - 1].id;
+      branches[messageId] = {
+        currentVersionId,
+        versions,
+      };
+    });
+    return branches;
+  }
+
   function createSession(title, options = {}) {
     const createdAt = options.createdAt || new Date().toISOString();
     return {
@@ -325,15 +419,9 @@
       updatedAt: options.updatedAt || createdAt,
       backendName: options.backendName || null,
       manualTitle: Boolean(options.manualTitle),
-      messages: options.messages?.length
-        ? options.messages
-        : [
-            createMessage(
-              "assistant",
-              "I’m ready. Ask about stock, compare variants, or inspect the current session with grounded tool calls.",
-              { createdAt },
-            ),
-          ],
+      autoTitle: Boolean(options.autoTitle),
+      messages: options.messages?.length ? options.messages : [],
+      messageVersions: sanitizeMessageVersions(options.messageVersions),
     };
   }
 
@@ -353,17 +441,28 @@
       return null;
     }
 
-    const baseTitle = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : "New chat";
-    const messages = Array.isArray(raw.messages) ? raw.messages.map(sanitizeMessage).filter(Boolean) : [];
+    const baseTitle = typeof raw.title === "string" && raw.title.trim() ? raw.title.trim() : NEW_CHAT_TITLE;
+    let messages = Array.isArray(raw.messages) ? raw.messages.map(sanitizeMessage).filter(Boolean) : [];
+    if (
+      messages.length === 1 &&
+      messages[0].role === "assistant" &&
+      String(messages[0].content || "").trim() === LEGACY_READY_MESSAGE
+    ) {
+      messages = [];
+    }
     const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString();
     const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
-    const manualTitle = raw.manualTitle === true;
+    let manualTitle = raw.manualTitle === true;
+    const autoTitle = raw.autoTitle === true;
     const backendName =
       typeof raw.backendName === "string"
         ? raw.backendName
         : typeof raw.session_name === "string"
         ? raw.session_name
         : null;
+    if (manualTitle && backendName && isAutoOrPlaceholderTitle(baseTitle, messages)) {
+      manualTitle = false;
+    }
     const title = backendName && !manualTitle ? backendName : baseTitle;
 
     return createSession(title, {
@@ -371,8 +470,10 @@
       createdAt,
       updatedAt,
       messages,
+      messageVersions: raw.messageVersions,
       backendName,
       manualTitle,
+      autoTitle,
     });
   }
 
@@ -388,7 +489,7 @@
             "Welcome to the desktop simulation. We can dig into live tool traces and normalize variant evidence as we go.",
             { createdAt: new Date(now - 45 * 60000).toISOString() },
           ),
-          createMessage("user", "Can you compare fl-la-la-lam-1-ble with fl-da-dan?", {
+          createMessage("user", "Can you compare Laminate Bleached Elm with Dark Ash?", {
             createdAt: new Date(now - 20 * 60000).toISOString(),
           }),
           createMessage(
@@ -470,6 +571,9 @@
         sessionId,
         assistantMessageId,
         userMessageId: typeof parsed.userMessageId === "string" ? parsed.userMessageId : null,
+        messageVersionId: typeof parsed.messageVersionId === "string" ? parsed.messageVersionId : null,
+        editingMessageId: typeof parsed.editingMessageId === "string" ? parsed.editingMessageId : null,
+        runId: typeof parsed.runId === "string" ? parsed.runId : null,
         requestPayload: {
           message: requestPayload.message,
           sessionId: requestPayload.sessionId,
@@ -517,6 +621,224 @@
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(state.sessions));
   }
 
+  function getSessionById(sessionId) {
+    return state.sessions.find((session) => session.id === sessionId) || null;
+  }
+
+  function logSessionTitleDebug(event, details = {}, level = "info") {
+    const logger =
+      level === "warn" && typeof console.warn === "function"
+        ? console.warn
+        : level === "error" && typeof console.error === "function"
+        ? console.error
+        : console.info;
+    logger(`HTH UI session-title ${event}`, {
+      timestamp: new Date().toISOString(),
+      ...details,
+    });
+  }
+
+  function deriveSessionTitleFallback(message) {
+    const tokens = String(message || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, MAX_SESSION_NAME_WORDS_FALLBACK);
+    if (!tokens.length) {
+      return NEW_CHAT_TITLE;
+    }
+    return tokens.join(" ");
+  }
+
+  function findMessageIndex(messages, messageId) {
+    return messages.findIndex((entry) => entry.id === messageId);
+  }
+
+  function findAssistantAfter(messages, userIndex) {
+    if (userIndex < 0 || userIndex + 1 >= messages.length) {
+      return null;
+    }
+    const candidate = messages[userIndex + 1];
+    return candidate && candidate.role === "assistant" ? candidate : null;
+  }
+
+  function getMessageBranch(session, messageId) {
+    if (!session || !messageId || !session.messageVersions || typeof session.messageVersions !== "object") {
+      return null;
+    }
+    const branch = session.messageVersions[messageId];
+    if (!branch || !Array.isArray(branch.versions) || !branch.versions.length) {
+      return null;
+    }
+    return branch;
+  }
+
+  function ensureBaselineMessageVersion(session, userMessageId) {
+    if (!session || !userMessageId) {
+      return null;
+    }
+    if (!session.messageVersions || typeof session.messageVersions !== "object") {
+      session.messageVersions = {};
+    }
+    const existing = getMessageBranch(session, userMessageId);
+    if (existing) {
+      return existing;
+    }
+
+    const index = findMessageIndex(session.messages, userMessageId);
+    if (index < 0) {
+      return null;
+    }
+    const message = session.messages[index];
+    if (!message || message.role !== "user") {
+      return null;
+    }
+    const assistant = findAssistantAfter(session.messages, index);
+    const version = createMessageVersion(message.content, assistant?.id || null, {
+      status: "completed",
+      snapshotMessages: session.messages,
+    });
+    const branch = {
+      currentVersionId: version.id,
+      versions: [version],
+    };
+    session.messageVersions[userMessageId] = branch;
+    return branch;
+  }
+
+  function appendMessageVersion(session, userMessageId, userContent, assistantMessageId, status, options = {}) {
+    if (!session || !userMessageId) {
+      return null;
+    }
+    if (!session.messageVersions || typeof session.messageVersions !== "object") {
+      session.messageVersions = {};
+    }
+    if (options.ensureBaseline === true) {
+      ensureBaselineMessageVersion(session, userMessageId);
+    }
+    const branch = session.messageVersions[userMessageId] || { currentVersionId: null, versions: [] };
+    if (!session.messageVersions[userMessageId]) {
+      session.messageVersions[userMessageId] = branch;
+    }
+    const version = createMessageVersion(userContent, assistantMessageId, {
+      status: status || "running",
+      snapshotMessages: [],
+    });
+    branch.versions.push(version);
+    branch.currentVersionId = version.id;
+    return version;
+  }
+
+  function updateMessageVersionSnapshot(session, userMessageId, versionId, status) {
+    const branch = getMessageBranch(session, userMessageId);
+    if (!branch) {
+      return false;
+    }
+    const version = branch.versions.find((entry) => entry.id === versionId);
+    if (!version) {
+      return false;
+    }
+    version.snapshotMessages = cloneMessages(session.messages);
+    if (status) {
+      version.status = status;
+    }
+    return true;
+  }
+
+  function getMessageVersionState(session, userMessageId) {
+    const branch = getMessageBranch(session, userMessageId);
+    if (!branch) {
+      return {
+        hasBranch: false,
+        index: 0,
+        total: 1,
+        canPrev: false,
+        canNext: false,
+      };
+    }
+    const activeIndex = Math.max(
+      0,
+      branch.versions.findIndex((entry) => entry.id === branch.currentVersionId),
+    );
+    return {
+      hasBranch: true,
+      index: activeIndex,
+      total: branch.versions.length,
+      canPrev: activeIndex > 0,
+      canNext: activeIndex < branch.versions.length - 1,
+    };
+  }
+
+  function restoreMessageVersion(session, userMessageId, nextIndex) {
+    const branch = getMessageBranch(session, userMessageId);
+    if (!branch) {
+      return false;
+    }
+    if (nextIndex < 0 || nextIndex >= branch.versions.length) {
+      return false;
+    }
+    const version = branch.versions[nextIndex];
+    if (!version.snapshotMessages.length) {
+      return false;
+    }
+    branch.currentVersionId = version.id;
+    session.messages = cloneMessages(version.snapshotMessages);
+    return true;
+  }
+
+  function finalizeMessageVersion(sessionId, userMessageId, versionId, status) {
+    if (!sessionId || !userMessageId || !versionId) {
+      return;
+    }
+    const session = getSessionById(sessionId);
+    if (!session) {
+      return;
+    }
+    if (!updateMessageVersionSnapshot(session, userMessageId, versionId, status)) {
+      return;
+    }
+    session.updatedAt = new Date().toISOString();
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
+  }
+
+  function applyFallbackSessionTitle(sessionId, message, reason) {
+    const session = getSessionById(sessionId);
+    if (!session) {
+      return false;
+    }
+    if (session.manualTitle) {
+      return false;
+    }
+    const hasBackendName = typeof session.backendName === "string" && session.backendName.trim();
+    if (hasBackendName) {
+      return false;
+    }
+    if (session.title !== NEW_CHAT_TITLE && session.title !== UNTITLED_CHAT_TITLE && !session.autoTitle) {
+      return false;
+    }
+    const fallback = deriveSessionTitle(message);
+    if (!fallback) {
+      return false;
+    }
+    session.title = fallback;
+    session.autoTitle = true;
+    session.manualTitle = false;
+    session.updatedAt = new Date().toISOString();
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
+    logSessionTitleDebug("fallback-applied", {
+      sessionId,
+      fallback,
+      reason,
+    });
+    return true;
+  }
+
+  function isAbortError(error) {
+    return Boolean(error && typeof error === "object" && "name" in error && error.name === "AbortError");
+  }
+
   function renderFatalScreen(error) {
     const detail = error instanceof Error ? error.message : String(error || "Unknown error");
     root.innerHTML = `
@@ -553,40 +875,110 @@
   }
 
   function deriveSessionTitle(message) {
-    const compact = String(message || "").replace(/\s+/g, " ").trim();
-    if (!compact) {
-      return "New chat";
+    return deriveSessionTitleFallback(message);
+  }
+
+  function getFirstUserMessage(messages) {
+    if (!Array.isArray(messages)) {
+      return "";
     }
-    return compact.length > 44 ? `${compact.slice(0, 44)}…` : compact;
+    const firstUser = messages.find((entry) => entry && entry.role === "user");
+    return firstUser ? String(firstUser.content || "") : "";
+  }
+
+  // Root Cause vs Logic: legacy sessions may mark `manualTitle=true` even when
+  // the title is an auto placeholder (e.g. short prefix from first user text).
+  // Treat those as non-manual so backend naming can replace them.
+  function isAutoOrPlaceholderTitle(title, messages) {
+    const normalized = String(title || "").trim();
+    if (!normalized) {
+      return true;
+    }
+    if (normalized === NEW_CHAT_TITLE || normalized === UNTITLED_CHAT_TITLE) {
+      return true;
+    }
+    const firstUserMessage = getFirstUserMessage(messages);
+    if (!firstUserMessage) {
+      return false;
+    }
+    const derived = deriveSessionTitle(firstUserMessage);
+    if (normalized === derived) {
+      return true;
+    }
+    const compactUser = firstUserMessage.replace(/\s+/g, " ").trim();
+    if (compactUser && normalized.length <= 6) {
+      return normalized.toLowerCase() === compactUser.slice(0, normalized.length).toLowerCase();
+    }
+    return false;
+  }
+
+  // Root Cause vs Logic: the sidebar always rendered the locally derived title,
+  // so backend-assigned `session_name` values never appeared even after the
+  // naming route finished. Prefer the backend name unless the user manually renamed.
+  function getSessionDisplayTitle(session) {
+    if (!session) {
+      return NEW_CHAT_TITLE;
+    }
+    if (!session.manualTitle) {
+      const backendName = typeof session.backendName === "string" ? session.backendName.trim() : "";
+      if (backendName) {
+        return backendName;
+      }
+    }
+    return session.title || NEW_CHAT_TITLE;
+  }
+
+  function normalizeSessionTitleCandidate(value) {
+    return typeof value === "string" ? value.trim() : "";
+  }
+
+  function pickSessionTitleCandidate(candidates) {
+    for (const candidate of candidates) {
+      const normalized = normalizeSessionTitleCandidate(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return "";
   }
 
   function getBackendSessionTitle(payload) {
-    const candidate = payload?.session_state?.session_name;
-    if (typeof candidate !== "string") {
-      return "";
-    }
-    return candidate.trim();
+    return pickSessionTitleCandidate([
+      payload?.session_state?.session_name,
+      payload?.session_state?.sessionName,
+      payload?.sessionState?.session_name,
+      payload?.sessionState?.sessionName,
+      payload?.session_name,
+      payload?.sessionName,
+    ]);
   }
 
   function applyBackendSessionTitle(sessionId, payload) {
     const backendSessionTitle = getBackendSessionTitle(payload);
     if (!backendSessionTitle) {
-      return;
+      return false;
     }
 
     const session = state.sessions.find((entry) => entry.id === sessionId);
     if (!session) {
-      return;
+      return false;
     }
 
     session.backendName = backendSessionTitle;
-    if (!session.manualTitle) {
+    if (!session.manualTitle || session.autoTitle || isAutoOrPlaceholderTitle(session.title, session.messages)) {
       session.title = backendSessionTitle;
+      session.manualTitle = false;
+      session.autoTitle = false;
     }
     session.updatedAt = new Date().toISOString();
     state.sessions = sortSessions(state.sessions);
     saveSessions();
+    logSessionTitleDebug("backend-applied", {
+      sessionId,
+      backendSessionTitle,
+    });
     queueRender();
+    return true;
   }
 
   function mutateStreamingMessage(sessionId, messageId, content, streaming) {
@@ -668,6 +1060,25 @@
       assistantMessage.streaming = true;
     }
 
+    const userMessageId = pending.userMessageId || "";
+    if (userMessageId) {
+      const branch = ensureBaselineMessageVersion(session, userMessageId);
+      if (branch && pending.messageVersionId) {
+        const existingVersion = branch.versions.find((entry) => entry.id === pending.messageVersionId);
+        if (!existingVersion) {
+          branch.versions.push(
+            createMessageVersion(pending.requestPayload.message || "", pending.assistantMessageId, {
+              id: pending.messageVersionId,
+              createdAt: pending.startedAt,
+              status: "running",
+              snapshotMessages: [],
+            }),
+          );
+        }
+        branch.currentVersionId = pending.messageVersionId;
+      }
+    }
+
     session.updatedAt = new Date().toISOString();
     state.activeSessionId = pending.sessionId;
     state.sessions = sortSessions(state.sessions);
@@ -689,7 +1100,7 @@
   }
 
   function createAndActivateSession(seedTitle) {
-    const session = createSession(seedTitle || "New chat");
+    const session = createSession(seedTitle || NEW_CHAT_TITLE);
     state.sessions = sortSessions([session, ...state.sessions]);
     state.activeSessionId = session.id;
     saveSessions();
@@ -791,6 +1202,9 @@
                 const isActive = session.id === state.activeSessionId;
                 const isRenaming = state.renameSessionId === session.id && !state.sidebarCollapsed;
                 const preview = getSessionPreview(session);
+                const displayTitle = getSessionDisplayTitle(session);
+                const escapedDisplayTitle = escapeHtml(displayTitle);
+                const collapsedInitial = displayTitle ? displayTitle.slice(0, 1).toUpperCase() : "";
                 return `
                   <article class="session-item ${isActive ? "active" : ""}">
                     ${
@@ -810,10 +1224,10 @@
                             class="session-select"
                             data-action="switch-session"
                             data-session-id="${escapeHtml(session.id)}"
-                            title="${escapeHtml(session.title)}"
-                            aria-label="Open ${escapeHtml(session.title)}"
+                            title="${escapedDisplayTitle}"
+                            aria-label="Open ${escapedDisplayTitle}"
                           >
-                            <span class="session-title">${state.sidebarCollapsed ? escapeHtml(session.title.slice(0, 1).toUpperCase()) : escapeHtml(session.title)}</span>
+                            <span class="session-title">${state.sidebarCollapsed ? escapeHtml(collapsedInitial) : escapedDisplayTitle}</span>
                             ${state.sidebarCollapsed ? "" : `<span class="session-time">${escapeHtml(formatRelativeTime(session.updatedAt))}</span>`}
                           </button>
                           ${
@@ -859,6 +1273,83 @@
     }).join("");
   }
 
+  // Motivation vs Logic: keep prompt version controls inside the message body
+  // metadata line so the counter is always visible without chip-style chrome.
+  function renderMessageVersionSwitcher(session, message) {
+    if (!session || message.role !== "user") {
+      return "";
+    }
+    const versionState = getMessageVersionState(session, message.id);
+    const disablePrev = !versionState.hasBranch || !versionState.canPrev || state.isSubmitting;
+    const disableNext = !versionState.hasBranch || !versionState.canNext || state.isSubmitting;
+    const counter = versionState.hasBranch ? `${versionState.index + 1}/${versionState.total}` : "1/1";
+    return `
+      <span class="version-switcher" data-role="version-switcher" aria-label="Prompt versions">
+        <button
+          type="button"
+          class="version-nav"
+          data-action="version-prev"
+          data-message-id="${escapeHtml(message.id)}"
+          aria-label="Previous prompt version"
+          ${disablePrev ? "disabled" : ""}
+        >
+          ${icon("chevronLeft")}
+        </button>
+        <span class="version-count">${counter}</span>
+        <button
+          type="button"
+          class="version-nav"
+          data-action="version-next"
+          data-message-id="${escapeHtml(message.id)}"
+          aria-label="Next prompt version"
+          ${disableNext ? "disabled" : ""}
+        >
+          ${icon("chevronRight")}
+        </button>
+      </span>
+    `;
+  }
+
+  function renderUserBubbleContent(message) {
+    const isEditing = state.editingMessageId === message.id;
+    if (!isEditing) {
+      return `<div class="bubble-content" data-role="bubble-content" data-message-id="${escapeHtml(message.id)}">${renderMarkdown(message.content)}</div>`;
+    }
+    return `
+      <div class="message-edit-shell">
+        <textarea
+          class="message-edit-input"
+          data-role="message-edit-input"
+          data-message-id="${escapeHtml(message.id)}"
+          rows="6"
+          aria-label="Edit message"
+        >${escapeHtml(state.editDraft)}</textarea>
+        <div class="message-edit-actions">
+          <button
+            type="button"
+            class="message-edit-btn primary icon-only"
+            data-action="update-message"
+            data-message-id="${escapeHtml(message.id)}"
+            aria-label="Update message"
+            title="Update message"
+          >
+            ${icon("check")}
+          </button>
+          <button
+            type="button"
+            class="message-edit-btn icon-only"
+            data-action="cancel-edit-message"
+            data-message-id="${escapeHtml(message.id)}"
+            aria-label="Cancel editing"
+            title="Cancel editing"
+          >
+            ${icon("x")}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   function renderMessages() {
     const session = getActiveSession();
     const messages = session?.messages || [];
@@ -868,20 +1359,51 @@
         const roleClass = message.role === "user" ? "user" : "assistant";
         const animateClass = index >= messages.length - 2 ? "message-enter" : "";
         const avatar = message.role === "user" ? icon("user") : icon("sparkle");
+        const isEditing = message.role === "user" && state.editingMessageId === message.id;
+        const versionSwitcher = message.role === "user" ? renderMessageVersionSwitcher(session, message) : "";
+        const messageAction =
+          message.role === "user"
+            ? `
+              <button
+                type="button"
+                class="message-action-btn icon-only"
+                data-action="edit-message"
+                data-message-id="${escapeHtml(message.id)}"
+                aria-label="Edit message"
+                title="Edit message"
+                ${state.isSubmitting ? "disabled" : ""}
+              >
+                ${icon("pencil")}
+              </button>
+            `
+            : "";
+
         return `
           <article
-            class="message-row ${roleClass} ${animateClass}"
+            class="message-row ${roleClass} ${animateClass} ${isEditing ? "message-editing" : ""}"
             data-message-id="${escapeHtml(message.id)}"
             style="--stagger:${Math.max(index - (messages.length - 2), 0) * 34}ms"
           >
             <div class="message-unit ${roleClass}">
               <div class="avatar ${roleClass}">${avatar}</div>
               <div class="bubble ${roleClass}">
-                <div class="bubble-content" data-role="bubble-content" data-message-id="${escapeHtml(message.id)}">${renderMarkdown(message.content)}</div>
+                ${message.role === "user" ? renderUserBubbleContent(message) : `<div class="bubble-content" data-role="bubble-content" data-message-id="${escapeHtml(message.id)}">${renderMarkdown(message.content)}</div>`}
                 <div class="bubble-meta ${roleClass}">
                   <span class="bubble-role">${message.role === "user" ? "You" : "Claude"}</span>
-                  <span class="bubble-time">${escapeHtml(formatClock(message.createdAt || new Date().toISOString()))}</span>
+                  <span class="bubble-meta-right">
+                    <span class="bubble-time">${escapeHtml(formatClock(message.createdAt || new Date().toISOString()))}</span>
+                    ${message.role === "user" && !isEditing ? versionSwitcher : ""}
+                  </span>
                 </div>
+                ${
+                  message.role === "user" && !isEditing
+                    ? `
+                      <div class="bubble-actions">
+                        ${messageAction}
+                      </div>
+                    `
+                    : ""
+                }
                 ${message.streaming ? `<span class="stream-cursor" data-role="stream-cursor"></span>` : ""}
               </div>
             </div>
@@ -899,7 +1421,7 @@
 
     return `
       <section class="prompt-chips">
-        <p class="prompt-title">Start with one of these production demos</p>
+        <p class="prompt-title">Try one of these stock prompts</p>
         <div class="prompt-grid">
           ${QUICK_PROMPTS.map(
             (prompt) => `
@@ -982,6 +1504,7 @@
     const preservedFeedState = captureFeedScrollState();
     const activeSession = getActiveSession();
     const assignedSessionName = activeSession?.backendName;
+    const activeTitle = getSessionDisplayTitle(activeSession);
 
     root.innerHTML = `
       <div class="claude-shell ${state.sidebarCollapsed ? "sidebar-collapsed" : ""}">
@@ -1036,7 +1559,7 @@
             <header class="stage-header">
               <div class="stage-title">
                 <p class="eyebrow">Unified Conversation</p>
-                <h1>${escapeHtml(activeSession?.title || "New chat")}</h1>
+                <h1>${escapeHtml(activeTitle)}</h1>
                 ${
                   assignedSessionName
                     ? `<p class="stage-session-name">Assigned: ${escapeHtml(assignedSessionName)}</p>`
@@ -1068,14 +1591,32 @@
                 >${escapeHtml(state.draftMessage)}</textarea>
                 <div class="composer-bottom">
                   <div class="composer-hints">
-                    <span class="hint-chip">${icon("keyboardReturn")}Shift+Enter for newline</span>
+                    <span class="hint-chip">${icon("keyboardReturn")}Enter for newline</span>
+                    <span class="hint-chip">${icon("send")}⌘/Ctrl+Enter send</span>
                     <span class="hint-chip">${icon("panelRight")}⌘/Ctrl+B toggle sidebar</span>
                     <span class="hint-chip">${icon("panelBottom")}⌘/Ctrl+Shift+D debug</span>
                   </div>
-                  <button type="submit" class="send-btn" data-action="send-message" ${state.isSubmitting ? "disabled" : ""}>
-                    ${icon("send")}
-                    <span>${state.isSubmitting ? "Sending…" : "Send"}</span>
-                  </button>
+                  <div class="composer-actions">
+                    ${
+                      state.isSubmitting
+                        ? `
+                          <button type="button" class="stop-btn" data-action="stop-message" aria-label="Stop generation" title="Stop generation">
+                            <span>Stop</span>
+                          </button>
+                        `
+                        : ""
+                    }
+                    <button
+                      type="submit"
+                      class="send-btn icon-only"
+                      data-action="send-message"
+                      aria-label="${state.isSubmitting ? "Sending" : "Send message"}"
+                      title="${state.isSubmitting ? "Sending" : "Send message"}"
+                      ${state.isSubmitting ? "disabled" : ""}
+                    >
+                      ${icon("send")}
+                    </button>
+                  </div>
                 </div>
               </form>
             </footer>
@@ -1123,6 +1664,18 @@
       }
     }
 
+    const editInput = root.querySelector('[data-role="message-edit-input"]');
+    if (editInput) {
+      editInput.style.height = "0px";
+      editInput.style.height = `${Math.min(220, editInput.scrollHeight)}px`;
+      if (uiFlags.focusEditInput) {
+        editInput.focus();
+        editInput.selectionStart = editInput.value.length;
+        editInput.selectionEnd = editInput.value.length;
+      }
+    }
+    uiFlags.focusEditInput = false;
+
     if (uiFlags.focusRenameInput) {
       const renameInput = root.querySelector('[data-role="rename-input"]');
       if (renameInput) {
@@ -1149,13 +1702,14 @@
       return;
     }
     const targetSessionId = state.renameSessionId;
-    const nextName = state.renameDraft.trim() || "Untitled chat";
+    const nextName = state.renameDraft.trim() || UNTITLED_CHAT_TITLE;
     state.renameSessionId = null;
     state.renameDraft = "";
     updateSession(targetSessionId, (session) => ({
       ...session,
       title: nextName,
       manualTitle: true,
+      autoTitle: false,
       updatedAt: new Date().toISOString(),
     }));
   }
@@ -1171,11 +1725,19 @@
     if (pending && pending.sessionId === sessionId) {
       clearPendingRequest();
     }
+    if (state.activeRequest && state.activeRequest.sessionId === sessionId) {
+      state.activeRequest.stopRequested = true;
+      if (state.activeRequest.fetchController) {
+        state.activeRequest.fetchController.abort();
+      }
+      state.activeRequest = null;
+      state.isSubmitting = false;
+    }
 
     state.sessions = state.sessions.filter((session) => session.id !== sessionId);
 
     if (!state.sessions.length) {
-      const fallback = createSession("New chat");
+      const fallback = createSession(NEW_CHAT_TITLE);
       state.sessions = [fallback];
       state.activeSessionId = fallback.id;
     } else if (state.activeSessionId === sessionId) {
@@ -1185,6 +1747,8 @@
     state.sessions = sortSessions(state.sessions);
     state.renameSessionId = null;
     state.renameDraft = "";
+    state.editingMessageId = null;
+    state.editDraft = "";
     saveSessions();
     queueRender();
   }
@@ -1194,6 +1758,8 @@
     state.renameSessionId = null;
     state.renameDraft = "";
     state.draftMessage = "";
+    state.editingMessageId = null;
+    state.editDraft = "";
     state.recoveryNotice = "";
     state.requestState = { tone: "idle", label: "Ready" };
     state.lastUpdated = "No request sent yet.";
@@ -1208,8 +1774,78 @@
     queueRender();
   }
 
+  function beginMessageEdit(messageId) {
+    if (state.isSubmitting) {
+      return;
+    }
+    const session = getActiveSession();
+    if (!session) {
+      return;
+    }
+    const message = session.messages.find((entry) => entry.id === messageId && entry.role === "user");
+    if (!message) {
+      return;
+    }
+    ensureBaselineMessageVersion(session, messageId);
+    saveSessions();
+    state.editingMessageId = messageId;
+    state.editDraft = String(message.content || "");
+    uiFlags.focusEditInput = true;
+    queueRender();
+  }
+
+  function cancelMessageEdit() {
+    state.editingMessageId = null;
+    state.editDraft = "";
+    queueRender();
+  }
+
+  function switchMessageVersion(messageId, direction) {
+    if (state.isSubmitting) {
+      return;
+    }
+    const session = getActiveSession();
+    if (!session) {
+      return;
+    }
+    const versionState = getMessageVersionState(session, messageId);
+    if (!versionState.hasBranch) {
+      return;
+    }
+    const targetIndex = versionState.index + direction;
+    if (!restoreMessageVersion(session, messageId, targetIndex)) {
+      return;
+    }
+    // Root Cause vs Logic: switching prompt versions must rehydrate the exact
+    // conversation snapshot for that branch, not only swap one message text.
+    state.editingMessageId = null;
+    state.editDraft = "";
+    session.updatedAt = new Date().toISOString();
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
+    queueRender();
+  }
+
+  function requestStopActiveGeneration() {
+    if (!state.activeRequest) {
+      return;
+    }
+    state.activeRequest.stopRequested = true;
+    if (state.activeRequest.fetchController) {
+      state.activeRequest.fetchController.abort();
+    }
+    state.requestState = { tone: "idle", label: "Stopped" };
+    state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
+    console.info("HTH UI stop requested", {
+      sessionId: state.activeRequest.sessionId,
+      assistantMessageId: state.activeRequest.assistantMessageId,
+    });
+    queueRender();
+  }
+
   function onActionClick(action, target) {
     const sessionId = target.dataset.sessionId;
+    const messageId = target.dataset.messageId;
     if (action === "toggle-sidebar") {
       state.sidebarCollapsed = !state.sidebarCollapsed;
       persistUiToggles();
@@ -1218,7 +1854,7 @@
     }
 
     if (action === "new-chat") {
-      createAndActivateSession("New chat");
+      createAndActivateSession(NEW_CHAT_TITLE);
       resetForNewChat();
       return;
     }
@@ -1227,6 +1863,8 @@
       state.activeSessionId = sessionId;
       state.renameSessionId = null;
       state.renameDraft = "";
+      state.editingMessageId = null;
+      state.editDraft = "";
       queueRender();
       return;
     }
@@ -1246,6 +1884,36 @@
       if (prompt) {
         applyPromptSuggestion(prompt);
       }
+      return;
+    }
+
+    if (action === "edit-message" && messageId) {
+      beginMessageEdit(messageId);
+      return;
+    }
+
+    if (action === "cancel-edit-message") {
+      cancelMessageEdit();
+      return;
+    }
+
+    if (action === "update-message") {
+      void handleSubmit({ mode: "edit" });
+      return;
+    }
+
+    if (action === "version-prev" && messageId) {
+      switchMessageVersion(messageId, -1);
+      return;
+    }
+
+    if (action === "version-next" && messageId) {
+      switchMessageVersion(messageId, 1);
+      return;
+    }
+
+    if (action === "stop-message") {
+      requestStopActiveGeneration();
       return;
     }
 
@@ -1274,6 +1942,13 @@
 
     if (role === "rename-input") {
       state.renameDraft = event.target.value;
+      return;
+    }
+
+    if (role === "message-edit-input") {
+      state.editDraft = event.target.value;
+      event.target.style.height = "0px";
+      event.target.style.height = `${Math.min(220, event.target.scrollHeight)}px`;
     }
   }
 
@@ -1288,10 +1963,23 @@
 
   function handleRootKeyDown(event) {
     const role = event.target.dataset.role;
-    if (role === "composer-input" && event.key === "Enter" && !event.shiftKey) {
+    if (role === "composer-input" && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      handleSubmit();
+      void handleSubmit();
       return;
+    }
+
+    if (role === "message-edit-input") {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        void handleSubmit({ mode: "edit" });
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelMessageEdit();
+        return;
+      }
     }
 
     if (role === "rename-input") {
@@ -1317,7 +2005,7 @@
       return;
     }
     event.preventDefault();
-    handleSubmit();
+    void handleSubmit();
   }
 
   function handleGlobalShortcuts(event) {
@@ -1346,7 +2034,7 @@
 
     if (event.key.toLowerCase() === "n" && !event.shiftKey) {
       event.preventDefault();
-      createAndActivateSession("New chat");
+      createAndActivateSession(NEW_CHAT_TITLE);
       resetForNewChat();
       return;
     }
@@ -1360,7 +2048,8 @@
     }
   }
 
-  async function streamAssistantText(sessionId, messageId, text, onProgress) {
+  async function streamAssistantText(sessionId, messageId, text, onProgress, options = {}) {
+    const shouldStop = typeof options.shouldStop === "function" ? options.shouldStop : () => false;
     if (!text) {
       if (mutateStreamingMessage(sessionId, messageId, "", false)) {
         saveSessions();
@@ -1369,19 +2058,26 @@
         queueRender();
       }
       if (onProgress) {
-        onProgress("", true);
+        onProgress("", true, { stopped: false });
       }
-      return;
+      return { content: "", stopped: false };
     }
 
     let cursor = 0;
     let lastPersist = 0;
     let lastLayoutSync = 0;
+    let stopped = false;
+    let lastChunk = "";
 
     while (cursor < text.length) {
+      if (shouldStop()) {
+        stopped = true;
+        break;
+      }
       const step = Math.min(text.length - cursor, 2 + Math.floor(Math.random() * 9));
       cursor += step;
       const chunk = text.slice(0, cursor);
+      lastChunk = chunk;
       const now = performance.now();
 
       if (!mutateStreamingMessage(sessionId, messageId, chunk, true)) {
@@ -1393,7 +2089,7 @@
       if (now - lastPersist >= STREAM_PERSIST_INTERVAL_MS) {
         saveSessions();
         if (onProgress) {
-          onProgress(chunk, false);
+          onProgress(chunk, false, { stopped: false });
         }
         lastPersist = now;
       }
@@ -1407,23 +2103,26 @@
       await new Promise((resolve) => window.setTimeout(resolve, 22));
     }
 
-    if (mutateStreamingMessage(sessionId, messageId, text, false)) {
+    const finalContent = stopped ? lastChunk : text;
+    if (mutateStreamingMessage(sessionId, messageId, finalContent, false)) {
       saveSessions();
-      patchStreamingMessage(messageId, text, false);
+      patchStreamingMessage(messageId, finalContent, false);
       state.sessions = sortSessions(state.sessions);
       queueRender();
     }
     if (onProgress) {
-      onProgress(text, true);
+      onProgress(finalContent, true, { stopped });
     }
+    return { content: finalContent, stopped };
   }
 
-  async function submitQuery(requestPayload) {
+  async function submitQuery(requestPayload, options = {}) {
     const response = await fetch(config.queryEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
+      signal: options.signal,
       body: JSON.stringify(requestPayload),
     });
 
@@ -1434,72 +2133,157 @@
     return payload;
   }
 
-  // Motivation vs Logic: production chat UX should feel instant and stable even
-  // with network latency, so we apply optimistic bubbles, stream updates, and
-  // reconcile backend naming/metadata before finalizing the visible state.
-  async function handleSubmit() {
-    if (state.isSubmitting) {
-      return;
+  function prepareSubmitContext(options = {}) {
+    const mode = options.mode === "edit" ? "edit" : "new";
+    const sessionId = state.activeSessionId || createAndActivateSession(NEW_CHAT_TITLE);
+    const session = getSessionById(sessionId);
+    if (!session) {
+      return null;
+    }
+    const nowIso = new Date().toISOString();
+
+    if (mode === "edit") {
+      const editingMessageId = state.editingMessageId;
+      const nextMessage = state.editDraft.trim();
+      if (!editingMessageId || !nextMessage) {
+        return null;
+      }
+      const userIndex = findMessageIndex(session.messages, editingMessageId);
+      if (userIndex < 0) {
+        return null;
+      }
+      const baseUserMessage = session.messages[userIndex];
+      if (!baseUserMessage || baseUserMessage.role !== "user") {
+        return null;
+      }
+
+      const truncated = cloneMessages(session.messages.slice(0, userIndex + 1));
+      const updatedUserMessage = cloneMessage(baseUserMessage);
+      updatedUserMessage.content = nextMessage;
+      truncated[truncated.length - 1] = updatedUserMessage;
+
+      const assistantMessage = createMessage("assistant", "", { createdAt: nowIso, streaming: true });
+      session.messages = [...truncated, assistantMessage];
+      session.updatedAt = nowIso;
+      const version = appendMessageVersion(
+        session,
+        updatedUserMessage.id,
+        nextMessage,
+        assistantMessage.id,
+        "running",
+        { ensureBaseline: true },
+      );
+
+      state.editingMessageId = null;
+      state.editDraft = "";
+
+      return {
+        mode,
+        nowIso,
+        sessionId,
+        message: nextMessage,
+        userMessageId: updatedUserMessage.id,
+        assistantMessageId: assistantMessage.id,
+        messageVersionId: version?.id || null,
+      };
     }
 
     const message = state.draftMessage.trim();
     if (!message) {
-      const input = root.querySelector('[data-role="composer-input"]');
-      if (input) {
-        input.focus();
+      return null;
+    }
+    const userMessage = createMessage("user", message, { createdAt: nowIso });
+    const assistantMessage = createMessage("assistant", "", { createdAt: nowIso, streaming: true });
+    session.messages = [...session.messages, userMessage, assistantMessage];
+    session.updatedAt = nowIso;
+    const version = appendMessageVersion(session, userMessage.id, message, assistantMessage.id, "running");
+    state.draftMessage = "";
+
+    return {
+      mode,
+      nowIso,
+      sessionId,
+      message,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      messageVersionId: version?.id || null,
+    };
+  }
+
+  // Motivation vs Logic: message edits now branch conversation history into
+  // versioned snapshots so users can revise any prior prompt, regenerate, and
+  // instantly restore the exact state tied to each prompt/response version.
+  async function handleSubmit(options = {}) {
+    if (state.isSubmitting) {
+      return;
+    }
+
+    const context = prepareSubmitContext(options);
+    if (!context) {
+      if (options.mode === "edit") {
+        const input = root.querySelector('[data-role="message-edit-input"]');
+        if (input) {
+          input.focus();
+        }
+      } else {
+        const input = root.querySelector('[data-role="composer-input"]');
+        if (input) {
+          input.focus();
+        }
       }
       return;
     }
 
-    const currentSessionId = state.activeSessionId || createAndActivateSession("New chat");
-    const nowIso = new Date().toISOString();
-    const userMessage = createMessage("user", message, { createdAt: nowIso });
-    const assistantMessage = createMessage("assistant", "", { createdAt: nowIso, streaming: true });
-
-    updateSession(currentSessionId, (session) => ({
-      ...session,
-      title:
-        session.title === "New chat" || session.title === "Untitled chat"
-          ? deriveSessionTitle(message)
-          : session.title,
-      updatedAt: nowIso,
-      messages: [...session.messages, userMessage, assistantMessage],
-    }));
+    state.sessions = sortSessions(state.sessions);
+    saveSessions();
 
     const requestPayload = {
-      message,
-      sessionId: currentSessionId,
+      message: context.message,
+      sessionId: context.sessionId,
       includeThoughts: true,
       renderMockUi: true,
     };
+    const runId = createId("run");
+    const fetchController = new AbortController();
+    state.activeRequest = {
+      runId,
+      sessionId: context.sessionId,
+      userMessageId: context.userMessageId,
+      assistantMessageId: context.assistantMessageId,
+      messageVersionId: context.messageVersionId,
+      stopRequested: false,
+      fetchController,
+    };
 
     savePendingRequest({
-      sessionId: currentSessionId,
-      assistantMessageId: assistantMessage.id,
-      userMessageId: userMessage.id,
+      runId,
+      sessionId: context.sessionId,
+      assistantMessageId: context.assistantMessageId,
+      userMessageId: context.userMessageId,
+      messageVersionId: context.messageVersionId,
+      editingMessageId: context.mode === "edit" ? context.userMessageId : null,
       requestPayload,
-      startedAt: nowIso,
-      updatedAt: nowIso,
+      startedAt: context.nowIso,
+      updatedAt: context.nowIso,
       lastKnownAnswer: "",
     });
 
-    state.draftMessage = "";
     state.isSubmitting = true;
     state.recoveryNotice = "";
     state.requestState = { tone: "running", label: "Running" };
-    state.lastUpdated = `Sent at ${formatClock(nowIso)}`;
+    state.lastUpdated = `Sent at ${formatClock(context.nowIso)}`;
     uiFlags.feedShouldAutoScroll = true;
     queueRender();
 
     const startedAt = performance.now();
     pushDebugFrame({
-      timestamp: nowIso,
+      timestamp: context.nowIso,
       event: "Raw API Request",
       rawApiRequest: requestPayload,
       tokenUsage: {
-        prompt: estimateTokens(message),
+        prompt: estimateTokens(context.message),
         completion: 0,
-        total: estimateTokens(message),
+        total: estimateTokens(context.message),
         source: "estimated",
       },
       latencyMs: null,
@@ -1510,12 +2294,24 @@
     });
 
     try {
-      const payload = await submitQuery(requestPayload);
+      const payload = await submitQuery(requestPayload, { signal: fetchController.signal });
       const answer = payload.answer?.trim() || "No answer returned.";
       const latencyMs = Math.round(performance.now() - startedAt);
       const tokenUsage = extractTokenUsage(payload, requestPayload, answer);
-      const modelMetadata = buildModelMetadata(payload, currentSessionId);
-      applyBackendSessionTitle(currentSessionId, payload);
+      const modelMetadata = buildModelMetadata(payload, context.sessionId);
+      const hasBackendTitle = applyBackendSessionTitle(context.sessionId, payload);
+      if (!hasBackendTitle) {
+        // Root Cause vs Logic: title fallback should only be used on real errors.
+        // Successful responses must rely on backend/LLM naming and log when absent.
+        logSessionTitleDebug(
+          "backend-missing-on-success",
+          {
+            sessionId: context.sessionId,
+            responseKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
+          },
+          "warn",
+        );
+      }
 
       pushDebugFrame({
         timestamp: new Date().toISOString(),
@@ -1526,50 +2322,97 @@
         modelMetadata,
       });
 
-      await streamAssistantText(currentSessionId, assistantMessage.id, answer, (chunk, done) => {
-        updatePendingRequest({
-          lastKnownAnswer: chunk,
-          completed: done === true,
-        });
-      });
+      const streamResult = await streamAssistantText(
+        context.sessionId,
+        context.assistantMessageId,
+        answer,
+        (chunk, done, meta) => {
+          updatePendingRequest({
+            lastKnownAnswer: chunk,
+            completed: done === true,
+            stopped: meta?.stopped === true,
+          });
+        },
+        {
+          shouldStop: () => Boolean(state.activeRequest && state.activeRequest.runId === runId && state.activeRequest.stopRequested),
+        },
+      );
       clearPendingRequest();
-      state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
-      state.lastUpdated = `Last response at ${formatClock(new Date())}`;
+      finalizeMessageVersion(
+        context.sessionId,
+        context.userMessageId,
+        context.messageVersionId,
+        streamResult.stopped ? "stopped" : "completed",
+      );
+      if (streamResult.stopped) {
+        state.requestState = { tone: "idle", label: "Stopped" };
+        state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
+      } else {
+        state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
+        state.lastUpdated = `Last response at ${formatClock(new Date())}`;
+      }
     } catch (error) {
       const latencyMs = Math.round(performance.now() - startedAt);
-      const fallback = "The request failed. Check backend availability and try again.";
+      const stoppedByUser =
+        isAbortError(error) && Boolean(state.activeRequest && state.activeRequest.runId === runId && state.activeRequest.stopRequested);
 
-      updateSession(currentSessionId, (session) => ({
-        ...session,
-        updatedAt: new Date().toISOString(),
-        messages: session.messages.map((entry) =>
-          entry.id === assistantMessage.id ? { ...entry, content: fallback, streaming: false } : entry,
-        ),
-      }));
+      if (stoppedByUser) {
+        const session = getSessionById(context.sessionId);
+        if (session) {
+          const assistant = session.messages.find((entry) => entry.id === context.assistantMessageId);
+          if (assistant) {
+            const existing = String(assistant.content || "").trim();
+            assistant.content = existing || "Generation stopped.";
+            assistant.streaming = false;
+          }
+          session.updatedAt = new Date().toISOString();
+          state.sessions = sortSessions(state.sessions);
+          saveSessions();
+        }
+        finalizeMessageVersion(context.sessionId, context.userMessageId, context.messageVersionId, "stopped");
+        state.requestState = { tone: "idle", label: "Stopped" };
+        state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
+        clearPendingRequest();
+      } else {
+        const fallback = "The request failed. Check backend availability and try again.";
 
-      pushDebugFrame({
-        timestamp: new Date().toISOString(),
-        event: "Error",
-        rawApiRequest: requestPayload,
-        tokenUsage: {
-          prompt: estimateTokens(message),
-          completion: 0,
-          total: estimateTokens(message),
-          source: "estimated",
-        },
-        latencyMs,
-        modelMetadata: {
-          status: "error",
-          detail: error instanceof Error ? error.message : "Unknown error",
-          service: state.runtimeSpec?.server_name || config.serviceName || "HTH MCP",
-          serviceVersion: state.runtimeSpec?.server_version || config.serviceVersion || "unknown",
-        },
-      });
+        updateSession(context.sessionId, (session) => ({
+          ...session,
+          updatedAt: new Date().toISOString(),
+          messages: session.messages.map((entry) =>
+            entry.id === context.assistantMessageId ? { ...entry, content: fallback, streaming: false } : entry,
+          ),
+        }));
+        applyFallbackSessionTitle(context.sessionId, context.message, "query_error");
+        finalizeMessageVersion(context.sessionId, context.userMessageId, context.messageVersionId, "error");
 
-      state.requestState = { tone: "error", label: "Error" };
-      state.lastUpdated = `Request failed at ${formatClock(new Date())}`;
-      clearPendingRequest();
+        pushDebugFrame({
+          timestamp: new Date().toISOString(),
+          event: "Error",
+          rawApiRequest: requestPayload,
+          tokenUsage: {
+            prompt: estimateTokens(context.message),
+            completion: 0,
+            total: estimateTokens(context.message),
+            source: "estimated",
+          },
+          latencyMs,
+          modelMetadata: {
+            status: "error",
+            detail: error instanceof Error ? error.message : "Unknown error",
+            service: state.runtimeSpec?.server_name || config.serviceName || "HTH MCP",
+            serviceVersion: state.runtimeSpec?.server_version || config.serviceVersion || "unknown",
+          },
+        });
+
+        state.requestState = { tone: "error", label: "Error" };
+        state.lastUpdated = `Request failed at ${formatClock(new Date())}`;
+        clearPendingRequest();
+      }
     } finally {
+      if (state.activeRequest && state.activeRequest.runId === runId) {
+        state.activeRequest = null;
+      }
       state.isSubmitting = false;
       queueRender();
     }
@@ -1577,14 +2420,26 @@
 
   async function recoverPendingRequest(pending) {
     const startedAt = performance.now();
+    const currentRunId = state.activeRequest?.runId;
+    const fetchController = state.activeRequest?.fetchController;
     try {
-      const payload = await submitQuery(pending.requestPayload);
+      const payload = await submitQuery(pending.requestPayload, { signal: fetchController?.signal });
       const answer = payload.answer?.trim() || "No answer returned.";
       const latencyMs = Math.round(performance.now() - startedAt);
       const tokenUsage = extractTokenUsage(payload, pending.requestPayload, answer);
       const modelMetadata = buildModelMetadata(payload, pending.sessionId);
 
-      applyBackendSessionTitle(pending.sessionId, payload);
+      const hasBackendTitle = applyBackendSessionTitle(pending.sessionId, payload);
+      if (!hasBackendTitle) {
+        logSessionTitleDebug(
+          "backend-missing-on-recovery-success",
+          {
+            sessionId: pending.sessionId,
+            responseKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
+          },
+          "warn",
+        );
+      }
 
       pushDebugFrame({
         timestamp: new Date().toISOString(),
@@ -1595,21 +2450,65 @@
         modelMetadata,
       });
 
-      await streamAssistantText(pending.sessionId, pending.assistantMessageId, answer, (chunk, done) => {
-        updatePendingRequest({
-          lastKnownAnswer: chunk,
-          completed: done === true,
-        });
-      });
+      const streamResult = await streamAssistantText(
+        pending.sessionId,
+        pending.assistantMessageId,
+        answer,
+        (chunk, done, meta) => {
+          updatePendingRequest({
+            lastKnownAnswer: chunk,
+            completed: done === true,
+            stopped: meta?.stopped === true,
+          });
+        },
+        {
+          shouldStop: () =>
+            Boolean(state.activeRequest && state.activeRequest.runId === currentRunId && state.activeRequest.stopRequested),
+        },
+      );
+      finalizeMessageVersion(
+        pending.sessionId,
+        pending.userMessageId,
+        pending.messageVersionId,
+        streamResult.stopped ? "stopped" : "completed",
+      );
 
-      state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
-      state.lastUpdated = `Recovered at ${formatClock(new Date())}`;
+      if (streamResult.stopped) {
+        state.requestState = { tone: "idle", label: "Stopped" };
+        state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
+      } else {
+        state.requestState = { tone: payload.status || "answered", label: payload.status || "Answered" };
+        state.lastUpdated = `Recovered at ${formatClock(new Date())}`;
+      }
     } catch (error) {
+      const stoppedByUser =
+        isAbortError(error) &&
+        Boolean(state.activeRequest && state.activeRequest.runId === currentRunId && state.activeRequest.stopRequested);
+      if (stoppedByUser) {
+        const session = getSessionById(pending.sessionId);
+        if (session) {
+          const assistant = session.messages.find((entry) => entry.id === pending.assistantMessageId);
+          if (assistant) {
+            const existing = String(assistant.content || "").trim();
+            assistant.content = existing || "Generation stopped.";
+            assistant.streaming = false;
+          }
+          session.updatedAt = new Date().toISOString();
+          state.sessions = sortSessions(state.sessions);
+          saveSessions();
+        }
+        finalizeMessageVersion(pending.sessionId, pending.userMessageId, pending.messageVersionId, "stopped");
+        state.requestState = { tone: "idle", label: "Stopped" };
+        state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
+        return;
+      }
       const fallback = "The previous response was interrupted after refresh. Retry to continue.";
       mutateStreamingMessage(pending.sessionId, pending.assistantMessageId, fallback, false);
       patchStreamingMessage(pending.assistantMessageId, fallback, false);
       saveSessions();
       state.sessions = sortSessions(state.sessions);
+      applyFallbackSessionTitle(pending.sessionId, pending.requestPayload.message, "recovery_error");
+      finalizeMessageVersion(pending.sessionId, pending.userMessageId, pending.messageVersionId, "error");
       pushDebugFrame({
         timestamp: new Date().toISOString(),
         event: "Recovery Error",
@@ -1632,6 +2531,9 @@
       state.lastUpdated = `Recovery failed at ${formatClock(new Date())}`;
     } finally {
       clearPendingRequest();
+      if (state.activeRequest && state.activeRequest.runId === currentRunId) {
+        state.activeRequest = null;
+      }
       state.isSubmitting = false;
       queueRender();
     }
@@ -1660,6 +2562,17 @@
     }
 
     state.isSubmitting = true;
+    state.editingMessageId = null;
+    state.editDraft = "";
+    state.activeRequest = {
+      runId: pending.runId || createId("run"),
+      sessionId: pending.sessionId,
+      userMessageId: pending.userMessageId,
+      assistantMessageId: pending.assistantMessageId,
+      messageVersionId: pending.messageVersionId,
+      stopRequested: false,
+      fetchController: new AbortController(),
+    };
     state.requestState = { tone: "running", label: "Recovering" };
     state.lastUpdated = "Recovering interrupted response…";
     state.recoveryNotice = "Recovered an in-progress response after refresh.";

@@ -16,6 +16,7 @@ from app.mcp.server import build_mcp_server
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_REDIS_URL = "redis://127.0.0.1:65535"
 
 
 def build_mcp_settings() -> Settings:
@@ -27,6 +28,7 @@ def build_mcp_settings() -> Settings:
         mock_departments_path="./mock/departments.json",
         mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
     )
 
@@ -144,6 +146,7 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
         {
             "LOCAL_HARMONISE": "true",
             "HTH_REDIS_FALLBACK_ENABLED": "true",
+            "HTH_REDIS_URL": TEST_REDIS_URL,
             "HTH_ENABLE_MOCK_UI_SIMULATION": "false",
             "HTH_LOG_LEVEL": "WARNING",
             "PYTHONPATH": str(REPO_ROOT),

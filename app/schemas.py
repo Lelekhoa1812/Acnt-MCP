@@ -221,6 +221,11 @@ class ClarificationPayload(BaseModel):
     options: list[CandidateOption]
 
 
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class SessionState(BaseModel):
     session_id: str
     session_name: str | None = None
@@ -230,6 +235,7 @@ class SessionState(BaseModel):
     last_filters: dict[str, Any] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
     name_assigned: bool = False
+    conversation_history: list[ConversationTurn] = Field(default_factory=list, exclude=True)
 
 
 class ThoughtBlock(BaseModel):

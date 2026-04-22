@@ -85,8 +85,12 @@ class AgentEngine:
                     tools=self.tool_registry.list_tools(),
                 ),
             },
-            {"role": "user", "content": request.message},
         ]
+        # Motivation vs Logic: local REST development does not inherit Claude
+        # browser memory, so we replay the in-process session transcript before
+        # the new prompt to preserve follow-up context across `/query` calls.
+        messages.extend(self._conversation_history_messages(session_state))
+        messages.append({"role": "user", "content": request.message})
 
         draft_answer = ""
         for step in range(self.settings.agent_max_steps):
@@ -254,6 +258,15 @@ class AgentEngine:
             payload["tools"] = self.tool_registry.tool_payloads()
             payload["tool_choice"] = "auto"
         return await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
+
+    def _conversation_history_messages(self, session_state: SessionState) -> list[dict[str, str]]:
+        history_messages: list[dict[str, str]] = []
+        for turn in session_state.conversation_history:
+            content = turn.content.strip()
+            if not content:
+                continue
+            history_messages.append({"role": turn.role, "content": content})
+        return history_messages
 
     async def complete_with_model(
         self,

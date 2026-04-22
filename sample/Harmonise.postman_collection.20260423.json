@@ -1,0 +1,134 @@
+{
+  "info": {
+    "_postman_id": "edd31a5f-0abc-4301-bb3d-27cff7af4587",
+    "name": "Harmonise",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "48276967",
+    "_collection_link": "https://go.postman.co/collection/48276967-edd31a5f-0abc-4301-bb3d-27cff7af4587?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "Products",
+      "item": [
+        {
+          "name": "Product Catalogue",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-product-api-key",
+                "value": "{{product-api-key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{product-api-endpoint}}/api/v1/products?search=&departmentId=3&categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e",
+              "host": [
+                "{{product-api-endpoint}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": ""
+                },
+                {
+                  "key": "departmentId",
+                  "value": "3",
+                  "description": "Chair department"
+                },
+                {
+                  "key": "categoryId",
+                  "value": "b7d70000-eacf-fc4c-c59a-08de7f19d85e"
+                },
+                {
+                  "key": "departmentId",
+                  "value": "2",
+                  "description": "Flooring department - no items",
+                  "type": "text",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Product by SkuCode",
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-product-api-key",
+                "value": "{{product-api-key}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{product-api-endpoint}}/api/v1/products/fn-se-st-alt-bla",
+              "host": [
+                "{{product-api-endpoint}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "fn-se-st-alt-bla"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "packages": {},
+        "requests": {},
+        "exec": [
+          ""
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "product-api-key",
+      "value": ""
+    },
+    {
+      "key": "product-api-endpoint",
+      "value": "",
+      "disabled": true
+    },
+    {
+      "key": "product-api-endpoint",
+      "value": ""
+    }
+  ]
+}

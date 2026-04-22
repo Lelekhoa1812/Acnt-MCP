@@ -11,6 +11,8 @@ from app.errors import UpstreamServiceError
 from app.main import create_app
 from app.schemas import ToolTrace
 
+TEST_REDIS_URL = "redis://127.0.0.1:65535"
+
 
 def build_client() -> TestClient:
     settings = Settings(
@@ -21,6 +23,7 @@ def build_client() -> TestClient:
         mock_departments_path="./mock/departments.json",
         mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
         mock_ui_path="./ui/mock/index.html",
     )
@@ -38,6 +41,8 @@ def test_health_endpoint_reports_local_harmonise_mode() -> None:
     assert payload["session_cache_backend"] in ("redis", "memory")
     assert isinstance(payload["redis_client_connected"], bool)
     assert payload["redis_fallback_enabled"] is True
+    assert payload["local_chat_memory_enabled"] is True
+    assert payload["local_chat_memory_turns"] == 6
 
 
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
@@ -92,7 +97,7 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
     assert row["size"] == "1 x 1 x 0.01 m"
     assert "total=2566" in row["stock"]
     assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
-    assert any(spec.startswith("salesNote=") for spec in row["knownSpecs"])
+    assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
 
 
 def test_rest_tool_endpoint_returns_structured_bad_request_for_invalid_args() -> None:
@@ -261,7 +266,86 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     assert "/api/v1/ui/assets/app.js" in ui_response.text
 
 
-def test_query_endpoint_retries_session_naming_after_transient_failure(monkeypatch) -> None:
+def test_query_endpoint_replays_local_chat_history_across_turns(monkeypatch) -> None:
+    seen_history: list[list[dict[str, str]]] = []
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        seen_history.append([turn.model_dump(mode="json") for turn in session_state.conversation_history])
+        return AgentRun(
+            status="answered",
+            answer=f"Echo: {request.message}",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+
+    session_id = f"local-chat-{uuid4()}"
+    with build_client() as client:
+        first = client.post(
+            "/api/v1/query",
+            json={"message": "First question", "sessionId": session_id},
+        )
+        second = client.post(
+            "/api/v1/query",
+            json={"message": "Follow-up question", "sessionId": session_id},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert seen_history[0] == []
+    assert seen_history[1] == [
+        {"role": "user", "content": "First question"},
+        {"role": "assistant", "content": "Echo: First question"},
+    ]
+
+
+def test_query_endpoint_can_disable_local_chat_history(monkeypatch) -> None:
+    seen_history: list[list[dict[str, str]]] = []
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        seen_history.append([turn.model_dump(mode="json") for turn in session_state.conversation_history])
+        return AgentRun(
+            status="answered",
+            answer=f"Echo: {request.message}",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        local_chat_memory_enabled=False,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+    )
+
+    session_id = f"no-local-chat-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        first = client.post(
+            "/api/v1/query",
+            json={"message": "First question", "sessionId": session_id},
+        )
+        second = client.post(
+            "/api/v1/query",
+            json={"message": "Follow-up question", "sessionId": session_id},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert seen_history[0] == []
+    assert seen_history[1] == []
+
+
+def test_query_endpoint_uses_fallback_name_when_llm_naming_fails(monkeypatch) -> None:
     calls = {"naming": 0}
 
     async def fake_run(self, request, session_state):  # noqa: ANN001
@@ -287,6 +371,7 @@ def test_query_endpoint_retries_session_naming_after_transient_failure(monkeypat
         local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
         mock_ui_path="./ui/mock/index.html",
         foundry_endpoint="https://example.openai.azure.com",
@@ -307,13 +392,14 @@ def test_query_endpoint_retries_session_naming_after_transient_failure(monkeypat
 
     assert first.status_code == 200
     first_payload = first.json()
-    assert first_payload["session_state"]["name_assigned"] is False
+    assert first_payload["session_state"]["name_assigned"] is True
+    assert first_payload["session_state"]["session_name"] == "Need a laminate quote"
 
     assert second.status_code == 200
     second_payload = second.json()
-    assert second_payload["session_state"]["session_name"] == "Expo Floor Plan"
+    assert second_payload["session_state"]["session_name"] == "Need a laminate quote"
     assert second_payload["session_state"]["name_assigned"] is True
-    assert calls["naming"] == 2
+    assert calls["naming"] == 1
 
 
 def test_ui_route_returns_404_when_simulation_disabled() -> None:
@@ -322,6 +408,7 @@ def test_ui_route_returns_404_when_simulation_disabled() -> None:
         log_level="debug",
         enable_mock_ui_simulation=False,
         redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
     )
 
     with TestClient(create_app(settings)) as client:

@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # Motivation vs Logic: default false so session/tool caches use Redis as the
     # durable source of truth; set HTH_REDIS_FALLBACK_ENABLED=true for dev without Redis.
     redis_fallback_enabled: bool = Field(False, alias="HTH_REDIS_FALLBACK_ENABLED")
+    # Motivation vs Logic: local REST `/query` runs do not get Claude-managed
+    # browser memory, so we keep a short device-local conversation buffer in
+    # process memory (never Redis) to preserve follow-up context while developing.
+    local_chat_memory_enabled: bool = Field(True, alias="HTH_LOCAL_CHAT_MEMORY_ENABLED")
+    local_chat_memory_turns: int = Field(6, ge=1, alias="HTH_LOCAL_CHAT_MEMORY_TURNS")
     agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
     # Motivation vs Logic: broad inventory answers can legitimately need large
     # Markdown tables, so the agent completion budget is configurable instead of
@@ -117,6 +122,11 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_REDIS_FALLBACK_ENABLED=false; session and shared caches require a reachable Redis at "
                 f"HTH_REDIS_URL ({self.redis_url}). Startup fails if Redis is down."
+            )
+        if self.local_chat_memory_enabled:
+            notes.append(
+                "HTH_LOCAL_CHAT_MEMORY_ENABLED=true; local `/api/v1/query` calls retain a short in-process "
+                f"conversation buffer ({self.local_chat_memory_turns} turns, device-local only, non-Redis)."
             )
         return notes
 

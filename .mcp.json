@@ -9,6 +9,7 @@
       "env": {
         "LOCAL_HARMONISE": "true",
         "HTH_REDIS_FALLBACK_ENABLED": "false",
+        "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
       }
     }

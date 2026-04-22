@@ -8,6 +8,8 @@ from app.config import Settings
 from app.container import build_container
 from app.schemas import AgentQueryRequest
 
+TEST_REDIS_URL = "redis://127.0.0.1:65535"
+
 
 def build_engine_settings() -> Settings:
     return Settings(
@@ -18,6 +20,7 @@ def build_engine_settings() -> Settings:
         mock_departments_path="./mock/departments.json",
         mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
         foundry_endpoint="https://example.openai.azure.com",
         foundry_api_key="test-key",
