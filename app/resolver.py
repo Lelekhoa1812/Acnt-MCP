@@ -1,0 +1,136 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from app.schemas import CandidateOption, ClarificationPayload, ProductListItemDto
+from app.text.utils import fuzzy_ratio, lexical_overlap, normalize_text, significant_tokens
+
+
+@dataclass
+class RankedCandidate:
+    option: CandidateOption
+    product: ProductListItemDto
+
+
+class ResolverService:
+    def __init__(self, logger: logging.Logger) -> None:
+        self.logger = logger
+
+    def rank_candidates(
+        self,
+        query: str,
+        products: list[ProductListItemDto],
+        limit: int = 5,
+    ) -> list[RankedCandidate]:
+        ranked: list[RankedCandidate] = []
+        normalized_query = normalize_text(query)
+        query_tokens = significant_tokens(query)
+
+        for product in products:
+            best_variant = None
+            best_variant_score = 0.0
+            matched_on: list[str] = []
+            product_score = 0.0
+
+            if normalized_query and normalized_query == normalize_text(product.name or ""):
+                product_score += 0.45
+                matched_on.append("exact_product_name")
+            product_score += lexical_overlap(query, product.name or "") * 0.25
+            product_score += fuzzy_ratio(query, product.name or "") * 0.15
+
+            for variant in product.variants:
+                variant_score = 0.0
+                variant_matches: list[str] = []
+                combined_text = " ".join(part for part in [product.name or "", variant.name or ""] if part)
+                if normalized_query and normalized_query == normalize_text(variant.sku or ""):
+                    variant_score += 0.95
+                    variant_matches.append("exact_sku")
+                if normalized_query and normalized_query == normalize_text(variant.name or ""):
+                    variant_score += 0.55
+                    variant_matches.append("exact_variant_name")
+                if normalized_query and normalized_query == normalize_text(combined_text):
+                    variant_score += 0.75
+                    variant_matches.append("exact_product_variant_phrase")
+                variant_score += lexical_overlap(query, variant.name or "") * 0.25
+                variant_score += fuzzy_ratio(query, variant.name or "") * 0.15
+                variant_score += fuzzy_ratio(query, variant.sku or "") * 0.05
+                variant_score += lexical_overlap(query, combined_text) * 0.35
+                variant_score += fuzzy_ratio(query, combined_text) * 0.2
+                if query_tokens and set(query_tokens).issubset(set(significant_tokens(combined_text))):
+                    variant_score += 0.25
+                    variant_matches.append("full_token_coverage")
+
+                option_names = [
+                    option.name or ""
+                    for variation in product.variations
+                    for option in variation.options
+                    if option.id in set(variant.optionIds)
+                ]
+                if option_names:
+                    option_score = max(lexical_overlap(query, option_name) for option_name in option_names)
+                    if option_score > 0:
+                        variant_score += option_score * 0.1
+                        variant_matches.append("variation_option")
+
+                if query_tokens and all(token in normalize_text(product.name or "") for token in query_tokens):
+                    variant_score += 0.1
+                if variant_score > best_variant_score:
+                    best_variant_score = variant_score
+                    best_variant = variant
+                    matched_on = variant_matches
+
+            total_score = min(0.99, product_score + best_variant_score)
+            if total_score <= 0:
+                continue
+
+            product_name = (product.name or "").strip() or "Unnamed product"
+            label = product_name
+            candidate_id = product.id
+            variant_id = None
+            sku = None
+            if best_variant is not None:
+                variant_name = (best_variant.name or "").strip()
+                if variant_name and normalize_text(variant_name) != normalize_text(product_name):
+                    label = f"{label} / {variant_name}"
+                candidate_id = best_variant.id
+                variant_id = best_variant.id
+                sku = best_variant.sku
+
+            ranked.append(
+                RankedCandidate(
+                    option=CandidateOption(
+                        candidate_id=candidate_id,
+                        label=label,
+                        confidence=round(total_score, 2),
+                        matched_on=matched_on or ["lexical_overlap"],
+                        product_id=product.id,
+                        variant_id=variant_id,
+                        sku=sku,
+                        evidence_summary=f"departmentId={product.departmentId}, categoryId={product.categoryId}",
+                    ),
+                    product=product,
+                )
+            )
+
+        ranked.sort(key=lambda candidate: candidate.option.confidence, reverse=True)
+        return ranked[:limit]
+
+    def needs_clarification(self, ranked_candidates: list[RankedCandidate]) -> bool:
+        if not ranked_candidates:
+            return False
+        if len(ranked_candidates) == 1:
+            return ranked_candidates[0].option.confidence < 0.58
+        top = ranked_candidates[0].option.confidence
+        second = ranked_candidates[1].option.confidence
+        return top < 0.72 or (top - second) < 0.08
+
+    def build_clarification(
+        self,
+        query: str,
+        ranked_candidates: list[RankedCandidate],
+        limit: int = 5,
+    ) -> ClarificationPayload:
+        options = [candidate.option for candidate in ranked_candidates[:limit]]
+        question = f"I found multiple plausible matches for '{query}'. Which one did you mean?"
+        return ClarificationPayload(question=question, options=options)

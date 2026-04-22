@@ -1,0 +1,60 @@
+{
+  "items": [
+    {
+      "id": "d2a50000-0e48-c047-a948-08dde35c3ea0",
+      "name": "Laminate Timber Floor",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f36d-08dde35c3ea4",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-a956-08dde35c3ea0",
+          "name": "Bleached Oak",
+          "sku": "fl-la-la-lam-1-ble",
+          "totalHirable": null,
+          "optionIds": [
+            "d2a50000-0e48-c047-a8b8-08dde35c3ea0"
+          ],
+          "details": {
+            "departmentId": 2,
+            "subDepartmentId": 14,
+            "isActive": true,
+            "generalRate": 70,
+            "expoRate": 70,
+            "assignedCategoryId": "d2a50000-0e48-c047-f36d-08dde35c3ea4",
+            "dimensional": true,
+            "canBeSoldInPortions": false,
+            "startDate": "2025-08-25",
+            "endDate": null,
+            "salesNote": null,
+            "length": 1,
+            "width": 1,
+            "height": 0,
+            "vicStock": 3200,
+            "vicHirable": 0,
+            "nswStock": 250,
+            "nswHirable": 0,
+            "qldStock": 0,
+            "qldHirable": 0,
+            "totalStock": 3450,
+            "lastUpdatedDate": "2025-09-09",
+            "imageFileName": null,
+            "cost": 18,
+            "components": [
+              {
+                "componentId": "d2a50000-0e48-c047-a956-08dde35c3ea0",
+                "quantity": 1
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "page": 1,
+  "pageSize": 20,
+  "totalCount": 1,
+  "totalPages": 1
+}

@@ -1,0 +1,934 @@
+{
+  "items": [
+    {
+      "id": "d2a50000-0e48-c047-e1b9-08dde35c3772",
+      "name": "10m Hex Carpet Set - Onyx",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-e1bc-08dde35c3772",
+          "name": "10m Hex Carpet Set - Onyx",
+          "sku": "fl-ca-ca-10m",
+          "totalHirable": 1879,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-f13c-08dde35c3794",
+      "name": "Adhesive carpet protection",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-f13f-08dde35c3794",
+          "name": "Adhesive carpet protection",
+          "sku": "fl-ca-ca-adh",
+          "totalHirable": 280,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-54c5-08dde35c379a",
+      "name": "Adhesive plastic carpet protection",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-d4b3-08dde35c379a",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50100-0e48-c047-54c5-08dde35c379a",
+          "name": "Adhesive plastic carpet protection",
+          "sku": "fl-ca-ac-adh",
+          "totalHirable": 310,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-71aa-08dde35c379c",
+      "name": "Aluminium Edging for Carpet - per lineal metre",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-d4b3-08dde35c379a",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-71ab-08dde35c379c",
+          "name": "Aluminium Edging for Carpet - per lineal metre",
+          "sku": "fl-ca-ac-alu",
+          "totalHirable": 1013,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-67c9-08dde35c3776",
+      "name": "Arena Floor - Grey",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f199-08dde35c3776",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-67cc-08dde35c3776",
+          "name": "Arena Floor - Grey",
+          "sku": "fl-pl-ar-are",
+          "totalHirable": 1140,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-c8cf-08dde35c3780",
+      "name": "Arena Floor Edging - l/m ",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-1776-08dde35c3781",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-c8d0-08dde35c3780",
+          "name": "Arena Floor Edging - l/m ",
+          "sku": "fl-pl-ev-are",
+          "totalHirable": 963,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-feee-08dde35c377a",
+      "name": "Armour Floor - Black",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-523d-08dde35c377b",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-feef-08dde35c377a",
+          "name": "Armour Floor - Black",
+          "sku": "fl-pl-ar-arm",
+          "totalHirable": 1102,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-9e04-08dde35c3783",
+      "name": "Armour Floor Edging - l/m",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-1776-08dde35c3781",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-9e05-08dde35c3783",
+          "name": "Armour Floor Edging - l/m",
+          "sku": "fl-pl-ev-arm",
+          "totalHirable": 880,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-c214-08dde35c3774",
+      "name": "Carpet Tiles - Cuttable custom",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-c215-08dde35c3774",
+          "name": "Carpet Tiles - Cuttable custom",
+          "sku": "fl-ca-ca-car",
+          "totalHirable": 336,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-a7d3-08dde35c3ea0",
+      "name": "Checker Decking",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-7184-08dde35c3ea1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-a805-08dde35c3ea0",
+          "name": "Ash",
+          "sku": "fl-de-ch-che-ash",
+          "totalHirable": 1424,
+          "optionIds": [
+            "d2a50000-0e48-c047-a54e-08dde35c3ea0"
+          ]
+        },
+        {
+          "id": "d2a50000-0e48-c047-a880-08dde35c3ea0",
+          "name": "Charcoal",
+          "sku": "fl-de-ch-che-cha",
+          "totalHirable": 1390,
+          "optionIds": [
+            "d2a50000-0e48-c047-a55f-08dde35c3ea0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-3322-08dde35c3793",
+      "name": "Dance Floor - Driftwood",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-3323-08dde35c3793",
+          "name": "Dance Floor - Driftwood",
+          "sku": "fl-da-dan-1",
+          "totalHirable": 276,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-b59c-08dde35c3790",
+      "name": "Dance Floor - White Gloss ",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-b59d-08dde35c3790",
+          "name": "Dance Floor - White Gloss ",
+          "sku": "fl-da-dan",
+          "totalHirable": 292,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-b540-08dde35c378a",
+      "name": "Decking - Ramp 2400mm x 200mm",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-0c76-08dde35c378b",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50100-0e48-c047-b540-08dde35c378a",
+          "name": "Decking - Ramp 2400mm x 200mm",
+          "sku": "fl-de-de-dec",
+          "totalHirable": 247,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-7f2b-08dde35c3788",
+      "name": "Dexter Decking (Charcoal) - sqm",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-0ea9-08dde35c3789",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-7f2c-08dde35c3788",
+          "name": "Dexter Decking (Charcoal) - sqm",
+          "sku": "fl-de-de-dex",
+          "totalHirable": 944,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-163c-08dde35c37a2",
+      "name": "Floor Covering - Sub Floor ",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-06f0-08dde35c37a1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-163d-08dde35c37a2",
+          "name": "Floor Covering - Sub Floor ",
+          "sku": "fl-vi-vi-flo",
+          "totalHirable": 650,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-d985-08dde35c37a7",
+      "name": "Flooring - Custom ",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-9f6a-08dde35c37a5",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50100-0e48-c047-d985-08dde35c37a7",
+          "name": "Flooring - Custom ",
+          "sku": "fl-cu-flo-2",
+          "totalHirable": 369,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-b5a6-08dde35c37a6",
+      "name": "Flooring - Damages",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-9f6a-08dde35c37a5",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-b5a7-08dde35c37a6",
+          "name": "Flooring - Damages",
+          "sku": "fl-cu-flo-1",
+          "totalHirable": 274,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-8161-08dde35c37a5",
+      "name": "Flooring - Misc",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-9f6a-08dde35c37a5",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-8162-08dde35c37a5",
+          "name": "Flooring - Misc",
+          "sku": "fl-cu-flo",
+          "totalHirable": 346,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-0635-08dde35c377d",
+      "name": "Ground Protection Mat - Black",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-5a2a-08dde35c377d",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-0636-08dde35c377d",
+          "name": "Ground Protection Mat - Black",
+          "sku": "fl-pl-gr-gro",
+          "totalHirable": 549,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "d2a50000-0e48-c047-a948-08dde35c3ea0",
+      "name": "Laminate Timber Floor",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f36d-08dde35c3ea4",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d2a50000-0e48-c047-a956-08dde35c3ea0",
+          "name": "Bleached Oak",
+          "sku": "fl-la-la-lam-1-ble",
+          "totalHirable": 2267,
+          "optionIds": [
+            "d2a50000-0e48-c047-a8b8-08dde35c3ea0"
+          ]
+        },
+        {
+          "id": "d2a50000-0e48-c047-a976-08dde35c3ea0",
+          "name": "Grey Ash",
+          "sku": "fl-la-la-lam-1-gre",
+          "totalHirable": 2305,
+          "optionIds": [
+            "d2a50000-0e48-c047-a8be-08dde35c3ea0"
+          ]
+        },
+        {
+          "id": "d2a50000-0e48-c047-a98e-08dde35c3ea0",
+          "name": "Smoked Oak",
+          "sku": "fl-la-la-lam-1-smo",
+          "totalHirable": 2551,
+          "optionIds": [
+            "d2a50000-0e48-c047-a8c3-08dde35c3ea0"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "8fdd54b4-7e48-4b63-9690-96880f66afa0",
+      "name": "Event Carpet Roll",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d30860f8-c5dc-4fc5-8f72-c40610215f71",
+          "name": "Onyx",
+          "sku": "fl-ca-ro-evr-ony",
+          "totalHirable": 1653,
+          "optionIds": [
+            "16a60b67-4f43-4899-8b49-6e91c8193ae0"
+          ]
+        },
+        {
+          "id": "4b3406e8-e987-4026-a857-b1227d4742ac",
+          "name": "Charcoal",
+          "sku": "fl-ca-ro-evr-cha",
+          "totalHirable": 1874,
+          "optionIds": [
+            "b0441f95-39f5-40ad-99ff-93ed15888247"
+          ]
+        },
+        {
+          "id": "7f56cc53-03a0-4a17-b6d4-ff6b7158661f",
+          "name": "Sandstone",
+          "sku": "fl-ca-ro-evr-san",
+          "totalHirable": 1656,
+          "optionIds": [
+            "6a512ef5-b3fe-4314-97d4-84e85f85bd60"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "a7b5d8f1-3e47-46d8-84d5-b606543d7d6d",
+      "name": "Premium Carpet Tile Range",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "d321293e-c3c5-43e0-9123-c17b5ce228bd",
+          "name": "Graphite",
+          "sku": "fl-ca-ti-pre-gra",
+          "totalHirable": 1410,
+          "optionIds": [
+            "96badbbe-fef1-4e5d-9f81-7dc1915aa189"
+          ]
+        },
+        {
+          "id": "591783ad-065a-49d8-b50c-35d510d890a2",
+          "name": "Silver Mist",
+          "sku": "fl-ca-ti-pre-sil",
+          "totalHirable": 1913,
+          "optionIds": [
+            "3260a2b2-346f-40b0-a1da-d3886566f266"
+          ]
+        },
+        {
+          "id": "214d6999-93e2-4226-b09d-dcd03b42a351",
+          "name": "Navy",
+          "sku": "fl-ca-ti-pre-nav",
+          "totalHirable": 1458,
+          "optionIds": [
+            "1e9c954e-db58-4fe6-862e-2ba19e1a417c"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "37da6d8f-38aa-4978-9619-68acf7988895",
+      "name": "Plush Aisle Runner",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-593e-08dde35c3773",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "8504c02f-976d-4a5c-98d0-08ae6529d1ca",
+          "name": "Ivory",
+          "sku": "fl-ca-ai-plu-ivo",
+          "totalHirable": 1633,
+          "optionIds": [
+            "a1e4733b-3cec-4dc3-8f99-6e64cc04722b"
+          ]
+        },
+        {
+          "id": "1cec70e0-ea52-4134-a4a5-bd909556c4d3",
+          "name": "Burgundy",
+          "sku": "fl-ca-ai-plu-bur",
+          "totalHirable": 1501,
+          "optionIds": [
+            "fadc2ee7-c531-420b-82d6-cf3879aaaebc"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "2c3760b4-eb69-4dec-ad3e-1c8c151e136c",
+      "name": "Arena Floor - Silver",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f199-08dde35c3776",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "66501683-00b5-4d1f-81ce-17ff241694a3",
+          "name": "Arena Floor - Silver",
+          "sku": "fl-pl-ar-ars",
+          "totalHirable": 982,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "0d353bf8-137a-4b6e-b00b-de7ef4680628",
+      "name": "Arena Floor - Sand",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f199-08dde35c3776",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "b0f0b19b-9b01-45b5-a2b6-e48434ff02c7",
+          "name": "Arena Floor - Sand",
+          "sku": "fl-pl-ar-arsa",
+          "totalHirable": 1322,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "837ee1bb-b649-4154-b6fb-12842bf6215a",
+      "name": "Armour Floor - Graphite",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-523d-08dde35c377b",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "2b80f0e3-c817-41d5-9422-ce1318788c7d",
+          "name": "Armour Floor - Graphite",
+          "sku": "fl-pl-ar-arg",
+          "totalHirable": 1487,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "779add96-21b0-42da-9868-4d22ffac1d54",
+      "name": "Armour Floor - Slate",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-523d-08dde35c377b",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "2df7e88e-6941-4c48-afcf-98b0e7aa429a",
+          "name": "Armour Floor - Slate",
+          "sku": "fl-pl-ar-arsl",
+          "totalHirable": 957,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "e31b514f-946a-4dcd-a479-81c1fa63bf1e",
+      "name": "Checker Decking Premium",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-7184-08dde35c3ea1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "e8a9047f-d970-471b-8ef6-233e147bb73f",
+          "name": "Ash",
+          "sku": "fl-de-ch-prm-ash",
+          "totalHirable": 1089,
+          "optionIds": [
+            "542b9af9-e887-42d8-a9fd-6febaecf2ba6"
+          ]
+        },
+        {
+          "id": "e9a070fb-94b5-4d54-afb8-84dda04a086c",
+          "name": "Teak",
+          "sku": "fl-de-ch-prm-tea",
+          "totalHirable": 1070,
+          "optionIds": [
+            "33ed5e3d-1330-48d6-88f1-edaa5523b938"
+          ]
+        },
+        {
+          "id": "67df6af9-e2d5-4c7e-8cc6-41871880be27",
+          "name": "Walnut",
+          "sku": "fl-de-ch-prm-wal",
+          "totalHirable": 1187,
+          "optionIds": [
+            "749d9ef1-59c7-4b14-805a-e6c86bf07e17"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "c02f3996-2429-4f1c-bd57-303ce5e93bea",
+      "name": "Outdoor Deck Tiles",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-0ea9-08dde35c3789",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "8241c04c-da81-4e28-aac9-c3dc1f77f651",
+          "name": "Teak",
+          "sku": "fl-de-ou-til-tea",
+          "totalHirable": 996,
+          "optionIds": [
+            "36ac5296-26f8-4dac-9232-f83e51249ff6"
+          ]
+        },
+        {
+          "id": "dd0ace0a-3ea6-4f94-b2e1-36d8a7bfcaf0",
+          "name": "Charcoal",
+          "sku": "fl-de-ou-til-cha",
+          "totalHirable": 1084,
+          "optionIds": [
+            "b987adf8-2bc1-47a9-9000-4835b7154eaa"
+          ]
+        },
+        {
+          "id": "50a5cc21-b3cc-4e71-9c2e-7abeb90aa1e8",
+          "name": "Weathered Oak",
+          "sku": "fl-de-ou-til-wea",
+          "totalHirable": 1151,
+          "optionIds": [
+            "2cca4dd0-87ec-4624-a912-dbac0eaf5c9d"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "d0a7f0b0-4c60-46bb-8bc9-62335c6e0c5b",
+      "name": "Dance Floor - Black Gloss",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "be7c509f-3bde-4bb2-99e0-3a494e073d2f",
+          "name": "Dance Floor - Black Gloss",
+          "sku": "fl-da-dan-bla",
+          "totalHirable": 320,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "7d9fc15b-2293-442e-b3e6-eaa6f5bd83c4",
+      "name": "Dance Floor - Natural Oak",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "e45bd524-b06e-4d24-907a-2211ee9c628a",
+          "name": "Dance Floor - Natural Oak",
+          "sku": "fl-da-dan-oak",
+          "totalHirable": 292,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "3d151684-6171-4c81-857e-05e4a1c7cbf0",
+      "name": "Dance Floor - Champagne",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "37a958ec-8bb1-4fa2-bad8-40f47982b3e9",
+          "name": "Dance Floor - Champagne",
+          "sku": "fl-da-dan-cha",
+          "totalHirable": 287,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "3b299cf8-24f5-4a7e-aab2-e6bd9a185bf4",
+      "name": "Laminate Timber Floor Premium",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-f36d-08dde35c3ea4",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "b888b927-bf9d-448b-b2c2-946fc845eef1",
+          "name": "Natural Oak",
+          "sku": "fl-la-pr-lam-nat",
+          "totalHirable": 1904,
+          "optionIds": [
+            "48dac367-d030-4e59-870a-62148234b57b"
+          ]
+        },
+        {
+          "id": "76062476-7480-4097-b7b5-4567b7649d3a",
+          "name": "European Oak",
+          "sku": "fl-la-pr-lam-eur",
+          "totalHirable": 2833,
+          "optionIds": [
+            "3c7293eb-8283-41c8-a657-27a55cd39cb0"
+          ]
+        },
+        {
+          "id": "006819a3-0949-4ecb-b7e2-de1912c641a0",
+          "name": "Warm Walnut",
+          "sku": "fl-la-pr-lam-war",
+          "totalHirable": 2303,
+          "optionIds": [
+            "0a40154d-b672-4e65-91b9-f5821caee156"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "26abcdef-60ab-4527-8cad-3cde5515cb05",
+      "name": "Vinyl Plank Floor",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-06f0-08dde35c37a1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "15e9d4a5-4364-4bec-92d8-d069e37d65f2",
+          "name": "Ash Oak",
+          "sku": "fl-vi-pl-vin-ash",
+          "totalHirable": 2341,
+          "optionIds": [
+            "bcf8ca8b-dec5-4d6f-8a8b-41375617cb88"
+          ]
+        },
+        {
+          "id": "674957a1-a30b-4474-b78d-407606ec8815",
+          "name": "Light Oak",
+          "sku": "fl-vi-pl-vin-lig",
+          "totalHirable": 2323,
+          "optionIds": [
+            "774d6a41-021b-4549-a944-efa5cca1d2d5"
+          ]
+        },
+        {
+          "id": "082a4414-4f8d-40a6-ace1-7055e9de223d",
+          "name": "Walnut",
+          "sku": "fl-vi-pl-vin-wal",
+          "totalHirable": 2121,
+          "optionIds": [
+            "d9d1dff7-8e08-4090-97c7-c974272dc91d"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "e725cb96-5a91-4504-a0b9-7c6ae222da97",
+      "name": "Ground Protection Mat HD",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-5a2a-08dde35c377d",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "387a8137-98cd-4dfd-9acf-cc6f2d4bc1bb",
+          "name": "Olive",
+          "sku": "fl-pl-gr-hd-oli",
+          "totalHirable": 761,
+          "optionIds": [
+            "7794bf04-225d-4b3e-a90b-65939d7bebaa"
+          ]
+        },
+        {
+          "id": "ac82fdc7-7003-4bea-ae60-9293ae1ac40b",
+          "name": "Clear",
+          "sku": "fl-pl-gr-hd-cle",
+          "totalHirable": 645,
+          "optionIds": [
+            "c0fbbe5c-fa3d-4281-953d-1c1aea8edb82"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "49c79cf0-4c7d-4d61-9f12-6989506e4b15",
+      "name": "Acoustic Underlay Roll",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-06f0-08dde35c37a1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "ee8e7666-6e56-4f49-b09d-c895c672c3e6",
+          "name": "Acoustic Underlay Roll",
+          "sku": "fl-vi-un-aco",
+          "totalHirable": 676,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "df233c79-efe0-4cf0-a36f-d4c386e6344a",
+      "name": "Cable Protector Ramp 1000mm",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-0c76-08dde35c378b",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "5d1777cc-9827-4a64-a56a-87d1e7cb65a1",
+          "name": "Cable Protector Ramp 1000mm",
+          "sku": "fl-ac-ra-cab-100",
+          "totalHirable": 275,
+          "optionIds": []
+        }
+      ]
+    },
+    {
+      "id": "7bb127fd-0939-4339-8b3d-4eb68207ae92",
+      "name": "Raised Access Floor Panel",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-06f0-08dde35c37a1",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "7a0d3ba0-d16d-4752-81d3-b7c188ad772d",
+          "name": "Silver",
+          "sku": "fl-vi-ra-pan-sil",
+          "totalHirable": 696,
+          "optionIds": [
+            "8d9c5e70-5940-4a2b-a9a9-6a7e02a73a06"
+          ]
+        },
+        {
+          "id": "64ea0cad-e7ee-4a7b-905e-513448bad522",
+          "name": "Anthracite",
+          "sku": "fl-vi-ra-pan-ant",
+          "totalHirable": 828,
+          "optionIds": [
+            "92eb68fe-2c9a-4d1e-9955-8e5f6c815edb"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "e63eb29d-82f2-4623-a961-34f6e0364684",
+      "name": "Custom Printed Flooring",
+      "departmentId": 2,
+      "subDepartmentId": 15,
+      "categoryId": "d2a50000-0e48-c047-9f6a-08dde35c37a5",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "6c5c9229-cd12-454b-985d-ec15c58c5a53",
+          "name": "Branding Option A",
+          "sku": "fl-cu-pri-bra-a",
+          "totalHirable": 384,
+          "optionIds": [
+            "164bd01e-83c8-40f2-8056-6bae8c83da75"
+          ]
+        },
+        {
+          "id": "932009d7-9ef0-4c13-aad1-a382040fa054",
+          "name": "Branding Option B",
+          "sku": "fl-cu-pri-bra-b",
+          "totalHirable": 323,
+          "optionIds": [
+            "d02e4c48-14ea-4bf3-8aa7-85cc46fcd4cd"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "7439c2fb-7c6f-4b15-a986-d168d9017afc",
+      "name": "LED Dance Floor Panel",
+      "departmentId": 2,
+      "subDepartmentId": 14,
+      "categoryId": "d2a50000-0e48-c047-fdca-08dde35c3790",
+      "isActive": true,
+      "variations": [],
+      "variants": [
+        {
+          "id": "f5cc2b54-bf2f-4e37-8785-a6ff467758d9",
+          "name": "RGB Interactive",
+          "sku": "fl-da-led-rgb",
+          "totalHirable": 288,
+          "optionIds": [
+            "60702453-7532-4f61-b8c1-59f77623f90f"
+          ]
+        },
+        {
+          "id": "62372982-7fdc-4558-a372-dbc66bb711ed",
+          "name": "White Sparkle",
+          "sku": "fl-da-led-whi",
+          "totalHirable": 323,
+          "optionIds": [
+            "3f4394a1-2d45-40d8-8222-506a35719797"
+          ]
+        }
+      ]
+    }
+  ],
+  "page": 1,
+  "pageSize": 40,
+  "totalCount": 40,
+  "totalPages": 1
+}
