@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any
 
+import anyio
 from app.config import (
     Settings,
     InventoryNotFoundError,
@@ -164,22 +165,35 @@ class InventoryService:
         self,
         identifiers: list[str],
     ) -> tuple[list[NormalizedEvidence], str, list[str]]:
-        evidence_items: list[NormalizedEvidence] = []
-        cache_statuses: list[str] = []
-        notes: list[str] = []
-        for identifier in identifiers:
+        # Motivation vs Logic: compare requests with multiple identifiers should
+        # resolve each variant concurrently to reduce end-to-end latency while
+        # still preserving deterministic output order for the response payload.
+        parallelism = self._parallel_stock_requests_limit(len(identifiers))
+        semaphore = anyio.Semaphore(parallelism)
+        results: list[tuple[NormalizedEvidence, str, list[str]] | None] = [None] * len(identifiers)
+
+        async def resolve_identifier(index: int, identifier: str) -> None:
             extract_args = StockExtractVariantEvidenceArgs(
                 id=identifier if self.looks_like_uuid(identifier) else None,
                 sku=None if self.looks_like_uuid(identifier) else identifier,
             )
-            evidence, cache_status, extract_notes = await self.extract_variant_evidence(
-                args=extract_args,
-                matched_on=["identifier"],
-                confidence=0.99,
-                tool_name="stock.compare_variants",
-            )
-            evidence_items.append(evidence)
-            cache_statuses.append(cache_status)
+            async with semaphore:
+                results[index] = await self.extract_variant_evidence(
+                    args=extract_args,
+                    matched_on=["identifier"],
+                    confidence=0.99,
+                    tool_name="stock.compare_variants",
+                )
+
+        async with anyio.create_task_group() as task_group:
+            for index, identifier in enumerate(identifiers):
+                task_group.start_soon(resolve_identifier, index, identifier)
+
+        resolved_results = [result for result in results if result is not None]
+        evidence_items = [result[0] for result in resolved_results]
+        cache_statuses = [result[1] for result in resolved_results]
+        notes: list[str] = []
+        for _, _, extract_notes in resolved_results:
             notes.extend(extract_notes)
         return evidence_items, self._combine_cache_statuses(cache_statuses), notes
 
@@ -206,8 +220,23 @@ class InventoryService:
         coverage_limitations: list[str] = []
         enriched_products = 0
         detail_lookup_failures: list[str] = []
+        # Motivation vs Logic: enriching snapshot variants requires many product
+        # detail calls, so we parallelize these lookups with bounded concurrency
+        # to reduce runtime without overwhelming upstream inventory endpoints.
+        parallelism = self._parallel_stock_requests_limit(len(catalogue_response.items))
+        semaphore = anyio.Semaphore(parallelism)
+        detail_results: list[
+            tuple[
+                ProductListItemDto,
+                ProductListItemDtoPagedResponse | None,
+                str | None,
+                list[str],
+                UpstreamServiceError | None,
+            ]
+            | None
+        ] = [None] * len(catalogue_response.items)
 
-        for product in catalogue_response.items:
+        async def fetch_detail(index: int, product: ProductListItemDto) -> None:
             detail_args = StockGetProductArgs(
                 id=product.id,
                 page=1,
@@ -217,7 +246,9 @@ class InventoryService:
             # fatal errors when upstream timeouts occurred, so capture the failure
             # here and continue enriching the remaining catalogue items.
             try:
-                product_response, product_cache_status, product_notes = await self.get_product(detail_args)
+                async with semaphore:
+                    product_response, product_cache_status, product_notes = await self.get_product(detail_args)
+                detail_results[index] = (product, product_response, product_cache_status, product_notes, None)
             except UpstreamServiceError as exc:
                 self.logger.warning(
                     "Detail lookup failed for product %s: %s (status %s)",
@@ -225,14 +256,27 @@ class InventoryService:
                     exc.detail,
                     exc.status_code,
                 )
+                detail_results[index] = (product, None, None, [], exc)
+
+        async with anyio.create_task_group() as task_group:
+            for index, product in enumerate(catalogue_response.items):
+                task_group.start_soon(fetch_detail, index, product)
+
+        for detail_result in detail_results:
+            if detail_result is None:
+                continue
+            product, product_response, product_cache_status, product_notes, detail_error = detail_result
+            if detail_error is not None:
                 detail_lookup_failures.append(
-                    f"{product.id} (status {exc.status_code}): {exc.detail}"
+                    f"{product.id} (status {detail_error.status_code}): {detail_error.detail}"
                 )
                 continue
-            cache_statuses.append(product_cache_status)
+
+            if product_cache_status is not None:
+                cache_statuses.append(product_cache_status)
             notes.extend(product_notes)
 
-            if not product_response.items:
+            if product_response is None or not product_response.items:
                 coverage_limitations.append(
                     f"No detail payload was returned for product id {product.id}; its variants were skipped."
                 )
@@ -535,6 +579,9 @@ class InventoryService:
         if cache_statuses and len(set(cache_statuses)) == 1:
             return cache_statuses[0]
         return "cache_mixed"
+
+    def _parallel_stock_requests_limit(self, item_count: int) -> int:
+        return max(1, min(8, item_count))
 
     def _dedupe_text(self, values: list[str | None]) -> list[str]:
         deduped: list[str] = []

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.agent import AgentEngine
 from app.config import Settings, UpstreamServiceError
-from app.schemas import AgentQueryRequest, AgentQueryResponse, SessionState
+from app.schemas import (
+    AgentQueryRequest,
+    AgentQueryResponse,
+    PlanStatus,
+    PlanStep,
+    SessionState,
+    ToolResult,
+)
 from app.session.store import SessionStore
 from app.tool.registry import ToolRegistry
 
@@ -60,10 +68,100 @@ class OrchestratorService:
             clarification=run.clarification,
             resolved_items=run.resolved_items,
             session_state=session_state,
+            plan_status=run.plan_status,
             mock_ui=mock_ui,
             mock_ui_path=mock_ui_path,
             limitations=run.limitations,
         )
+
+    async def call_tool_with_orchestration(
+        self,
+        *,
+        tool_name: str,
+        args: dict[str, Any],
+        session_id: str | None,
+        thought: str = "",
+    ) -> ToolResult:
+        # Motivation vs Logic: direct REST/MCP tool calls now flow through the
+        # same session-scoped plan+memo+validation lifecycle as `/query`, so the
+        # runtime can resume TODO/memo evidence across mixed invocation styles.
+        session_state, _ = await self.session_store.get_state(session_id)
+        plan_status = self._resolve_direct_tool_plan(session_state, tool_name)
+        step = self._append_direct_tool_step(plan_status, tool_name, args)
+        step.status = "in-progress"
+        self.agent_engine.persist_plan_state(session_state, plan_status)
+
+        try:
+            result = await self.tool_registry.call_tool(
+                tool_name,
+                args,
+                session_id=session_state.session_id,
+                thought=thought,
+            )
+        except Exception:
+            await self.session_store.save_state(session_state)
+            raise
+
+        validation, memo_update, validation_limitations = await self.agent_engine.validate_and_record(
+            session_state=session_state,
+            plan_status=plan_status,
+            step=step,
+            tool_name=tool_name,
+            tool_args=args,
+            result=result,
+        )
+        step.validation = validation
+        step.status = "done"
+        plan_status.status = "complete" if all(item.status == "done" for item in plan_status.steps) else "in-progress"
+        self.agent_engine.persist_plan_state(session_state, plan_status)
+
+        if validation_limitations:
+            result.normalization_notes = self._dedupe(result.normalization_notes + validation_limitations)
+        result.plan_status = plan_status
+        result.memo_update = memo_update
+        result.validation = validation
+
+        await self.session_store.save_state(session_state)
+        return result
+
+    def _resolve_direct_tool_plan(self, session_state: SessionState, tool_name: str) -> PlanStatus:
+        if session_state.current_plan is not None:
+            return session_state.current_plan
+        return PlanStatus(
+            goal=f"Direct tool orchestration for `{tool_name}`",
+            steps=[],
+            memo=session_state.memo_cache.model_copy(deep=True),
+            status="in-progress",
+        )
+
+    def _append_direct_tool_step(
+        self,
+        plan_status: PlanStatus,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> PlanStep:
+        next_id = max((step.id for step in plan_status.steps), default=0) + 1
+        step = PlanStep(
+            id=next_id,
+            name=f"direct tool call {next_id}",
+            tool=tool_name,
+            status="pending",
+            args=args,
+            hypotheses=["Direct invocation requested by client endpoint."],
+            validation=None,
+        )
+        plan_status.steps.append(step)
+        return step
+
+    def _dedupe(self, values: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
 
     async def _ensure_session_name(self, session_state: SessionState, message: str) -> None:
         compact = message.strip()

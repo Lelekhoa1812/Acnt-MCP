@@ -29,40 +29,60 @@ def build_engine_settings() -> Settings:
 @pytest.mark.anyio
 async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_turn() -> None:
     container = await build_container(build_engine_settings())
-    payloads: list[dict[str, object]] = []
+    payloads: list[tuple[str, dict[str, object]]] = []
 
     async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
-        payloads.append(payload)
-        if len(payloads) == 1:
+        payloads.append((endpoint_name, payload))
+        if endpoint_name == "/api/v1/query/planner":
             return {
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                "<thought>\n"
-                                "goal: collect table-ready inventory evidence\n"
-                                "entity_guess: category\n"
-                                "strategy: catalogue search\n"
-                                "tool: stock.inventory_snapshot\n"
-                                "args_draft: {\"page\":1,\"pageSize\":100}\n"
-                                "risk: none\n"
-                                "</thought>"
-                            ),
-                            "tool_calls": [
+                            "content": json.dumps(
                                 {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "stock.inventory_snapshot",
-                                        "arguments": "{\"page\":1,\"pageSize\":100}",
-                                    },
+                                    "goal": "List inventory in table form",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "inventory snapshot",
+                                            "tool": "stock.inventory_snapshot",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 100},
+                                            "hypotheses": ["Snapshot rows are table-ready."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
                                 }
-                            ],
+                            )
                         }
                     }
                 ]
             }
-        if len(payloads) == 2:
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 60,
+                                    "actual_rows": 60,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.95,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
             return {
                 "choices": [
                     {
@@ -72,6 +92,56 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
                     }
                 ]
             }
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": "| Product | SKU |\n| --- | --- |\n| 10m Hex Carpet Set - Onyx | fl-ca-ca-10m |",
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            messages = payload.get("messages", [])
+            has_tool_message = any(isinstance(message, dict) and message.get("role") == "tool" for message in messages)
+            if not has_tool_message:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "<thought>\n"
+                                    "goal: collect table-ready inventory evidence\n"
+                                    "entity_guess: category\n"
+                                    "strategy: catalogue search\n"
+                                    "tool: stock.inventory_snapshot\n"
+                                    "args_draft: {\"page\":1,\"pageSize\":100}\n"
+                                    "risk: none\n"
+                                    "</thought>"
+                                ),
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.inventory_snapshot",
+                                            "arguments": "{\"page\":1,\"pageSize\":100}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": ""}}]}
         return {
             "choices": [
                 {
@@ -105,9 +175,15 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
         await container.close()
 
     assert result.status == "answered"
-    assert len(payloads) >= 2
+    assert len(payloads) >= 4
 
-    tool_messages = [message for message in payloads[1]["messages"] if message.get("role") == "tool"]
+    query_payloads = [payload for endpoint, payload in payloads if endpoint == "/api/v1/query"]
+    tool_turn = next(
+        payload
+        for payload in query_payloads
+        if any(isinstance(message, dict) and message.get("role") == "tool" for message in payload["messages"])
+    )
+    tool_messages = [message for message in tool_turn["messages"] if message.get("role") == "tool"]
     assert tool_messages
     tool_payload = json.loads(tool_messages[-1]["content"])
     assert "rows" in tool_payload
@@ -118,40 +194,95 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
 @pytest.mark.anyio
 async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_answer() -> None:
     container = await build_container(build_engine_settings())
-    calls = {"count": 0}
+    payloads: list[tuple[str, dict[str, object]]] = []
 
     async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
-        calls["count"] += 1
-        if calls["count"] == 1:
+        payloads.append((endpoint_name, payload))
+        if endpoint_name == "/api/v1/query/planner":
             return {
                 "choices": [
                     {
                         "message": {
-                            "content": (
-                                "<thought>\n"
-                                "goal: collect table-ready inventory evidence\n"
-                                "entity_guess: category\n"
-                                "strategy: catalogue search\n"
-                                "tool: stock.inventory_snapshot\n"
-                                "args_draft: {\"page\":1,\"pageSize\":100}\n"
-                                "risk: none\n"
-                                "</thought>"
-                            ),
-                            "tool_calls": [
+                            "content": json.dumps(
                                 {
-                                    "id": "call_1",
-                                    "type": "function",
-                                    "function": {
-                                        "name": "stock.inventory_snapshot",
-                                        "arguments": "{\"page\":1,\"pageSize\":100}",
-                                    },
+                                    "goal": "Inventory table",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "inventory snapshot",
+                                            "tool": "stock.inventory_snapshot",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 100},
+                                            "hypotheses": ["Snapshot rows are available."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
                                 }
-                            ],
+                            )
                         }
                     }
                 ]
             }
-        if calls["count"] in (2, 3, 4):
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 60,
+                                    "actual_rows": 60,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.95,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {"choices": [{"message": {"content": ""}}]}
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {"choices": [{"message": {"content": "not-json"}}]}
+        if endpoint_name == "/api/v1/query":
+            messages = payload.get("messages", [])
+            has_tool_message = any(isinstance(message, dict) and message.get("role") == "tool" for message in messages)
+            if not has_tool_message:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "<thought>\n"
+                                    "goal: collect table-ready inventory evidence\n"
+                                    "entity_guess: category\n"
+                                    "strategy: catalogue search\n"
+                                    "tool: stock.inventory_snapshot\n"
+                                    "args_draft: {\"page\":1,\"pageSize\":100}\n"
+                                    "risk: none\n"
+                                    "</thought>"
+                                ),
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.inventory_snapshot",
+                                            "arguments": "{\"page\":1,\"pageSize\":100}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
             return {"choices": [{"message": {"content": ""}}]}
         return {"choices": [{"message": {"content": "not-json"}}]}
 
@@ -178,5 +309,207 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
     assert "total=" not in result.answer
     assert any(trace.tool == "stock.inventory_snapshot" for trace in result.tool_trace)
     assert len(result.resolved_items) == 60
-    assert any("empty final assistant message" in limitation for limitation in result.limitations)
     assert any("rendered the grounded inventory snapshot directly" in limitation for limitation in result.limitations)
+
+
+@pytest.mark.anyio
+async def test_agent_engine_executes_next_planned_step_when_model_skips_tool_calls() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "List chairs with variants",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "chair catalogue search",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 50, "search": "chair"},
+                                            "hypotheses": ["Chair variants can be resolved from catalogue rows."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 4,
+                                    "actual_rows": 4,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.91,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "Here are the chairs we have and the variants returned from the catalogue snapshot."
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": "Here are the chairs we have and the variants returned from the catalogue snapshot.",
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "I can’t reliably list all chairs and their variants yet because retrieval is incomplete."
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-chair-recovery")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="list all chair that we have apparently, and the variants for each chair.",
+                sessionId="engine-chair-recovery",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert "chairs we have" in result.answer
+    assert "retrieval is incomplete" not in result.answer
+    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
+    assert any("runtime executed planned step" in item for item in result.limitations)
+
+
+@pytest.mark.anyio
+async def test_agent_engine_does_not_leak_stock_get_product_schema_error_for_incomplete_planned_args() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Resolve specific product detail",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "product detail lookup",
+                                            "tool": "stock.get_product",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 20},
+                                            "hypotheses": ["Product detail can be fetched directly."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "needs_clarification",
+                                    "answer": "Please share the exact product SKU or product ID so I can continue safely.",
+                                    "limitations": [],
+                                    "clarification": {
+                                        "question": "Please share the exact product SKU or product ID so I can continue safely.",
+                                        "options": [],
+                                    },
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "I need more detail before retrieval can continue."
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-missing-product-identifier")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="Show product detail for that item",
+                sessionId="engine-missing-product-identifier",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "needs_clarification"
+    assert "product SKU or product ID" in result.answer
+    assert not result.tool_trace
+    assert any("requires an `id` or `sku`" in item for item in result.limitations)
+    assert not any("Either 'id' or 'sku' must be provided" in item for item in result.limitations)

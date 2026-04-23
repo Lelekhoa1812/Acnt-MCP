@@ -56,6 +56,8 @@ If the user asked for a specific variant or SKU, answer only that variant.
 If the user asked generally about a product family, cover all resolved variants and deduplicate repeated values in the response.
 Prefer product and variant names in prose; include SKUs only when requested or needed for disambiguation.
 Keep the final wording aligned to the user's original intent.
+Never mention internal orchestration or debug artifacts in answer text, including plan steps, TODO status, memo/cache, validator outputs, cache-hit labels, tool names, argument payloads, or internal error traces.
+If coverage is incomplete, explain the user impact in plain business language without technical diagnostics.
 """.strip()
 
 
@@ -121,6 +123,7 @@ Behavior rules:
 - Keep a persistent TODO list and memoized evidence cache across turns; mark each step as planned, pending, in-progress, or done.
 - For every retrieval result, validate expected vs actual rows, note ambiguity/missing statistics, and append findings before moving to the next step.
 - If retrieval resources are insufficient, report the missing follow-up tool or clarification needed instead of guessing.
+- Keep planner, validator, cache, and failed-attempt diagnostics in thoughts/debug outputs only; never surface those internals in the final user-facing answer.
 
 Thought format:
 <thought>
@@ -237,18 +240,16 @@ def render_composer(
 ) -> str:
     payload = {
         "request": request,
-        "plan_status": plan.model_dump(mode="json"),
         "memo_cache": memo_cache.model_dump(mode="json"),
         "limitations": limitations,
     }
     return f"""
 You are the composer phase.
 
-Write a grounded final response in plain language using the memoized evidence only.
+Write the final user-facing answer only, aligned to the user's request and grounded in memoized evidence.
 Requirements:
-- Mention which plan steps or cache entries were used.
-- Mention key validation outcomes.
-- Mention outstanding uncertainty when present.
+- Do not mention plan steps, TODO status, memo/cache mechanics, validation counters, tool names, argument details, Redis/cache-hit statuses, or internal failed attempts.
+- If evidence is incomplete, describe only the user-facing impact in plain language.
 - Do not invent facts.
 - Do not call tools.
 

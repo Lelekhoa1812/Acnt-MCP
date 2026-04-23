@@ -3,31 +3,33 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from app.config import (
-    Settings,
-    InventoryNotFoundError,
-    ParameterMappingError,
-    UpstreamServiceError,
-)
+from app.config import InventoryNotFoundError, ParameterMappingError, Settings, UpstreamServiceError
 from app.inventory.presenter import render_inventory_snapshot_markdown
-from app.prompt import render_formatter, render_system
+from app.prompt import render_composer, render_formatter, render_planner, render_system, render_validator
 from app.schemas import (
     AgentQueryRequest,
     CandidateOption,
     ClarificationPayload,
+    MemoEntry,
     NormalizedEvidence,
+    PlanStatus,
+    PlanStep,
+    PlanValidation,
     SessionState,
+    ToolResult,
     ToolTrace,
 )
 from app.tool.registry import ToolRegistry
 
 
 THOUGHT_BLOCK_PATTERN = re.compile(r"<thought>.*?</thought>", re.IGNORECASE | re.DOTALL)
+UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
 class AgentEnvelope(BaseModel):
@@ -41,12 +43,25 @@ class AgentRun(AgentEnvelope):
     thoughts: list[str] = Field(default_factory=list)
     tool_trace: list[ToolTrace] = Field(default_factory=list)
     resolved_items: list[NormalizedEvidence] = Field(default_factory=list)
+    plan_status: PlanStatus | None = None
+
+
+class ValidatorEnvelope(BaseModel):
+    expected_rows: int | None = None
+    actual_rows: int | None = None
+    findings: list[str] = Field(default_factory=list)
+    ambiguity: list[str] = Field(default_factory=list)
+    missing_statistics: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+    normalized_rows: list[dict[str, Any]] = Field(default_factory=list)
+    normalized_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    aggregates: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentEngine:
-    # Motivation vs Logic: this engine hands tool selection, clarification, and
-    # response drafting to the Foundry model while keeping execution bounded by
-    # explicit tool schemas, max-step limits, and post-tool JSON formatting.
+    # Motivation vs Logic: this engine now runs an explicit planner -> retrieval
+    # -> validator -> composer lifecycle so every answer is grounded in a
+    # persisted plan, step-by-step TODO progress, and memoized evidence cache.
     def __init__(self, settings: Settings, tool_registry: ToolRegistry, logger: logging.Logger) -> None:
         self.settings = settings
         self.tool_registry = tool_registry
@@ -80,6 +95,13 @@ class AgentEngine:
         inventory_snapshot: dict[str, Any] | None = None
         used_grounded_snapshot_fallback = False
 
+        plan_status, planning_limitations = await self.plan_query(request.message, session_state)
+        limitations.extend(planning_limitations)
+        self._persist_plan_state(session_state, plan_status)
+
+        plan_snapshot = json.dumps(plan_status.model_dump(mode="json"), ensure_ascii=False)
+        thoughts.append(plan_snapshot)
+
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -95,9 +117,13 @@ class AgentEngine:
         # the new prompt to preserve follow-up context across `/query` calls.
         messages.extend(self._conversation_history_messages(session_state))
         messages.append({"role": "user", "content": request.message})
+        messages.append({"role": "assistant", "content": f"Plan Status JSON:\n{plan_snapshot}"})
 
         draft_answer = ""
-        for step in range(self.settings.agent_max_steps):
+        for _ in range(self.settings.agent_max_steps):
+            if self._all_plan_steps_done(plan_status):
+                break
+
             response = await self._complete(messages=messages, enable_tools=True)
             assistant = response["choices"][0]["message"]
             content = assistant.get("content")
@@ -106,19 +132,70 @@ class AgentEngine:
 
             tool_calls = assistant.get("tool_calls") or []
             if not tool_calls:
-                draft_answer = self._extract_user_facing_answer(content)
-                if not draft_answer:
-                    limitations.append("The model returned an empty final assistant message after tool retrieval.")
-                    status_hint = "limited"
-                break
+                candidate_answer = self._extract_user_facing_answer(content)
+                if self._all_plan_steps_done(plan_status):
+                    draft_answer = candidate_answer
+                    if not draft_answer:
+                        limitations.append("The model returned an empty final assistant message after planned retrieval.")
+                        status_hint = "limited"
+                    break
 
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": assistant.get("content"),
-                    "tool_calls": tool_calls,
-                }
-            )
+                next_step = self._next_open_step(plan_status)
+                if next_step is None:
+                    limitations.append("The model returned an empty or premature final assistant message before plan completion.")
+                    limitations.append(self._plan_incomplete_note(next_step))
+                    draft_answer = self._plan_incomplete_answer(next_step)
+                    status_hint = "limited"
+                    break
+
+                resolved_args, resolution_note = self._resolve_planned_step_args(next_step, session_state)
+                if resolved_args is None:
+                    # Root Cause vs Logic: auto-executing an incomplete planned
+                    # `stock.get_product` step caused raw schema validation
+                    # errors to leak into user-visible limitations. We now stop
+                    # and ask for an identifier explicitly when recovery fails.
+                    clarification = ClarificationPayload(
+                        question="Please share the exact product SKU or product ID so I can continue safely.",
+                        options=[],
+                    )
+                    if resolution_note:
+                        limitations.append(resolution_note)
+                    draft_answer = "Please share the exact product SKU or product ID so I can continue safely."
+                    status_hint = "needs_clarification"
+                    plan_status.status = "needs_clarification"
+                    break
+
+                next_step.args = resolved_args
+                if resolution_note:
+                    limitations.append(resolution_note)
+                limitations.append(
+                    f"The model skipped tool selection, so the runtime executed planned step `{next_step.id}` directly."
+                )
+                tool_calls = [
+                    {
+                        "id": f"planned_step_{next_step.id}",
+                        "type": "function",
+                        "function": {
+                            "name": next_step.tool,
+                            "arguments": json.dumps(resolved_args, ensure_ascii=False),
+                        },
+                    }
+                ]
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant.get("content") or self._direct_step_content(next_step),
+                        "tool_calls": tool_calls,
+                    }
+                )
+            else:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": assistant.get("content"),
+                        "tool_calls": tool_calls,
+                    }
+                )
 
             for tool_call in tool_calls:
                 tool_name = tool_call["function"]["name"]
@@ -127,39 +204,80 @@ class AgentEngine:
                     parsed_args = json.loads(raw_arguments)
                 except json.JSONDecodeError:
                     parsed_args = {"_raw": raw_arguments}
+                normalized_args = parsed_args if isinstance(parsed_args, dict) else {"value": parsed_args}
+
+                plan_step, inserted = self._resolve_or_insert_plan_step(plan_status, tool_name, normalized_args)
+                if inserted:
+                    limitations.append(
+                        f"Plan step was added at runtime for `{tool_name}` so retrieval stayed explicit before execution."
+                    )
+                plan_step.status = "in-progress"
+                self._persist_plan_state(session_state, plan_status)
 
                 try:
                     result = await self.tool_registry.call_tool(
                         tool_name,
-                        parsed_args,
+                        normalized_args,
                         session_id=session_state.session_id,
                         thought=(assistant.get("content") or "").strip(),
                     )
+
                     if result.tool == "stock.inventory_snapshot" and isinstance(result.llm_content, dict):
                         inventory_snapshot = result.llm_content
                     if result.trace:
                         traces.append(result.trace)
+
                     new_limitations, new_clarification, new_evidence = self._capture(result.data)
                     limitations.extend(new_limitations)
                     if new_clarification is not None:
                         clarification = new_clarification
                         session_state.last_candidate_list = new_clarification.options
                         status_hint = "needs_clarification"
+                        plan_status.status = "needs_clarification"
                     if new_evidence:
                         for evidence in new_evidence:
                             self._update_session_with_evidence(session_state, evidence)
                         resolved_items = self._merge_evidence(resolved_items, new_evidence)
+
+                    validation, memo_update, validation_limitations = await self.validate_and_record(
+                        session_state=session_state,
+                        plan_status=plan_status,
+                        step=plan_step,
+                        tool_name=tool_name,
+                        tool_args=normalized_args,
+                        result=result,
+                    )
+                    limitations.extend(validation_limitations)
+                    plan_step.validation = validation
+                    plan_step.status = "done"
+
+                    result.plan_status = plan_status
+                    result.memo_update = memo_update
+                    result.validation = validation
+
                     tool_content = self._render_tool_content(result)
                 except (InventoryNotFoundError, ParameterMappingError, UpstreamServiceError, ValueError) as exc:
                     error_trace = ToolTrace(
                         thought=(assistant.get("content") or "").strip(),
                         tool=tool_name,
-                        args=parsed_args if isinstance(parsed_args, dict) else {"value": parsed_args},
+                        args=normalized_args,
                         status="error",
                         normalization_notes=[str(exc)],
                     )
                     traces.append(error_trace)
                     limitations.append(str(exc))
+
+                    validation, memo_update = self._record_failed_step(
+                        session_state=session_state,
+                        plan_status=plan_status,
+                        step=plan_step,
+                        tool_name=tool_name,
+                        tool_args=normalized_args,
+                        error_message=str(exc),
+                    )
+                    plan_step.validation = validation
+                    plan_step.status = "done"
+
                     tool_content = json.dumps(
                         {
                             "error": {
@@ -170,6 +288,8 @@ class AgentEngine:
                         },
                         ensure_ascii=False,
                     )
+                finally:
+                    self._persist_plan_state(session_state, plan_status)
 
                 messages.append(
                     {
@@ -182,6 +302,35 @@ class AgentEngine:
             draft_answer = "I reached the tool-step limit before I could finish safely."
             limitations.append("The agent hit the configured max-step limit.")
             status_hint = "limited"
+            plan_status.status = "blocked"
+
+        plan_complete = self._all_plan_steps_done(plan_status)
+        if clarification is not None:
+            status_hint = "needs_clarification"
+            plan_status.status = "needs_clarification"
+        elif plan_complete:
+            plan_status.status = "complete"
+        elif plan_status.status not in {"blocked", "error"}:
+            plan_status.status = "in-progress"
+
+        if clarification is None and not plan_complete:
+            status_hint = "limited"
+            next_step = self._next_open_step(plan_status)
+            limitations.append(self._plan_incomplete_note(next_step))
+            draft_answer = draft_answer or self._plan_incomplete_answer(next_step)
+
+        if clarification is None and plan_complete:
+            composed_answer, compose_limitations = await self._compose_answer_from_plan(
+                request=request.message,
+                plan_status=plan_status,
+                session_state=session_state,
+                limitations=limitations,
+                include_thoughts=request.includeThoughts,
+                thoughts=thoughts,
+            )
+            limitations.extend(compose_limitations)
+            if composed_answer:
+                draft_answer = composed_answer
 
         # Root Cause vs Logic: the model sometimes returns its last turn with
         # no tool_calls but also empty `content`, which left `draft_answer` blank
@@ -235,6 +384,8 @@ class AgentEngine:
                     limitations=self._dedupe(limitations),
                     clarification=clarification,
                 )
+
+        self._persist_plan_state(session_state, plan_status)
         return AgentRun(
             status=envelope.status,
             answer=envelope.answer,
@@ -243,7 +394,629 @@ class AgentEngine:
             thoughts=thoughts if request.includeThoughts else [],
             tool_trace=traces,
             resolved_items=resolved_items,
+            plan_status=plan_status,
         )
+
+    async def plan_query(self, request: str, session_state: SessionState) -> tuple[PlanStatus, list[str]]:
+        limitations: list[str] = []
+
+        if session_state.current_plan and session_state.current_plan.status == "in-progress":
+            resumed = session_state.current_plan.model_copy(deep=True)
+            if not resumed.memo.entries and session_state.memo_cache.entries:
+                resumed.memo = session_state.memo_cache.model_copy(deep=True)
+            return resumed, []
+
+        if self._client is None:
+            limitations.append("Planner model is unavailable, so a minimal fallback plan was created.")
+            return self._fallback_plan(request, session_state), limitations
+
+        payload = {
+            "model": self.settings.foundry_model,
+            "messages": [
+                {"role": "system", "content": "You return strict JSON planning objects for tool orchestration."},
+                {
+                    "role": "user",
+                    "content": render_planner(
+                        request=request,
+                        session=session_state,
+                        tools=self.tool_registry.list_tools(),
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": 1200,
+        }
+
+        try:
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/planner")
+            content = response_payload["choices"][0]["message"].get("content", "")
+            raw = json.loads(content)
+            plan = self._sanitize_plan(raw, request, session_state)
+            return plan, limitations
+        except (UpstreamServiceError, json.JSONDecodeError, ValidationError) as exc:
+            limitations.append(f"Planner pass failed; fallback plan was used. reason={exc}")
+            return self._fallback_plan(request, session_state), limitations
+
+    async def validate_and_record(
+        self,
+        *,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        step: PlanStep,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: ToolResult,
+    ) -> tuple[PlanValidation, MemoEntry, list[str]]:
+        # Motivation vs Logic: every retrieval now writes normalized rows,
+        # evidence, and validation findings into a shared memo cache so follow-up
+        # steps reuse grounded data instead of re-deriving from raw tool payloads.
+        limitations: list[str] = []
+        validator = await self._validator_envelope(
+            plan_status=plan_status,
+            step=step,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            result=result,
+            memo_cache=session_state.memo_cache,
+        )
+
+        actual_rows = validator.actual_rows
+        if actual_rows is None:
+            actual_rows = self._count_rows(result.data, result.trace)
+
+        expected_rows = validator.expected_rows
+        if expected_rows is None:
+            expected_rows = self._expected_rows(step, result.trace, actual_rows)
+
+        findings = list(validator.findings)
+        if expected_rows is not None and actual_rows is not None and expected_rows != actual_rows:
+            findings.append(
+                f"Expected {expected_rows} rows based on plan/cached context but retrieved {actual_rows}."
+            )
+
+        prior_match = [
+            entry
+            for entry in session_state.memo_cache.entries
+            if entry.tool == tool_name and entry.args == tool_args and entry.rows
+        ]
+        if prior_match:
+            previous_rows = len(prior_match[-1].rows)
+            if previous_rows != actual_rows:
+                findings.append(
+                    f"Cached divergence detected: prior matching call had {previous_rows} rows, current call has {actual_rows}."
+                )
+
+        missing_statistics = list(validator.missing_statistics)
+        if isinstance(result.data, dict):
+            coverage = result.data.get("coverage")
+            if isinstance(coverage, dict):
+                for limitation in coverage.get("limitations", []):
+                    if limitation:
+                        missing_statistics.append(str(limitation))
+
+        validation = PlanValidation(
+            expected_rows=expected_rows,
+            actual_rows=actual_rows,
+            cache_status=result.trace.cache_status if result.trace else None,
+            findings=self._dedupe(findings),
+            ambiguity=self._dedupe(validator.ambiguity),
+            missing_statistics=self._dedupe(missing_statistics),
+            confidence=validator.confidence,
+        )
+
+        normalized_rows = validator.normalized_rows or self._fallback_rows(result.data)
+        normalized_evidence = validator.normalized_evidence or self._fallback_evidence(result.data)
+
+        memo_entry = MemoEntry(
+            step_id=step.id,
+            tool=tool_name,
+            args=tool_args,
+            rows=normalized_rows,
+            evidence=normalized_evidence,
+            aggregates=validator.aggregates,
+            provenance={
+                "tool": tool_name,
+                "args": tool_args,
+                "cache_status": result.trace.cache_status if result.trace else None,
+                "source_data": result.trace.source_data if result.trace else None,
+                "captured_at": self._utc_now_iso(),
+            },
+        )
+
+        session_state.memo_cache.entries.append(memo_entry)
+        session_state.memo_cache.aggregates = self._recompute_memo_aggregates(session_state)
+        plan_status.memo = session_state.memo_cache
+
+        self._update_plan_metadata(session_state, plan_status, step.id, validation)
+
+        if not self.settings.has_foundry:
+            limitations.append("Validator model is unavailable, so deterministic normalization was used.")
+
+        return validation, memo_entry, limitations
+
+    def _record_failed_step(
+        self,
+        *,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        step: PlanStep,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        error_message: str,
+    ) -> tuple[PlanValidation, MemoEntry]:
+        validation = PlanValidation(
+            expected_rows=self._expected_rows(step, None, 0),
+            actual_rows=0,
+            cache_status="error",
+            findings=[error_message],
+            ambiguity=[],
+            missing_statistics=[],
+            confidence=0.0,
+        )
+
+        memo_entry = MemoEntry(
+            step_id=step.id,
+            tool=tool_name,
+            args=tool_args,
+            rows=[],
+            evidence=[],
+            aggregates={},
+            provenance={
+                "tool": tool_name,
+                "args": tool_args,
+                "error": error_message,
+                "captured_at": self._utc_now_iso(),
+            },
+        )
+        session_state.memo_cache.entries.append(memo_entry)
+        session_state.memo_cache.aggregates = self._recompute_memo_aggregates(session_state)
+        plan_status.memo = session_state.memo_cache
+        self._update_plan_metadata(session_state, plan_status, step.id, validation)
+        return validation, memo_entry
+
+    async def _validator_envelope(
+        self,
+        *,
+        plan_status: PlanStatus,
+        step: PlanStep,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result: ToolResult,
+        memo_cache,
+    ) -> ValidatorEnvelope:
+        if self._client is None:
+            return self._fallback_validator_envelope(result)
+
+        trace_payload = result.trace.model_dump(mode="json") if result.trace else {}
+        tool_payload = result.llm_content if result.llm_content is not None else result.data
+        payload = {
+            "model": self.settings.foundry_model,
+            "messages": [
+                {"role": "system", "content": "You return strict JSON validation objects for retrieval outputs."},
+                {
+                    "role": "user",
+                    "content": render_validator(
+                        plan=plan_status,
+                        step=step,
+                        tool_name=tool_name,
+                        tool_args=tool_args,
+                        tool_result=tool_payload,
+                        tool_trace=trace_payload,
+                        memo_cache=memo_cache,
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": 1400,
+        }
+
+        try:
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/validator")
+            content = response_payload["choices"][0]["message"].get("content", "")
+            raw = json.loads(content)
+            return ValidatorEnvelope.model_validate(raw)
+        except (UpstreamServiceError, json.JSONDecodeError, ValidationError) as exc:
+            self.logger.warning("Validator pass failed, using deterministic fallback: %s", exc)
+            fallback = self._fallback_validator_envelope(result)
+            fallback.findings.append("Validator model output was invalid; deterministic fallback normalization was used.")
+            return fallback
+
+    def _fallback_validator_envelope(self, result: ToolResult) -> ValidatorEnvelope:
+        return ValidatorEnvelope(
+            expected_rows=None,
+            actual_rows=self._count_rows(result.data, result.trace),
+            findings=[],
+            ambiguity=[],
+            missing_statistics=[],
+            confidence=None,
+            normalized_rows=self._fallback_rows(result.data),
+            normalized_evidence=self._fallback_evidence(result.data),
+            aggregates={},
+        )
+
+    def _fallback_rows(self, data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, dict):
+            rows = data.get("rows")
+            if isinstance(rows, list):
+                return [item for item in rows if isinstance(item, dict)]
+            items = data.get("items")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+            return [data]
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    def _fallback_evidence(self, data: Any) -> list[dict[str, Any]]:
+        evidence: list[NormalizedEvidence] = []
+        self._collect_evidence(data, evidence)
+        return [item.model_dump(mode="json") for item in evidence]
+
+    def _count_rows(self, data: Any, trace: ToolTrace | None) -> int:
+        if trace and trace.result_count is not None:
+            return max(trace.result_count, 0)
+        if isinstance(data, list):
+            return len(data)
+        if isinstance(data, dict):
+            for key in ["rows", "items", "articles", "sources", "locations", "points", "options"]:
+                value = data.get(key)
+                if isinstance(value, list):
+                    return len(value)
+            forecast = data.get("forecast")
+            if isinstance(forecast, dict) and isinstance(forecast.get("list"), list):
+                return len(forecast.get("list", []))
+            rates = data.get("rates")
+            if isinstance(rates, dict):
+                return len(rates)
+            return 1 if data else 0
+        return 0
+
+    def _expected_rows(self, step: PlanStep, trace: ToolTrace | None, actual_rows: int) -> int:
+        args = step.args or {}
+        page_size = args.get("pageSize")
+        if isinstance(page_size, int) and page_size > 0:
+            if trace and trace.result_count is not None and trace.result_count < page_size:
+                return trace.result_count
+            return page_size
+        if trace and trace.result_count is not None:
+            return trace.result_count
+        return actual_rows
+
+    def _resolve_or_insert_plan_step(
+        self,
+        plan_status: PlanStatus,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[PlanStep, bool]:
+        for step in plan_status.steps:
+            if step.tool == tool_name and step.status != "done":
+                if args:
+                    step.args = args
+                return step, False
+
+        next_id = max((step.id for step in plan_status.steps), default=0) + 1
+        inserted = PlanStep(
+            id=next_id,
+            name=f"runtime step {next_id}",
+            tool=tool_name,
+            status="pending",
+            args=args,
+            hypotheses=["Tool was required by runtime retrieval before the plan listed it explicitly."],
+            validation=None,
+        )
+        plan_status.steps.append(inserted)
+        return inserted, True
+
+    def _all_plan_steps_done(self, plan_status: PlanStatus) -> bool:
+        return bool(plan_status.steps) and all(step.status == "done" for step in plan_status.steps)
+
+    def _next_open_step(self, plan_status: PlanStatus) -> PlanStep | None:
+        for step in plan_status.steps:
+            if step.status != "done":
+                return step
+        return None
+
+    def _plan_incomplete_note(self, step: PlanStep | None) -> str:
+        if step is None:
+            return "The plan is still incomplete because no executable step was resolved."
+        return (
+            f"Planned retrieval+validation is incomplete; next required step is "
+            f"`plan.step.{step.id}` via `{step.tool}`."
+        )
+
+    def _plan_incomplete_answer(self, step: PlanStep | None) -> str:
+        if step is None:
+            return (
+                "I couldn't finish this accurately with the available evidence. "
+                "Please retry or narrow what you want me to list."
+            )
+        return (
+            "I need one more pass to verify this before I can answer reliably. "
+            "Please confirm the exact product or variant you want."
+        )
+
+    def _direct_step_content(self, step: PlanStep) -> str:
+        return (
+            "<thought>\n"
+            f"goal: Execute planned retrieval step {step.id}\n"
+            "entity_guess: unknown\n"
+            "strategy: exact lookup\n"
+            f"tool: {step.tool}\n"
+            f"args_draft: {step.args}\n"
+            "risk: none\n"
+            "</thought>"
+        )
+
+    def _resolve_planned_step_args(
+        self,
+        step: PlanStep,
+        session_state: SessionState,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        args = dict(step.args or {})
+        if step.tool != "stock.get_product":
+            return args, None
+
+        compact_id = self._compact_identifier(args.get("id"))
+        compact_sku = self._compact_identifier(args.get("sku"))
+        if compact_id or compact_sku:
+            normalized = dict(args)
+            normalized["id"] = compact_id
+            normalized["sku"] = compact_sku
+            return normalized, None
+
+        recovered = self._recover_product_identifier(session_state)
+        if recovered is None:
+            return (
+                None,
+                (
+                    f"Planned step `{step.id}` could not run because `stock.get_product` "
+                    "requires an `id` or `sku`, and no reusable identifier was present in session evidence."
+                ),
+            )
+
+        normalized = dict(args)
+        normalized.update(recovered)
+        return (
+            normalized,
+            (
+                f"Runtime recovered missing lookup args for planned step `{step.id}` "
+                f"from session evidence ({', '.join(recovered.keys())})."
+            ),
+        )
+
+    def _recover_product_identifier(self, session_state: SessionState) -> dict[str, str] | None:
+        for identifier in session_state.recent_resolved_identifiers:
+            compact = self._compact_identifier(identifier)
+            if not compact:
+                continue
+            if self._looks_like_uuid(compact):
+                return {"id": compact}
+            return {"sku": compact}
+
+        for option in session_state.last_candidate_list:
+            if option.sku:
+                compact = self._compact_identifier(option.sku)
+                if compact:
+                    return {"sku": compact}
+            if option.product_id:
+                compact = self._compact_identifier(option.product_id)
+                if compact:
+                    return {"id": compact}
+
+        for entry in reversed(session_state.memo_cache.entries):
+            recovered = self._recover_identifier_from_memo_entry(entry)
+            if recovered is not None:
+                return recovered
+
+        return None
+
+    def _recover_identifier_from_memo_entry(self, entry: MemoEntry) -> dict[str, str] | None:
+        for key, target in [("sku", "sku"), ("id", "id"), ("product_id", "id"), ("productId", "id")]:
+            candidate = self._compact_identifier(entry.args.get(key))
+            if candidate:
+                return {target: candidate}
+
+        for collection in [entry.evidence, entry.rows]:
+            for item in collection:
+                if not isinstance(item, dict):
+                    continue
+                for key, target in [("sku", "sku"), ("product_id", "id"), ("productId", "id"), ("id", "id")]:
+                    candidate = self._compact_identifier(item.get(key))
+                    if candidate:
+                        return {target: candidate}
+        return None
+
+    def _compact_identifier(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        compact = value.strip()
+        return compact or None
+
+    def _looks_like_uuid(self, value: str) -> bool:
+        return bool(UUID_PATTERN.match(value))
+
+    def _persist_plan_state(self, session_state: SessionState, plan_status: PlanStatus) -> None:
+        plan_status.memo = session_state.memo_cache
+        session_state.current_plan = plan_status
+        session_state.plan_todo = [step.model_copy(deep=True) for step in plan_status.steps]
+        session_state.plan_metadata.sorted_priorities = [
+            step.id for step in plan_status.steps if step.status != "done"
+        ] + [step.id for step in plan_status.steps if step.status == "done"]
+
+    def persist_plan_state(self, session_state: SessionState, plan_status: PlanStatus) -> None:
+        self._persist_plan_state(session_state, plan_status)
+
+    def _update_plan_metadata(
+        self,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        step_id: int,
+        validation: PlanValidation,
+    ) -> None:
+        score_key = f"plan.step.{step_id}"
+        if validation.confidence is not None:
+            session_state.plan_metadata.confidence_scores[score_key] = validation.confidence
+        session_state.plan_metadata.validation_findings = self._dedupe(
+            session_state.plan_metadata.validation_findings + validation.findings + validation.ambiguity
+        )
+        session_state.plan_metadata.sorted_priorities = [
+            step.id for step in plan_status.steps if step.status != "done"
+        ] + [step.id for step in plan_status.steps if step.status == "done"]
+
+    def _recompute_memo_aggregates(self, session_state: SessionState) -> dict[str, Any]:
+        tool_counts: dict[str, int] = {}
+        stock_rankings: list[dict[str, Any]] = []
+
+        for entry in session_state.memo_cache.entries:
+            tool_counts[entry.tool] = tool_counts.get(entry.tool, 0) + 1
+            for record in entry.evidence + entry.rows:
+                total_stock = self._extract_total_stock(record)
+                if total_stock is None:
+                    continue
+                stock_rankings.append(
+                    {
+                        "label": self._record_label(record),
+                        "totalStock": total_stock,
+                        "tool": entry.tool,
+                        "step_id": entry.step_id,
+                    }
+                )
+
+        top_ranked = sorted(stock_rankings, key=lambda item: item["totalStock"], reverse=True)[:5]
+        return {
+            "entry_count": len(session_state.memo_cache.entries),
+            "tool_counts": tool_counts,
+            "top_5_by_total_stock": top_ranked,
+        }
+
+    def _extract_total_stock(self, record: dict[str, Any]) -> int | None:
+        direct = record.get("totalStock")
+        if isinstance(direct, (int, float)):
+            return int(direct)
+        stock = record.get("stock")
+        if isinstance(stock, dict):
+            nested = stock.get("totalStock")
+            if isinstance(nested, (int, float)):
+                return int(nested)
+        return None
+
+    def _record_label(self, record: dict[str, Any]) -> str:
+        for key in ["variant_name", "variant", "product_name", "product", "sku"]:
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return "unknown"
+
+    def _sanitize_plan(self, raw: dict[str, Any], request: str, session_state: SessionState) -> PlanStatus:
+        parsed = PlanStatus.model_validate(raw)
+        allowed_tools = {tool.name for tool in self.tool_registry.list_tools()}
+
+        sanitized_steps: list[PlanStep] = []
+        next_id = 1
+        for step in parsed.steps:
+            if step.tool not in allowed_tools:
+                continue
+            status = step.status if step.status in {"planned", "pending", "in-progress", "done"} else "planned"
+            sanitized_steps.append(
+                PlanStep(
+                    id=next_id,
+                    name=step.name or f"step {next_id}",
+                    tool=step.tool,
+                    status=status,
+                    args=step.args or {},
+                    hypotheses=step.hypotheses or [],
+                    validation=step.validation,
+                )
+            )
+            next_id += 1
+
+        if not sanitized_steps:
+            return self._fallback_plan(request, session_state)
+
+        memo = session_state.memo_cache.model_copy(deep=True)
+        if parsed.memo.entries:
+            memo.entries.extend(parsed.memo.entries)
+            memo.aggregates = parsed.memo.aggregates or memo.aggregates
+
+        return PlanStatus(
+            goal=parsed.goal or request,
+            steps=sanitized_steps,
+            memo=memo,
+            status="in-progress",
+        )
+
+    def _fallback_plan(self, request: str, session_state: SessionState) -> PlanStatus:
+        tool_names = [tool.name for tool in self.tool_registry.list_tools()]
+        default_tool = tool_names[0] if tool_names else "session.get_state"
+        return PlanStatus(
+            goal=request,
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="initial retrieval",
+                    tool=default_tool,
+                    status="planned",
+                    args={},
+                    hypotheses=["Fallback plan created because planner output was unavailable."],
+                    validation=None,
+                )
+            ],
+            memo=session_state.memo_cache.model_copy(deep=True),
+            status="in-progress",
+        )
+
+    async def _compose_answer_from_plan(
+        self,
+        *,
+        request: str,
+        plan_status: PlanStatus,
+        session_state: SessionState,
+        limitations: list[str],
+        include_thoughts: bool,
+        thoughts: list[str],
+    ) -> tuple[str, list[str]]:
+        if self._client is None:
+            return "", ["Composer model is unavailable, so no final synthesis pass could run."]
+
+        payload = {
+            "model": self.settings.foundry_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You write final user-facing answers grounded in retrieved evidence only.",
+                },
+                {
+                    "role": "user",
+                    "content": render_composer(
+                        request=request,
+                        plan=plan_status,
+                        memo_cache=session_state.memo_cache,
+                        limitations=self._composer_limitations(limitations),
+                    ),
+                },
+            ],
+            "max_completion_tokens": self.settings.agent_completion_tokens,
+        }
+
+        try:
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/composer")
+        except UpstreamServiceError as exc:
+            self.logger.warning("Composer pass failed: %s", exc)
+            return "", [str(exc)]
+
+        assistant = response_payload["choices"][0]["message"]
+        content = assistant.get("content")
+        if content and include_thoughts:
+            thoughts.append(content.strip())
+
+        if assistant.get("tool_calls"):
+            return "", ["Composer attempted tool calls; synthesis was blocked to keep final output grounded."]
+
+        rendered = self._extract_user_facing_answer(content)
+        if rendered:
+            return rendered, []
+
+        return "", ["Composer pass returned empty content."]
 
     async def _complete(
         self,
@@ -461,7 +1234,7 @@ class AgentEngine:
         limitations.append("The model ended the synthesis pass without a user-facing answer.")
         return "", limitations
 
-    def _render_tool_content(self, result) -> str:
+    def _render_tool_content(self, result: ToolResult) -> str:
         payload = result.llm_content if result.llm_content is not None else result.data
         return json.dumps(payload, ensure_ascii=False)
 
@@ -530,3 +1303,28 @@ class AgentEngine:
             seen.add(value)
             deduped.append(value)
         return deduped
+
+    def _composer_limitations(self, limitations: list[str]) -> list[str]:
+        technical_markers = (
+            "plan.step",
+            "tool",
+            "cache",
+            "redis",
+            "validator",
+            "runtime",
+            "json",
+            "args",
+            "status",
+            "model output",
+            "trace",
+        )
+        filtered: list[str] = []
+        for limitation in self._dedupe(limitations):
+            lower = limitation.lower()
+            if any(marker in lower for marker in technical_markers):
+                continue
+            filtered.append(limitation)
+        return filtered
+
+    def _utc_now_iso(self) -> str:
+        return datetime.now(tz=UTC).isoformat()

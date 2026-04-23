@@ -66,7 +66,7 @@ class StdioMcpApplication:
     def _adapter(self) -> McpToolAdapter:
         container = self._require_container()
         return McpToolAdapter(
-            tool_registry=container.tool_registry,
+            orchestrator_service=container.orchestrator_service,
             default_session_id=container.settings.default_session_id,
             logger=self.logger,
         )

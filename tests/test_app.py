@@ -8,7 +8,7 @@ from app.agent.engine import AgentEngine, AgentRun
 from app.tool.currency.service import CurrencyProviderError
 from app.config import Settings, UpstreamServiceError
 from app.main import create_app
-from app.schemas import ToolTrace
+from app.schemas import MemoCache, PlanStatus, PlanStep, ToolTrace
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
 
@@ -102,6 +102,9 @@ def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
     assert payload["tool"] == "stock.search_catalogue"
     names = [item["name"] for item in payload["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
+    assert payload["plan_status"]["status"] == "complete"
+    assert payload["memo_update"]["tool"] == "stock.search_catalogue"
+    assert payload["validation"]["actual_rows"] is not None
 
 
 def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> None:
@@ -129,6 +132,38 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
     assert "in stock" in row["stock"]
     assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
     assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
+    assert payload["plan_status"]["steps"][0]["tool"] == "stock.inventory_snapshot"
+    assert payload["validation"]["expected_rows"] is not None
+
+
+def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls() -> None:
+    session_id = f"tool-plan-{uuid4()}"
+
+    with build_client() as client:
+        first = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock.search_catalogue",
+                "sessionId": session_id,
+                "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
+            },
+        )
+        second = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock.search_catalogue",
+                "sessionId": session_id,
+                "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    first_payload = first.json()
+    second_payload = second.json()
+    assert first_payload["plan_status"]["steps"][0]["status"] == "done"
+    assert len(second_payload["plan_status"]["steps"]) >= 2
+    assert second_payload["plan_status"]["memo"]["aggregates"]["entry_count"] >= 2
 
 
 def test_rest_tool_endpoint_returns_structured_bad_request_for_invalid_args() -> None:
@@ -275,6 +310,22 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
             ],
             limitations=[],
             resolved_items=[],
+            plan_status=PlanStatus(
+                goal="Resolve SKU",
+                steps=[
+                    PlanStep(
+                        id=1,
+                        name="fetch product",
+                        tool="stock.get_product",
+                        status="done",
+                        args={"sku": "fl-la-la-lam-1-ble"},
+                        hypotheses=[],
+                        validation=None,
+                    )
+                ],
+                memo=MemoCache(entries=[], aggregates={}),
+                status="complete",
+            ),
         )
 
     monkeypatch.setattr(AgentEngine, "run", fake_run)
@@ -290,6 +341,8 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "answered"
+    assert payload["plan_status"]["status"] == "complete"
+    assert payload["plan_status"]["steps"][0]["tool"] == "stock.get_product"
     assert payload["mock_ui"] is None
     assert payload["mock_ui_path"] == "/api/v1/ui"
     assert ui_response.status_code == 200

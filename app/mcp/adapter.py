@@ -13,16 +13,16 @@ from app.config import (
     UnsupportedToolError,
     UpstreamServiceError,
 )
+from app.orchestrator import OrchestratorService
 from app.schemas import ToolResult
-from app.tool.registry import ToolRegistry
 
 
 class McpToolAdapter:
     # Motivation vs Logic: this adapter keeps the business-facing tool registry as
     # the single source of truth, while translating its schemas, session handling,
     # and results into protocol-native MCP `tools/list` and `tools/call` payloads.
-    def __init__(self, tool_registry: ToolRegistry, default_session_id: str, logger: logging.Logger) -> None:
-        self.tool_registry = tool_registry
+    def __init__(self, orchestrator_service: OrchestratorService, default_session_id: str, logger: logging.Logger) -> None:
+        self.orchestrator_service = orchestrator_service
         self.default_session_id = default_session_id
         self.logger = logger
 
@@ -33,7 +33,7 @@ class McpToolAdapter:
                 description=tool.description,
                 inputSchema=tool.input_schema,
             )
-            for tool in self.tool_registry.list_tools()
+            for tool in self.orchestrator_service.tool_registry.list_tools()
         ]
 
     async def call_tool(
@@ -46,7 +46,11 @@ class McpToolAdapter:
         payload = arguments or {}
 
         try:
-            result = await self.tool_registry.call_tool(name, payload, session_id=session_id)
+            result = await self.orchestrator_service.call_tool_with_orchestration(
+                tool_name=name,
+                args=payload,
+                session_id=session_id,
+            )
             self._log_success(result=result, session_id=session_id)
             return self._success_result(result)
         except (UnsupportedToolError, ParameterMappingError, InventoryNotFoundError, UpstreamServiceError) as exc:
@@ -74,6 +78,12 @@ class McpToolAdapter:
         envelope: dict[str, Any] = {"data": result.data}
         if result.normalization_notes:
             envelope["normalization_notes"] = result.normalization_notes
+        if result.plan_status is not None:
+            envelope["plan_status"] = result.plan_status.model_dump(mode="json")
+        if result.memo_update is not None:
+            envelope["memo_update"] = result.memo_update.model_dump(mode="json")
+        if result.validation is not None:
+            envelope["validation"] = result.validation.model_dump(mode="json")
 
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=json.dumps(envelope, ensure_ascii=False, sort_keys=True))],

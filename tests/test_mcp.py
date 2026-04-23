@@ -96,6 +96,9 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     assert result.structuredContent is not None
     names = [item["name"] for item in result.structuredContent["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
+    assert result.structuredContent["plan_status"]["status"] == "complete"
+    assert result.structuredContent["memo_update"]["tool"] == "stock.search_catalogue"
+    assert result.structuredContent["validation"]["actual_rows"] is not None
 
 
 @pytest.mark.anyio

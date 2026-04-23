@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import anyio
 import httpx
 import pytest
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -403,6 +404,204 @@ async def test_inventory_snapshot_hydrates_multi_variant_rows_in_cloud_mode() ->
         assert rows_by_sku["fn-se-ch-alt-whi"].size == "0.5 x 0.5 x 0.9 m"
         assert "Overall has 50 in stock" in (rows_by_sku["fn-se-ch-alt-bla"].stock or "")
         assert "Overall has 41 in stock" in (rows_by_sku["fn-se-ch-alt-whi"].stock or "")
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+class _ParallelStockSource:
+    def __init__(self) -> None:
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self._details_by_product_id = {
+            "prod-a": self._product_payload("prod-a", "Parallel Chair A", "sku-a", 40),
+            "prod-b": self._product_payload("prod-b", "Parallel Chair B", "sku-b", 30),
+            "prod-c": self._product_payload("prod-c", "Parallel Chair C", "sku-c", 20),
+        }
+        self._details_by_sku = {
+            "sku-a": self._details_by_product_id["prod-a"],
+            "sku-b": self._details_by_product_id["prod-b"],
+            "sku-c": self._details_by_product_id["prod-c"],
+        }
+
+    async def search_catalogue(
+        self,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        items = [
+            {
+                "id": "prod-a",
+                "name": "Parallel Chair A",
+                "departmentId": 3,
+                "subDepartmentId": None,
+                "categoryId": "cat-chair",
+                "isActive": True,
+                "variations": [],
+                "variants": [{"id": "var-a", "name": "Parallel Chair A", "sku": "sku-a", "totalHirable": 10, "optionIds": []}],
+            },
+            {
+                "id": "prod-b",
+                "name": "Parallel Chair B",
+                "departmentId": 3,
+                "subDepartmentId": None,
+                "categoryId": "cat-chair",
+                "isActive": True,
+                "variations": [],
+                "variants": [{"id": "var-b", "name": "Parallel Chair B", "sku": "sku-b", "totalHirable": 9, "optionIds": []}],
+            },
+            {
+                "id": "prod-c",
+                "name": "Parallel Chair C",
+                "departmentId": 3,
+                "subDepartmentId": None,
+                "categoryId": "cat-chair",
+                "isActive": True,
+                "variations": [],
+                "variants": [{"id": "var-c", "name": "Parallel Chair C", "sku": "sku-c", "totalHirable": 8, "optionIds": []}],
+            },
+        ]
+        return {"items": items, "page": page, "pageSize": page_size, "totalCount": len(items), "totalPages": 1}, []
+
+    async def get_product(
+        self,
+        product_id: str | None,
+        sku: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[dict[str, Any], list[str]]:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await anyio.sleep(0.03)
+            if product_id:
+                payload = self._details_by_product_id[product_id]
+            elif sku:
+                payload = self._details_by_sku[sku]
+            else:
+                payload = {"items": [], "page": page, "pageSize": page_size, "totalCount": 0, "totalPages": 0}
+            return payload, []
+        finally:
+            self.in_flight -= 1
+
+    async def close(self) -> None:
+        return
+
+    def _product_payload(self, product_id: str, name: str, sku: str, total_stock: int) -> dict[str, Any]:
+        return {
+            "items": [
+                {
+                    "id": product_id,
+                    "name": name,
+                    "departmentId": 3,
+                    "subDepartmentId": None,
+                    "categoryId": "cat-chair",
+                    "isActive": True,
+                    "variations": [],
+                    "variants": [
+                        {
+                            "id": f"var-{product_id}",
+                            "name": name,
+                            "sku": sku,
+                            "totalHirable": total_stock - 2,
+                            "optionIds": [],
+                            "details": {
+                                "departmentId": 3,
+                                "subDepartmentId": None,
+                                "isActive": True,
+                                "generalRate": 40.0,
+                                "expoRate": 35.0,
+                                "assignedCategoryId": "cat-chair",
+                                "dimensional": True,
+                                "canBeSoldInPortions": False,
+                                "startDate": None,
+                                "endDate": None,
+                                "salesNote": f"{name} stock detail",
+                                "length": 0.5,
+                                "width": 0.5,
+                                "height": 0.9,
+                                "vicStock": total_stock - 5,
+                                "vicHirable": total_stock - 6,
+                                "nswStock": 3,
+                                "nswHirable": 2,
+                                "qldStock": 2,
+                                "qldHirable": 1,
+                                "totalStock": total_stock,
+                                "lastUpdatedDate": "2026-04-23T00:00:00Z",
+                                "imageFileName": "/stock/product-images/parallel.png",
+                                "cost": 10.0,
+                                "components": [],
+                            },
+                        }
+                    ],
+                }
+            ],
+            "page": 1,
+            "pageSize": 20,
+            "totalCount": 1,
+            "totalPages": 1,
+        }
+
+
+@pytest.mark.anyio
+async def test_compare_variants_resolves_stock_lookups_in_parallel() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _ParallelStockSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.parallel.compare"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.parallel.compare"),
+    )
+
+    try:
+        evidence_items, _, _ = await service.compare_variants(["sku-a", "sku-b", "sku-c"])
+        assert len(evidence_items) == 3
+        assert source.max_in_flight >= 2
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_fetches_multi_product_details_in_parallel() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _ParallelStockSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.parallel.snapshot"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.parallel.snapshot"),
+    )
+
+    try:
+        snapshot, _, _ = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, pageSize=3, search="parallel chair")
+        )
+        assert snapshot.coverage.enrichedProducts == 3
+        assert snapshot.coverage.enrichedVariants == 3
+        assert source.max_in_flight >= 2
     finally:
         await source.close()
         await key_value_store.close()

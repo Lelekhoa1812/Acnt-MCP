@@ -15,9 +15,9 @@ def build_tools_router() -> APIRouter:
 
     @router.post("/tools/call")
     async def call_tool(payload: CallToolRequest, container = Depends(get_container)) -> dict[str, object]:
-        result = await container.tool_registry.call_tool(
-            payload.tool,
-            payload.args,
+        result = await container.orchestrator_service.call_tool_with_orchestration(
+            tool_name=payload.tool,
+            args=payload.args,
             session_id=payload.sessionId,
         )
         return result.model_dump(mode="json")
