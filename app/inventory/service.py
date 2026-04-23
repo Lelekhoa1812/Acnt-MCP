@@ -7,6 +7,7 @@ from typing import Any
 
 from app.config import Settings
 from app.errors import InventoryNotFoundError, ParameterMappingError
+from app.inventory.media import build_harmonise_image_url
 from app.inventory.source import HarmoniseInventorySource
 from app.schemas import (
     InventorySnapshotCoverage,
@@ -323,8 +324,10 @@ class InventoryService:
             "totalStock": f"{details_path}.totalStock",
             "lastUpdatedDate": f"{details_path}.lastUpdatedDate",
             "imageFileName": f"{details_path}.imageFileName",
+            "imageUrl": "derived: CLOUD_HARMONISE_IMAGE + imageFileName",
             "isActive": f"{details_path}.isActive",
         }
+        image_file_name = details.imageFileName if details else None
         return NormalizedEvidence(
             entity_level="variant",
             product_id=product.id,
@@ -366,7 +369,10 @@ class InventoryService:
                 endDate=details.endDate if details else None,
                 lastUpdatedDate=details.lastUpdatedDate if details else None,
             ),
-            media=MediaSnapshot(imageFileName=details.imageFileName if details else None),
+            media=MediaSnapshot(
+                imageFileName=image_file_name,
+                imageUrl=build_harmonise_image_url(self.settings.cloud_harmonise_image, image_file_name),
+            ),
             components=list(details.components if details else []),
             provenance=ProvenanceSnapshot(
                 tool=tool_name,

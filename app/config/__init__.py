@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     log_level: str = Field("debug", alias="HTH_LOG_LEVEL")
     data_source: str = Field("harmonise", alias="HTH_DATA_SOURCE")
     local_harmonise: bool = Field(False, alias="LOCAL_HARMONISE")
-    harmonise_base_url: str = Field("http://localhost:8080", alias="HTH_HARMONISE_BASE_URL")
+    local_harmonise_endpoint: str = Field("http://localhost:9000", alias="LOCAL_HARMONISE_ENDPOINT")
+    cloud_harmonise_endpoint: str = Field("http://localhost:9000", alias="CLOUD_HARMONISE_ENDPOINT")
+    cloud_harmonise_api: str | None = Field(None, alias="CLOUD_HARMONISE_API")
+    cloud_harmonise_image: str | None = Field(None, alias="CLOUD_HARMONISE_IMAGE")
     harmonise_headers: str = Field("{}", alias="HTH_HARMONISE_HEADERS")
     harmonise_timeout_ms: int = Field(10000, alias="HTH_HARMONISE_TIMEOUT_MS")
     redis_url: str = Field("redis://localhost:6379", alias="HTH_REDIS_URL")
@@ -77,6 +80,10 @@ class Settings(BaseSettings):
         return "local" if self.local_harmonise else "remote"
 
     @property
+    def harmonise_base_url(self) -> str:
+        return self.local_harmonise_endpoint if self.local_harmonise else self.cloud_harmonise_endpoint
+
+    @property
     def data_source_label(self) -> str:
         return f"harmonise_{self.harmonise_mode}"
 
@@ -98,6 +105,15 @@ class Settings(BaseSettings):
             return {}
         return {str(key): str(value) for key, value in parsed.items()}
 
+    @property
+    def harmonise_client_headers(self) -> dict[str, str]:
+        # Motivation vs Logic: cloud Harmonise uses a fixed API-key contract,
+        # while local simulation should avoid requiring cloud credentials.
+        headers = dict(self.harmonise_header_map)
+        if not self.local_harmonise and self.cloud_harmonise_api:
+            headers["x-product-api-key"] = self.cloud_harmonise_api
+        return headers
+
     def resolve_path(self, raw_path: str) -> Path:
         path = Path(raw_path)
         if path.is_absolute():
@@ -116,8 +132,13 @@ class Settings(BaseSettings):
         if self.local_harmonise:
             notes.append(
                 "LOCAL_HARMONISE=true; the service runtimes will call the in-process Harmonise simulator "
-                "instead of reading mock JSON directly."
+                f"using LOCAL_HARMONISE_ENDPOINT ({self.local_harmonise_endpoint})."
             )
+        else:
+            if not self.cloud_harmonise_endpoint:
+                notes.append("CLOUD_HARMONISE_ENDPOINT is missing while LOCAL_HARMONISE=false.")
+            if not self.cloud_harmonise_api:
+                notes.append("CLOUD_HARMONISE_API is missing while LOCAL_HARMONISE=false.")
         if not self.redis_fallback_enabled:
             notes.append(
                 "HTH_REDIS_FALLBACK_ENABLED=false; session and shared caches require a reachable Redis at "

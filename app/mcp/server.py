@@ -30,7 +30,8 @@ class StdioMcpApplication:
             instructions=(
                 "Protocol-compliant MCP tool server for Harmonise inventory intelligence. "
                 "Use tools for inventory lookup, variant resolution, comparison, and optional "
-                "news, weather, and currency integrations."
+                "news, weather, and currency integrations. Prefer name-first responses, keep "
+                "answers scoped to requested attributes, and return image URLs when media is requested."
             ),
             lifespan=self._lifespan,
         )
@@ -94,7 +95,7 @@ async def run_stdio_server(settings: Settings | None = None) -> None:
                 server_version=resolved_settings.server_version,
                 instructions=(
                     "HTH Stock Intelligence MCP server. Use the registered tools for grounded "
-                    "inventory and plugin-backed lookups."
+                    "inventory and plugin-backed lookups with intent-aligned, scoped responses."
                 ),
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),

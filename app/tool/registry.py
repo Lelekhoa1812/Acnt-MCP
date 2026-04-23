@@ -17,6 +17,7 @@ from app.currency import (
     CurrencyTimeseriesArgs,
 )
 from app.errors import ParameterMappingError, UnsupportedToolError
+from app.inventory.media import build_harmonise_image_url
 from app.inventory.service import InventoryService
 from app.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.resolver import ResolverService
@@ -178,7 +179,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="harmonise -> product-catalogue.items[*]",
+                source_data="harmonise -> products.items[*]",
                 result_count=len(data.items),
                 normalization_notes=notes,
             )
@@ -270,18 +271,21 @@ class ToolRegistry:
                 trace=trace,
             )
 
-        self._register(
-            "stock.get_departments",
-            "Retrieve department metadata and optional sub-departments for inventory narrowing.",
-            StockGetDepartmentsArgs,
-            get_departments,
-        )
-        self._register(
-            "stock.get_categories",
-            "Retrieve paged category metadata from Harmonise.",
-            StockGetCategoriesArgs,
-            get_categories,
-        )
+        if self.inventory_service.settings.local_harmonise:
+            # Motivation vs Logic: the cloud Harmonise contract currently exposes
+            # product endpoints only, so metadata tools are local-dev only.
+            self._register(
+                "stock.get_departments",
+                "Retrieve department metadata and optional sub-departments for inventory narrowing.",
+                StockGetDepartmentsArgs,
+                get_departments,
+            )
+            self._register(
+                "stock.get_categories",
+                "Retrieve paged category metadata from Harmonise.",
+                StockGetCategoriesArgs,
+                get_categories,
+            )
         self._register(
             "stock.search_catalogue",
             "Search the Harmonise product catalogue with search text and supported filters.",
@@ -367,6 +371,7 @@ class ToolRegistry:
 
     def _product_variant_model_view(self, variant) -> dict[str, Any]:
         details = variant.details
+        image_file_name = details.imageFileName if details else None
         return {
             "id": variant.id,
             "name": variant.name,
@@ -387,6 +392,11 @@ class ToolRegistry:
                 "cost": details.cost if details else None,
                 "dimensional": details.dimensional if details else None,
                 "canBeSoldInPortions": details.canBeSoldInPortions if details else None,
+                "imageFileName": image_file_name,
+                "imageUrl": build_harmonise_image_url(
+                    self.inventory_service.settings.cloud_harmonise_image,
+                    image_file_name,
+                ),
             },
         }
 
@@ -400,6 +410,7 @@ class ToolRegistry:
             "dimensions": evidence.dimensions.model_dump(mode="json"),
             "stock": evidence.stock.model_dump(mode="json"),
             "pricing": evidence.pricing.model_dump(mode="json"),
+            "media": evidence.media.model_dump(mode="json"),
             "isActive": evidence.isActive,
             "provenance": evidence.provenance.model_dump(mode="json"),
         }

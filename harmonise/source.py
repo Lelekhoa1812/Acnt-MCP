@@ -116,6 +116,35 @@ class MockService:
         )
         return response.model_dump(mode="json")
 
+    def get_product_by_sku_code(
+        self,
+        sku_code: str,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        # Motivation vs Logic: cloud `/api/v1/products/{skuCode}` returns a
+        # SKU-scoped detail payload, so local simulation trims variants to the
+        # requested SKU for behavior parity while leaving legacy stock routes
+        # unchanged for migration compatibility.
+        payload = self.get_product(product_id=None, sku=sku_code, page=page, page_size=page_size)
+        scoped_items: list[dict[str, Any]] = []
+        for item in payload.get("items", []):
+            scoped_variants = [variant for variant in item.get("variants", []) if variant.get("sku") == sku_code]
+            if not scoped_variants:
+                continue
+            scoped_item = dict(item)
+            scoped_item["variants"] = scoped_variants
+            scoped_items.append(scoped_item)
+
+        response = ProductListItemDtoPagedResponse(
+            items=[ProductListItemDto.model_validate(item) for item in scoped_items],
+            page=page,
+            pageSize=page_size,
+            totalCount=len(scoped_items),
+            totalPages=max(1, (len(scoped_items) + page_size - 1) // page_size),
+        )
+        return response.model_dump(mode="json")
+
     def _catalogue_items(self) -> list[ProductListItemDto]:
         if self._catalogue_payload is None:
             self._catalogue_payload = self._load_required_json(self.settings.resolve_path(self.settings.mock_catalog_path))

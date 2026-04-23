@@ -69,6 +69,11 @@ If the request is about bookings, quotes, reservations, or event line items, set
 Do not invent a new clarification topic unless the provided clarification payload already requires it.
 Do not ask for data sources, tools, or setup details when the draft already came from completed tool retrieval.
 If the draft says the run is partial or incomplete, prefer limited or error over answered.
+Keep the answer scoped to the user's requested attributes; do not append unrelated fields.
+If the user asked for a specific variant or SKU, answer only that variant.
+If the user asked generally about a product family, cover all resolved variants and deduplicate repeated values in the response.
+Prefer product and variant names in prose; include SKUs only when requested or needed for disambiguation.
+Keep the final wording aligned to the user's original intent.
 """.strip()
 
 
@@ -112,6 +117,11 @@ Behavior rules:
 - Treat weather/news/currency tools as external plugin demonstrations and keep vendor limitations explicit.
 - Never invent unsupported filters, rates, stock quantities, or historical facts.
 - If a tool returns an upstream limitation or auth error, explain it plainly and stop guessing.
+- Keep answers scoped to the requested attributes; do not include extra stock/spec fields unless asked.
+- If the user targets a specific variant directly, answer that variant only.
+- If the user asks generally about a product catalogue/family, summarize all resolved variants and deduplicate repeated values.
+- Prefer product and variant names over SKU unless SKU is explicitly requested or needed to disambiguate.
+- Final answer wording must align with the original user request intent after all tool calls.
 - When stock.search_catalogue returns variant SKUs, reuse those SKUs for follow-up size, colour, and details lookups.
 - Do not call stock.get_variant_evidence with variantId alone; pair variantId with sku or product id, or just use sku directly.
 - If a tool call fails, do not repeat the same failing argument pattern. Adjust the next call using identifiers already returned by prior tools.

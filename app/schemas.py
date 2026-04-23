@@ -145,6 +145,7 @@ class LifecycleSnapshot(BaseModel):
 
 class MediaSnapshot(BaseModel):
     imageFileName: str | None = None
+    imageUrl: str | None = None
 
 
 class ProvenanceSnapshot(BaseModel):

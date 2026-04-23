@@ -79,7 +79,15 @@ Use `.env.example` as the starting point.
 Inventory-only local development works with:
 
 - `LOCAL_HARMONISE=true`
+- `LOCAL_HARMONISE_ENDPOINT=http://localhost:9000` (or your local simulator URL)
 - A running Redis at `HTH_REDIS_URL` (default `redis://localhost:6379`), **or** `HTH_REDIS_FALLBACK_ENABLED=true` if you accept non-persistent in-memory cache only
+
+Cloud Harmonise mode works with:
+
+- `LOCAL_HARMONISE=false`
+- `CLOUD_HARMONISE_ENDPOINT=https://...`
+- `CLOUD_HARMONISE_API=...` (sent as `x-product-api-key`)
+- `CLOUD_HARMONISE_IMAGE=https://...` (used to compose `media.imageUrl`)
 
 `/api/v1/query` additionally requires:
 
@@ -124,6 +132,7 @@ The repo includes a working example at `.mcp.json`:
       "args": ["-m", "app.mcp.server"],
       "env": {
         "LOCAL_HARMONISE": "true",
+        "LOCAL_HARMONISE_ENDPOINT": "http://localhost:9000",
         "HTH_REDIS_FALLBACK_ENABLED": "false",
         "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
@@ -148,6 +157,32 @@ Use the same command in the Claude Desktop MCP config and replace the path with 
       "cwd": "/absolute/path/to/hth-mcp",
       "env": {
         "LOCAL_HARMONISE": "true",
+        "LOCAL_HARMONISE_ENDPOINT": "http://localhost:9000",
+        "HTH_REDIS_FALLBACK_ENABLED": "false",
+        "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
+        "HTH_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop / Claude.ai cloud profile
+
+For production-style cloud Harmonise retrieval (`LOCAL_HARMONISE=false`), use:
+
+```json
+{
+  "mcpServers": {
+    "hth-stock-intelligence": {
+      "command": "python3",
+      "args": ["-m", "app.mcp.server"],
+      "cwd": "/absolute/path/to/hth-mcp",
+      "env": {
+        "LOCAL_HARMONISE": "false",
+        "CLOUD_HARMONISE_ENDPOINT": "https://your-harmonise-host",
+        "CLOUD_HARMONISE_API": "your-product-api-key",
+        "CLOUD_HARMONISE_IMAGE": "https://your-image-host",
         "HTH_REDIS_FALLBACK_ENABLED": "false",
         "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
         "HTH_LOG_LEVEL": "INFO"
@@ -210,10 +245,16 @@ The inventory service always speaks the Harmonise-style contract.
 
 - `LOCAL_HARMONISE=true`
   - routes inventory calls to the in-process simulator in `harmonise/main.py`
-  - reads mock JSON from `mock/` through the simulator transport
+  - uses `LOCAL_HARMONISE_ENDPOINT` as the local contract base URL
+  - supports both cloud-style product endpoints and legacy stock endpoints in local simulation
 - `LOCAL_HARMONISE=false`
-  - routes inventory calls to the real Harmonise base URL in `HTH_HARMONISE_BASE_URL`
-  - passes optional headers from `HTH_HARMONISE_HEADERS`
+  - routes inventory calls to `CLOUD_HARMONISE_ENDPOINT`
+  - uses cloud contract endpoints:
+    - `GET /api/v1/products`
+    - `GET /api/v1/products/{skuCode}`
+  - always sends `x-product-api-key` from `CLOUD_HARMONISE_API`
+  - composes image URLs from `CLOUD_HARMONISE_IMAGE + imageFileName`
+  - hides metadata tools (`stock.get_departments`, `stock.get_categories`) because those endpoints are not available in cloud mode
 
 ## Testing
 

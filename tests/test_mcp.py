@@ -33,6 +33,19 @@ def build_mcp_settings() -> Settings:
     )
 
 
+def build_mcp_cloud_settings() -> Settings:
+    return Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="test-api-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        log_level="warning",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+    )
+
+
 @pytest.mark.anyio
 async def test_mcp_initialize_and_list_tools() -> None:
     server = build_mcp_server(build_mcp_settings())
@@ -52,6 +65,20 @@ async def test_mcp_initialize_and_list_tools() -> None:
 
     currency_convert = next(tool for tool in tools.tools if tool.name == "currency.convert")
     assert "from" in currency_convert.inputSchema["properties"]
+
+
+@pytest.mark.anyio
+async def test_mcp_cloud_mode_hides_metadata_tools() -> None:
+    server = build_mcp_server(build_mcp_cloud_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        tools = await client.list_tools()
+
+    tool_names = {tool.name for tool in tools.tools}
+    assert "stock.get_departments" not in tool_names
+    assert "stock.get_categories" not in tool_names
+    assert "stock.search_catalogue" in tool_names
 
 
 @pytest.mark.anyio

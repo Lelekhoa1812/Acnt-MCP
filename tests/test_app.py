@@ -30,6 +30,21 @@ def build_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
+def build_cloud_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="test-api-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+    )
+    return TestClient(create_app(settings))
+
+
 def test_health_endpoint_reports_local_harmonise_mode() -> None:
     with build_client() as client:
         response = client.get("/api/v1/health")
@@ -51,12 +66,26 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
 
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock.get_departments" in tool_names
+    assert "stock.get_categories" in tool_names
     assert "stock.search_catalogue" in tool_names
     assert "stock.inventory_snapshot" in tool_names
     assert "resolver.disambiguate_candidates" in tool_names
     assert "weather.current" in tool_names
     assert "news.search" in tool_names
     assert "currency.convert" in tool_names
+
+
+def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
+    with build_cloud_client() as client:
+        response = client.get("/api/v1/tools")
+
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock.get_departments" not in tool_names
+    assert "stock.get_categories" not in tool_names
+    assert "stock.search_catalogue" in tool_names
+    assert "stock.get_product" in tool_names
 
 
 def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
