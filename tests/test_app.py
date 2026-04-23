@@ -434,6 +434,52 @@ def test_query_endpoint_uses_fallback_name_when_llm_naming_fails(monkeypatch) ->
     assert calls["naming"] == 1
 
 
+def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) -> None:
+    calls = {"naming": 0}
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        calls["naming"] += 1
+        assert model == "gpt-5.4-mini"
+        return {"choices": [{"message": {"content": "Global price check"}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+        foundry_endpoint="https://example.openai.azure.com",
+        foundry_api_key="test-key",
+    )
+
+    session_id = f"naming-primary-model-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_state"]["name_assigned"] is True
+    assert payload["session_state"]["session_name"] == "Global price check"
+    assert calls["naming"] == 1
+
+
 def test_ui_route_returns_404_when_simulation_disabled() -> None:
     settings = Settings(
         local_harmonise=True,

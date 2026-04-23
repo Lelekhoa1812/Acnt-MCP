@@ -75,7 +75,8 @@ class OrchestratorService:
 
         fallback_name = self._fallback_name(compact)
 
-        if not (self.settings.has_foundry and self.settings.has_slm_model):
+        naming_model = self.settings.foundry_slm_model or self.settings.foundry_model
+        if not (self.settings.has_foundry and naming_model):
             if fallback_name:
                 session_state.session_name = fallback_name
                 session_state.name_assigned = True
@@ -86,7 +87,7 @@ class OrchestratorService:
                 )
             return
         try:
-            name = await self._build_session_name(compact, session_state)
+            name = await self._build_session_name(compact, session_state, naming_model)
         except UpstreamServiceError as exc:
             if fallback_name:
                 session_state.session_name = fallback_name
@@ -137,7 +138,7 @@ class OrchestratorService:
                 fallback_name,
             )
 
-    async def _build_session_name(self, message: str, session_state: SessionState) -> str | None:
+    async def _build_session_name(self, message: str, session_state: SessionState, model: str) -> str | None:
         snippet = self._truncate_words(message, 50)
         if not snippet:
             return None
@@ -177,7 +178,7 @@ class OrchestratorService:
         ]
 
         response = await self.agent_engine.complete_with_model(
-            model=self.settings.foundry_slm_model or "",
+            model=model,
             messages=payload,
             max_completion_tokens=40,
         )
