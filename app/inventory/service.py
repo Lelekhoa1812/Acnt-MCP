@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.config import Settings
-from app.errors import InventoryNotFoundError, ParameterMappingError
+from app.errors import InventoryNotFoundError, ParameterMappingError, UpstreamServiceError
 from app.inventory.media import build_harmonise_image_url
 from app.inventory.source import HarmoniseInventorySource
 from app.schemas import (
@@ -201,6 +201,7 @@ class InventoryService:
         cache_statuses = [catalogue_cache_status]
         coverage_limitations: list[str] = []
         enriched_products = 0
+        detail_lookup_failures: list[str] = []
 
         for product in catalogue_response.items:
             detail_args = StockGetProductArgs(
@@ -208,7 +209,22 @@ class InventoryService:
                 page=1,
                 pageSize=max(20, len(product.variants) or 1),
             )
-            product_response, product_cache_status, product_notes = await self.get_product(detail_args)
+            # Root Cause vs Logic: Harmonise detail lookups were bubbling up as
+            # fatal errors when upstream timeouts occurred, so capture the failure
+            # here and continue enriching the remaining catalogue items.
+            try:
+                product_response, product_cache_status, product_notes = await self.get_product(detail_args)
+            except UpstreamServiceError as exc:
+                self.logger.warning(
+                    "Detail lookup failed for product %s: %s (status %s)",
+                    product.id,
+                    exc.detail,
+                    exc.status_code,
+                )
+                detail_lookup_failures.append(
+                    f"{product.id} (status {exc.status_code}): {exc.detail}"
+                )
+                continue
             cache_statuses.append(product_cache_status)
             notes.extend(product_notes)
 
@@ -231,6 +247,16 @@ class InventoryService:
                         tool_name="stock.inventory_snapshot",
                     )
                 )
+
+        if detail_lookup_failures:
+            failure_count = len(detail_lookup_failures)
+            coverage_limitations.append(
+                (
+                    f"Detail lookups failed for {failure_count} catalogue "
+                    f"item{'s' if failure_count != 1 else ''}; last failure was "
+                    f"{detail_lookup_failures[-1]}. Some specs may be incomplete."
+                )
+            )
 
         if catalogue_response.totalPages > args.page:
             coverage_limitations.append(

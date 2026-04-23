@@ -444,3 +444,95 @@ async def test_cloud_source_wraps_transport_timeout_as_upstream_error() -> None:
         assert "timed out" in exc_info.value.detail
     finally:
         await source.close()
+
+
+class _TimeoutDetailLookupSource:
+    def __init__(self) -> None:
+        self._catalogue_item = {
+            "id": "prod-chair",
+            "name": "Timeout Chair",
+            "departmentId": 3,
+            "subDepartmentId": None,
+            "categoryId": "cat-chair",
+            "isActive": True,
+            "variations": [],
+            "variants": [
+                {
+                    "id": "var-chair-timeout",
+                    "name": "Timeout Chair - Sample",
+                    "sku": "timeout-chair-sku",
+                    "totalHirable": 0,
+                    "optionIds": [],
+                }
+            ],
+        }
+
+    async def search_catalogue(
+        self,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        return (
+            {
+                "items": [self._catalogue_item],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 1,
+                "totalPages": 1,
+            },
+            [],
+        )
+
+    async def get_product(
+        self,
+        product_id: str | None,
+        sku: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[dict[str, Any], list[str]]:
+        raise UpstreamServiceError(
+            status_code=504,
+            detail="Harmonise request timed out while retrieving variant details.",
+        )
+
+    async def close(self) -> None:
+        return
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_reports_detail_lookup_timeouts() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _TimeoutDetailLookupSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.timeout"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.timeout"),
+    )
+
+    try:
+        snapshot, _, _ = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, pageSize=10, search="chair")
+        )
+        assert snapshot.coverage.enrichedProducts == 0
+        assert snapshot.coverage.enrichedVariants == 0
+        assert not snapshot.rows
+        assert any(
+            "Detail lookups failed" in limitation
+            for limitation in snapshot.coverage.limitations
+        )
+    finally:
+        await source.close()
+        await key_value_store.close()
