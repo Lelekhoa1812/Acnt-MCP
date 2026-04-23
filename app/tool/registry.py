@@ -40,6 +40,7 @@ from app.schemas import (
     ToolResult,
     ToolTrace,
 )
+from app.prompt.context import render_session_context, summarize_session_state
 from app.session.store import SessionStore
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
 
@@ -513,7 +514,39 @@ class ToolRegistry:
                 source_data="session -> state",
                 result_count=1,
             )
-            return ToolResult(tool="session.get_state", data=state.model_dump(mode="json"), trace=trace)
+            summary = summarize_session_state(state, f"session.get_state {session_id or validated.sessionId}", mode="compact")
+            rendered_summary = render_session_context(
+                state,
+                f"session.get_state {session_id or validated.sessionId}",
+                mode="compact",
+            )
+            # Motivation vs Logic: the API response can keep the full structured
+            # session state for callers, while the LLM only needs a compact
+            # digest here so we do not re-expand the entire memory graph into
+            # the next chat-completion prompt.
+            summary_payload = {
+                "session_id": state.session_id,
+                "session_name": state.session_name,
+                "session_name_source": state.session_name_source,
+                "name_assigned": state.name_assigned,
+                "summary": rendered_summary,
+            }
+            data = {
+                "session_id": state.session_id,
+                "session_name": state.session_name,
+                "session_name_source": state.session_name_source,
+                "name_assigned": state.name_assigned,
+                "recent_product_names": list(state.recent_product_names),
+                "recent_resolved_identifiers": list(state.recent_resolved_identifiers),
+                "last_candidate_list": [candidate.model_dump(mode="json") for candidate in state.last_candidate_list[:4]],
+                "last_filters": state.last_filters,
+                "preferences": state.preferences,
+                "plan": summary.get("plan"),
+                "memo": summary.get("memo"),
+                "conversation": summary.get("conversation"),
+                "summary": rendered_summary,
+            }
+            return ToolResult(tool="session.get_state", data=data, llm_content=summary_payload, trace=trace)
 
         async def clear_state(validated: SessionToolArgs, session_id: str | None, thought: str) -> ToolResult:
             state, cache_status = await self.session_store.clear_state(session_id or validated.sessionId)

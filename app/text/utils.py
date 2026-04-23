@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
-from app.prompt.registry import STOPWORDS
+from app.text.stopwords import STOPWORDS
 
 
 def normalize_text(value: str | None) -> str:

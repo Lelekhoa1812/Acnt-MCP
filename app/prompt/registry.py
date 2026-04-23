@@ -1,34 +1,19 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from app.schemas import MemoCache, PlanStatus, PlanStep, SessionState, ToolDefinition
+from app.prompt.context import render_plan_context, render_session_context
 from app.prompt.currency import CURRENCY_EXAMPLES
 from app.prompt.news import NEWS_EXAMPLES
 from app.prompt.stock import STOCK_EXAMPLES
 from app.prompt.weather import WEATHER_EXAMPLES
+from app.text.stopwords import STOPWORDS
+from app.schemas import MemoCache, PlanStatus, PlanStep, SessionState, ToolDefinition
 
 # Motivation vs Logic: prompt policy is now the single configurable control
 # surface for reasoning, clarification, answer style, and tool behavior so the
 # runtime no longer hard-codes user-intent rules in scattered modules.
-STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "can",
-    "for",
-    "i",
-    "in",
-    "is",
-    "of",
-    "please",
-    "show",
-    "the",
-    "to",
-    "what",
-}
-
 EXAMPLES = "\n\n".join(
     (
         STOCK_EXAMPLES,
@@ -61,20 +46,41 @@ If coverage is incomplete, explain the user impact in plain business language wi
 """.strip()
 
 
-def _tool_block(tools: list[ToolDefinition]) -> str:
-    rendered = []
+def _tool_block(tools: list[ToolDefinition], context_mode: str = "normal") -> str:
+    # Motivation vs Logic: the chat-completion API already receives the full
+    # structured tool schema, so the text prompt only needs a concise roster.
+    # That keeps the prompt legible without duplicating large JSON schemas in
+    # every request.
+    rendered: list[str] = []
     for tool in tools:
-        rendered.append(
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.input_schema,
-            }
-        )
-    return json.dumps(rendered, indent=2, ensure_ascii=False)
+        line = f"- {tool.name}: {tool.description}"
+        if context_mode != "compact":
+            arg_hint = _tool_args_hint(tool.input_schema)
+            if arg_hint:
+                line += f" (args: {arg_hint})"
+        rendered.append(line)
+    return "\n".join(rendered)
 
 
-def render_system(request: str, session: SessionState, tools: list[ToolDefinition]) -> str:
+def _tool_args_hint(input_schema: dict[str, Any]) -> str:
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return ""
+
+    required = input_schema.get("required")
+    required_names = [str(name) for name in required] if isinstance(required, list) else []
+    ordered = [name for name in required_names if name in properties]
+    ordered.extend(name for name in properties if name not in ordered)
+    return ", ".join(ordered[:8])
+
+
+def render_system(
+    request: str,
+    session: SessionState,
+    tools: list[ToolDefinition],
+    context_mode: str = "normal",
+) -> str:
+    examples = EXAMPLES if context_mode != "compact" else ""
     return f"""
 You are the Stock Intelligence Orchestrator for Harmonise Phase 1.
 
@@ -138,18 +144,23 @@ risk: ambiguity | missing attribute | vendor limit | none
 Current user request:
 {request}
 
-Current session state:
-{session.model_dump_json(indent=2)}
+Session memory summary:
+{render_session_context(session, request, mode=context_mode)}
 
 Available tools:
-{_tool_block(tools)}
+{_tool_block(tools, context_mode=context_mode)}
 
 Few-shot guidance:
-{EXAMPLES}
+{examples}
 """.strip()
 
 
-def render_planner(request: str, session: SessionState, tools: list[ToolDefinition]) -> str:
+def render_planner(
+    request: str,
+    session: SessionState,
+    tools: list[ToolDefinition],
+    context_mode: str = "normal",
+) -> str:
     return f"""
 You are the planner phase for a tool-driven orchestration runtime.
 
@@ -178,11 +189,11 @@ Rules:
 Current user request:
 {request}
 
-Current session state:
-{session.model_dump_json(indent=2)}
+Session memory summary:
+{render_session_context(session, request, mode=context_mode)}
 
 Available tools:
-{_tool_block(tools)}
+{_tool_block(tools, context_mode=context_mode)}
 """.strip()
 
 
@@ -195,15 +206,29 @@ def render_validator(
     tool_result: object,
     tool_trace: dict[str, object],
     memo_cache: MemoCache,
+    context_mode: str = "normal",
 ) -> str:
     payload = {
-        "plan": plan.model_dump(mode="json"),
+        "plan_context": render_plan_context(
+            plan,
+            memo_cache,
+            " ".join(
+                value
+                for value in [
+                    plan.goal,
+                    step.name,
+                    tool_name,
+                    json.dumps(tool_args, ensure_ascii=False, separators=(",", ":"), default=str),
+                ]
+                if value
+            ),
+            mode=context_mode,
+        ),
         "step": step.model_dump(mode="json"),
         "tool_name": tool_name,
         "tool_args": tool_args,
         "tool_result": tool_result,
         "tool_trace": tool_trace,
-        "memo_cache": memo_cache.model_dump(mode="json"),
     }
     return f"""
 You are the validator phase for tool retrieval outputs.
@@ -237,10 +262,11 @@ def render_composer(
     plan: PlanStatus,
     memo_cache: MemoCache,
     limitations: list[str],
+    context_mode: str = "normal",
 ) -> str:
     payload = {
         "request": request,
-        "memo_cache": memo_cache.model_dump(mode="json"),
+        "plan_context": render_plan_context(plan, memo_cache, request, mode=context_mode),
         "limitations": limitations,
     }
     return f"""

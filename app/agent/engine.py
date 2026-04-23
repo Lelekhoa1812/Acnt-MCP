@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -102,29 +103,31 @@ class AgentEngine:
         plan_snapshot = json.dumps(plan_status.model_dump(mode="json"), ensure_ascii=False)
         thoughts.append(plan_snapshot)
 
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": render_system(
-                    request=request.message,
-                    session=session_state,
-                    tools=self.tool_registry.list_tools(),
-                ),
-            },
-        ]
-        # Motivation vs Logic: local REST development does not inherit Claude
-        # browser memory, so we replay the in-process session transcript before
-        # the new prompt to preserve follow-up context across `/query` calls.
-        messages.extend(self._conversation_history_messages(session_state))
-        messages.append({"role": "user", "content": request.message})
-        messages.append({"role": "assistant", "content": f"Plan Status JSON:\n{plan_snapshot}"})
+        messages = self._build_runtime_messages(
+            request=request.message,
+            session_state=session_state,
+            context_mode="normal",
+        )
 
         draft_answer = ""
         for _ in range(self.settings.agent_max_steps):
             if self._all_plan_steps_done(plan_status):
                 break
 
-            response = await self._complete(messages=messages, enable_tools=True)
+            if len(messages) == 2:
+                response = await self._retry_on_context_limit(
+                    "initial query completion",
+                    lambda mode: self._complete(
+                        messages=self._build_runtime_messages(
+                            request=request.message,
+                            session_state=session_state,
+                            context_mode=mode,
+                        ),
+                        enable_tools=True,
+                    ),
+                )
+            else:
+                response = await self._complete(messages=messages, enable_tools=True)
             assistant = response["choices"][0]["message"]
             content = assistant.get("content")
             if content:
@@ -410,28 +413,31 @@ class AgentEngine:
             limitations.append("Planner model is unavailable, so a minimal fallback plan was created.")
             return self._fallback_plan(request, session_state), limitations
 
-        payload = {
-            "model": self.settings.foundry_model,
-            "messages": [
-                {"role": "system", "content": "You return strict JSON planning objects for tool orchestration."},
-                {
-                    "role": "user",
-                    "content": render_planner(
-                        request=request,
-                        session=session_state,
-                        tools=self.tool_registry.list_tools(),
-                    ),
-                },
-            ],
-            "response_format": {"type": "json_object"},
-            "max_completion_tokens": 1200,
-        }
-
         try:
-            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/planner")
-            content = response_payload["choices"][0]["message"].get("content", "")
-            raw = json.loads(content)
-            plan = self._sanitize_plan(raw, request, session_state)
+            async def run_mode(context_mode: str) -> PlanStatus:
+                payload = {
+                    "model": self.settings.foundry_model,
+                    "messages": [
+                        {"role": "system", "content": "You return strict JSON planning objects for tool orchestration."},
+                        {
+                            "role": "user",
+                            "content": render_planner(
+                                request=request,
+                                session=session_state,
+                                tools=self.tool_registry.list_tools(),
+                                context_mode=context_mode,
+                            ),
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "max_completion_tokens": 1200,
+                }
+                response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/planner")
+                content = response_payload["choices"][0]["message"].get("content", "")
+                raw = json.loads(content)
+                return self._sanitize_plan(raw, request, session_state)
+
+            plan = await self._retry_on_context_limit("planner", run_mode)
             return plan, limitations
         except (UpstreamServiceError, json.JSONDecodeError, ValidationError) as exc:
             limitations.append(f"Planner pass failed; fallback plan was used. reason={exc}")
@@ -587,34 +593,38 @@ class AgentEngine:
         if self._client is None:
             return self._fallback_validator_envelope(result)
 
-        trace_payload = result.trace.model_dump(mode="json") if result.trace else {}
-        tool_payload = result.llm_content if result.llm_content is not None else result.data
-        payload = {
-            "model": self.settings.foundry_model,
-            "messages": [
-                {"role": "system", "content": "You return strict JSON validation objects for retrieval outputs."},
-                {
-                    "role": "user",
-                    "content": render_validator(
-                        plan=plan_status,
-                        step=step,
-                        tool_name=tool_name,
-                        tool_args=tool_args,
-                        tool_result=tool_payload,
-                        tool_trace=trace_payload,
-                        memo_cache=memo_cache,
-                    ),
-                },
-            ],
-            "response_format": {"type": "json_object"},
-            "max_completion_tokens": 1400,
-        }
-
         try:
-            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/validator")
-            content = response_payload["choices"][0]["message"].get("content", "")
-            raw = json.loads(content)
-            return ValidatorEnvelope.model_validate(raw)
+            trace_payload = result.trace.model_dump(mode="json") if result.trace else {}
+            tool_payload = result.llm_content if result.llm_content is not None else result.data
+
+            async def run_mode(context_mode: str) -> ValidatorEnvelope:
+                payload = {
+                    "model": self.settings.foundry_model,
+                    "messages": [
+                        {"role": "system", "content": "You return strict JSON validation objects for retrieval outputs."},
+                        {
+                            "role": "user",
+                            "content": render_validator(
+                                plan=plan_status,
+                                step=step,
+                                tool_name=tool_name,
+                                tool_args=tool_args,
+                                tool_result=tool_payload,
+                                tool_trace=trace_payload,
+                                memo_cache=memo_cache,
+                                context_mode=context_mode,
+                            ),
+                        },
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "max_completion_tokens": 1400,
+                }
+                response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/validator")
+                content = response_payload["choices"][0]["message"].get("content", "")
+                raw = json.loads(content)
+                return ValidatorEnvelope.model_validate(raw)
+
+            return await self._retry_on_context_limit("validator", run_mode)
         except (UpstreamServiceError, json.JSONDecodeError, ValidationError) as exc:
             self.logger.warning("Validator pass failed, using deterministic fallback: %s", exc)
             fallback = self._fallback_validator_envelope(result)
@@ -978,45 +988,47 @@ class AgentEngine:
         if self._client is None:
             return "", ["Composer model is unavailable, so no final synthesis pass could run."]
 
-        payload = {
-            "model": self.settings.foundry_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "You write final user-facing answers grounded in retrieved evidence only.",
-                },
-                {
-                    "role": "user",
-                    "content": render_composer(
-                        request=request,
-                        plan=plan_status,
-                        memo_cache=session_state.memo_cache,
-                        limitations=self._composer_limitations(limitations),
-                    ),
-                },
-            ],
-            "max_completion_tokens": self.settings.agent_completion_tokens,
-        }
-
         try:
-            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/composer")
+            async def run_mode(context_mode: str) -> tuple[str, list[str]]:
+                payload = {
+                    "model": self.settings.foundry_model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "You write final user-facing answers grounded in retrieved evidence only.",
+                        },
+                        {
+                            "role": "user",
+                            "content": render_composer(
+                                request=request,
+                                plan=plan_status,
+                                memo_cache=session_state.memo_cache,
+                                limitations=self._composer_limitations(limitations),
+                                context_mode=context_mode,
+                            ),
+                        },
+                    ],
+                    "max_completion_tokens": self.settings.agent_completion_tokens,
+                }
+                response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/composer")
+                assistant = response_payload["choices"][0]["message"]
+                content = assistant.get("content")
+                if content and include_thoughts:
+                    thoughts.append(content.strip())
+
+                if assistant.get("tool_calls"):
+                    return "", ["Composer attempted tool calls; synthesis was blocked to keep final output grounded."]
+
+                rendered = self._extract_user_facing_answer(content)
+                if rendered:
+                    return rendered, []
+
+                return "", ["Composer pass returned empty content."]
+
+            return await self._retry_on_context_limit("composer", run_mode)
         except UpstreamServiceError as exc:
             self.logger.warning("Composer pass failed: %s", exc)
             return "", [str(exc)]
-
-        assistant = response_payload["choices"][0]["message"]
-        content = assistant.get("content")
-        if content and include_thoughts:
-            thoughts.append(content.strip())
-
-        if assistant.get("tool_calls"):
-            return "", ["Composer attempted tool calls; synthesis was blocked to keep final output grounded."]
-
-        rendered = self._extract_user_facing_answer(content)
-        if rendered:
-            return rendered, []
-
-        return "", ["Composer pass returned empty content."]
 
     async def _complete(
         self,
@@ -1036,14 +1048,45 @@ class AgentEngine:
             payload["tool_choice"] = "auto"
         return await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
 
-    def _conversation_history_messages(self, session_state: SessionState) -> list[dict[str, str]]:
-        history_messages: list[dict[str, str]] = []
-        for turn in session_state.conversation_history:
-            content = turn.content.strip()
-            if not content:
-                continue
-            history_messages.append({"role": turn.role, "content": content})
-        return history_messages
+    def _build_runtime_messages(
+        self,
+        *,
+        request: str,
+        session_state: SessionState,
+        context_mode: str = "normal",
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "role": "system",
+                "content": render_system(
+                    request=request,
+                    session=session_state,
+                    tools=self.tool_registry.list_tools(),
+                    context_mode=context_mode,
+                ),
+            },
+            {"role": "user", "content": request},
+        ]
+
+    async def _retry_on_context_limit(
+        self,
+        operation_name: str,
+        builder: Callable[[str], Awaitable[Any]],
+    ) -> Any:
+        try:
+            return await builder("normal")
+        except UpstreamServiceError as exc:
+            if not self._is_context_length_error(exc):
+                raise
+            # Root Cause vs Logic: the upstream `context_length_exceeded` error
+            # means the prompt assembly is too large, so we retry with compacted
+            # context instead of treating the visible chat as the culprit.
+            self.logger.warning("Context length exceeded during %s; retrying with compact prompt.", operation_name)
+            return await builder("compact")
+
+    def _is_context_length_error(self, exc: UpstreamServiceError) -> bool:
+        detail = exc.detail.lower()
+        return "context_length_exceeded" in detail or "input tokens exceed" in detail or "messages resulted in" in detail
 
     async def complete_with_model(
         self,
@@ -1070,30 +1113,34 @@ class AgentEngine:
     ) -> AgentEnvelope:
         if self._client is None:
             raise UpstreamServiceError(503, "Azure AI Foundry is not configured for `/api/v1/query`.")
-        payload = {
-            "model": self.settings.foundry_model,
-            "messages": [
-                {"role": "system", "content": "You turn grounded tool outcomes into a strict JSON envelope."},
-                {
-                    "role": "user",
-                    "content": render_formatter(
-                        request=request,
-                        draft=draft,
-                        limitations=self._dedupe(limitations),
-                        clarification=clarification.model_dump(mode="json") if clarification else None,
-                    ),
-                },
-            ],
-            "response_format": {"type": "json_object"},
-            "max_completion_tokens": 600,
-        }
-        response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
-        content = response_payload["choices"][0]["message"]["content"]
-        try:
+
+        async def run_mode(_context_mode: str) -> AgentEnvelope:
+            payload = {
+                "model": self.settings.foundry_model,
+                "messages": [
+                    {"role": "system", "content": "You turn grounded tool outcomes into a strict JSON envelope."},
+                    {
+                        "role": "user",
+                        "content": render_formatter(
+                            request=request,
+                            draft=draft,
+                            limitations=self._dedupe(limitations),
+                            clarification=clarification.model_dump(mode="json") if clarification else None,
+                        ),
+                    },
+                ],
+                "response_format": {"type": "json_object"},
+                "max_completion_tokens": 600,
+            }
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
+            content = response_payload["choices"][0]["message"]["content"]
             raw = json.loads(content)
             if clarification and raw.get("clarification") is None:
                 raw["clarification"] = clarification.model_dump(mode="json")
             return AgentEnvelope.model_validate(raw)
+
+        try:
+            return await self._retry_on_context_limit("formatter", run_mode)
         except (json.JSONDecodeError, ValidationError):
             return AgentEnvelope(
                 status=fallback_status,
