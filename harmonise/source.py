@@ -6,8 +6,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from app.config import Settings
-from app.errors import InventoryNotFoundError
+from app.config import InventoryNotFoundError, Settings
 from app.schemas import (
     ProductListItemDto,
     ProductListItemDtoPagedResponse,

@@ -5,8 +5,7 @@ from typing import Any
 
 import httpx
 
-from app.config import Settings
-from app.errors import UpstreamServiceError
+from app.config import Settings, UpstreamServiceError
 from harmonise.main import create_app
 
 

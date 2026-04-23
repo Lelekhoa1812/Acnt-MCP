@@ -222,6 +222,54 @@ class ClarificationPayload(BaseModel):
     options: list[CandidateOption]
 
 
+class PlanValidation(BaseModel):
+    expected_rows: int | None = None
+    actual_rows: int | None = None
+    cache_status: str | None = None
+    findings: list[str] = Field(default_factory=list)
+    ambiguity: list[str] = Field(default_factory=list)
+    missing_statistics: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+
+
+class PlanStep(BaseModel):
+    id: int
+    name: str
+    tool: str
+    status: Literal["planned", "pending", "in-progress", "done"] = "planned"
+    args: dict[str, Any] = Field(default_factory=dict)
+    hypotheses: list[str] = Field(default_factory=list)
+    validation: PlanValidation | None = None
+
+
+class MemoEntry(BaseModel):
+    step_id: int | None = None
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    aggregates: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoCache(BaseModel):
+    entries: list[MemoEntry] = Field(default_factory=list)
+    aggregates: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlanMetadata(BaseModel):
+    sorted_priorities: list[int] = Field(default_factory=list)
+    confidence_scores: dict[str, float] = Field(default_factory=dict)
+    validation_findings: list[str] = Field(default_factory=list)
+
+
+class PlanStatus(BaseModel):
+    goal: str
+    steps: list[PlanStep] = Field(default_factory=list)
+    memo: MemoCache = Field(default_factory=MemoCache)
+    status: Literal["in-progress", "complete", "blocked", "needs_clarification", "error"] = "in-progress"
+
+
 class ConversationTurn(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -230,11 +278,16 @@ class ConversationTurn(BaseModel):
 class SessionState(BaseModel):
     session_id: str
     session_name: str | None = None
+    session_name_source: Literal["fallback", "llm"] | None = None
     recent_product_names: list[str] = Field(default_factory=list)
     recent_resolved_identifiers: list[str] = Field(default_factory=list)
     last_candidate_list: list[CandidateOption] = Field(default_factory=list)
     last_filters: dict[str, Any] = Field(default_factory=dict)
     preferences: dict[str, Any] = Field(default_factory=dict)
+    plan_todo: list[PlanStep] = Field(default_factory=list)
+    memo_cache: MemoCache = Field(default_factory=MemoCache)
+    plan_metadata: PlanMetadata = Field(default_factory=PlanMetadata)
+    current_plan: PlanStatus | None = None
     name_assigned: bool = False
     conversation_history: list[ConversationTurn] = Field(default_factory=list, exclude=True)
 
@@ -278,6 +331,9 @@ class ToolResult(BaseModel):
     llm_content: Any | None = Field(default=None, exclude=True)
     normalization_notes: list[str] = Field(default_factory=list)
     trace: ToolTrace | None = None
+    plan_status: PlanStatus | None = None
+    memo_update: MemoEntry | None = None
+    validation: PlanValidation | None = None
 
 
 class ToolDefinition(BaseModel):
@@ -308,6 +364,7 @@ class AgentQueryResponse(BaseModel):
     clarification: ClarificationPayload | None = None
     resolved_items: list[NormalizedEvidence] = Field(default_factory=list)
     session_state: SessionState
+    plan_status: PlanStatus | None = None
     mock_ui: str | None = None
     mock_ui_path: str | None = None
     limitations: list[str] = Field(default_factory=list)

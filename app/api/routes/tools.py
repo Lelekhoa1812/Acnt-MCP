@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.dependencies import get_container
+from app.config import get_container
 from app.schemas import CallToolRequest
 
 

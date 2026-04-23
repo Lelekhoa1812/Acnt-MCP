@@ -7,8 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Header, HTTPException, Query
 
-from app.config import Settings
-from app.errors import UpstreamServiceError
+from app.config import Settings, UpstreamServiceError
 from app.inventory.service import InventoryService
 from app.inventory.source import HarmoniseInventorySource
 from app.schemas import StockInventorySnapshotArgs

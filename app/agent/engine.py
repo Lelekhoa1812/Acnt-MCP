@@ -8,8 +8,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
-from app.config import Settings
-from app.errors import InventoryNotFoundError, ParameterMappingError, UpstreamServiceError
+from app.config import (
+    Settings,
+    InventoryNotFoundError,
+    ParameterMappingError,
+    UpstreamServiceError,
+)
 from app.inventory.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_formatter, render_system
 from app.schemas import (

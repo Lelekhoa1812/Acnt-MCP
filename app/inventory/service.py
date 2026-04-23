@@ -5,8 +5,12 @@ import logging
 import re
 from typing import Any
 
-from app.config import Settings
-from app.errors import InventoryNotFoundError, ParameterMappingError, UpstreamServiceError
+from app.config import (
+    Settings,
+    InventoryNotFoundError,
+    ParameterMappingError,
+    UpstreamServiceError,
+)
 from app.inventory.media import build_harmonise_image_url
 from app.inventory.source import HarmoniseInventorySource
 from app.schemas import (

@@ -23,8 +23,8 @@ def build_mcp_settings() -> Settings:
     return Settings(
         local_harmonise=True,
         log_level="warning",
-        mock_catalog_path="./mock/product-catalog-enriched.json",
-        mock_details_path="./mock/product-details-enriched.json",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
         mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,

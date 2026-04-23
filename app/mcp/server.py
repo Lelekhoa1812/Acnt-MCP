@@ -9,9 +9,8 @@ from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
 
-from app.config import Settings, get_settings
+from app.config import AppContainer, Settings, build_container, get_settings
 from app.config.logging import configure_logging
-from app.container import AppContainer, build_container
 from app.mcp.adapter import McpToolAdapter
 
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from app.currency import (
+from app.tool.currency import (
     CurrencyConvertArgs,
     CurrencyFluctuationArgs,
     CurrencyHistoryArgs,
@@ -16,10 +16,11 @@ from app.currency import (
     CurrencySymbolsArgs,
     CurrencyTimeseriesArgs,
 )
-from app.errors import ParameterMappingError, UnsupportedToolError
+from app.config import ParameterMappingError, UnsupportedToolError
 from app.inventory.media import build_harmonise_image_url
 from app.inventory.service import InventoryService
-from app.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
+from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
+from app.tool.news.formatter import format_news_articles, format_news_sources
 from app.resolver import ResolverService
 from app.schemas import (
     InventorySnapshotResponse,
@@ -40,7 +41,7 @@ from app.schemas import (
     ToolTrace,
 )
 from app.session.store import SessionStore
-from app.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
+from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
 
 
 @dataclass
@@ -553,7 +554,19 @@ class ToolRegistry:
                 result_count=len(data.get("articles", [])),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="news.search", data=data, normalization_notes=notes, trace=trace)
+            # Motivation vs Logic: surface concise article summaries so the agent can cite trends directly.
+            formatted = format_news_articles(
+                data,
+                validated.model_dump(by_alias=True, exclude_none=True),
+                request_type="search",
+            )
+            return ToolResult(
+                tool="news.search",
+                data=data,
+                llm_content=formatted,
+                normalization_notes=notes,
+                trace=trace,
+            )
 
         async def headlines(validated: NewsHeadlinesArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.news_service.headlines(validated)
@@ -567,7 +580,18 @@ class ToolRegistry:
                 result_count=len(data.get("articles", [])),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="news.headlines", data=data, normalization_notes=notes, trace=trace)
+            formatted = format_news_articles(
+                data,
+                validated.model_dump(exclude_none=True),
+                request_type="headlines",
+            )
+            return ToolResult(
+                tool="news.headlines",
+                data=data,
+                llm_content=formatted,
+                normalization_notes=notes,
+                trace=trace,
+            )
 
         async def sources(validated: NewsSourcesArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.news_service.sources(validated)
@@ -581,7 +605,14 @@ class ToolRegistry:
                 result_count=len(data.get("sources", [])),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="news.sources", data=data, normalization_notes=notes, trace=trace)
+            formatted = format_news_sources(data, validated.model_dump(exclude_none=True))
+            return ToolResult(
+                tool="news.sources",
+                data=data,
+                llm_content=formatted,
+                normalization_notes=notes,
+                trace=trace,
+            )
 
         self._register(
             "news.search",

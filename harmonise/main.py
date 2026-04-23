@@ -5,8 +5,7 @@ import logging
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
-from app.config import Settings, get_settings
-from app.errors import InventoryNotFoundError
+from app.config import InventoryNotFoundError, Settings, get_settings
 from harmonise.source import MockService
 
 

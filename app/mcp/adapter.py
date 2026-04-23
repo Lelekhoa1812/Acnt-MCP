@@ -7,7 +7,7 @@ from typing import Any
 from mcp import types
 from mcp.shared.context import RequestContext
 
-from app.errors import (
+from app.config import (
     InventoryNotFoundError,
     ParameterMappingError,
     UnsupportedToolError,

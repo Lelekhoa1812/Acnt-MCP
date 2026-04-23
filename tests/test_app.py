@@ -5,9 +5,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.agent.engine import AgentEngine, AgentRun
-from app.currency.service import CurrencyProviderError
-from app.config import Settings
-from app.errors import UpstreamServiceError
+from app.tool.currency.service import CurrencyProviderError
+from app.config import Settings, UpstreamServiceError
 from app.main import create_app
 from app.schemas import ToolTrace
 
@@ -18,8 +17,8 @@ def build_client() -> TestClient:
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
-        mock_catalog_path="./mock/product-catalog-enriched.json",
-        mock_details_path="./mock/product-details-enriched.json",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
         mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
@@ -202,8 +201,8 @@ def test_currency_history_rebases_when_primary_base_is_restricted(monkeypatch) -
     async def fail_fallback(self, path, params):  # noqa: ANN001
         raise AssertionError(f"Fallback should not be used: path={path} params={params}")
 
-    monkeypatch.setattr("app.currency.service.CurrencyService._request_primary_json", fake_primary)
-    monkeypatch.setattr("app.currency.service.CurrencyService._request_fallback_json", fail_fallback)
+    monkeypatch.setattr("app.tool.currency.service.CurrencyService._request_primary_json", fake_primary)
+    monkeypatch.setattr("app.tool.currency.service.CurrencyService._request_fallback_json", fail_fallback)
 
     with build_client() as client:
         response = client.post(
@@ -236,8 +235,8 @@ def test_currency_convert_falls_back_when_primary_provider_is_unavailable(monkey
         assert params == {"base": "AUD", "symbols": "USD"}
         return {"amount": 1.0, "base": "AUD", "date": "2025-04-22", "rates": {"USD": 0.66}}
 
-    monkeypatch.setattr("app.currency.service.CurrencyService._request_primary_json", fake_primary)
-    monkeypatch.setattr("app.currency.service.CurrencyService._request_fallback_json", fake_fallback)
+    monkeypatch.setattr("app.tool.currency.service.CurrencyService._request_primary_json", fake_primary)
+    monkeypatch.setattr("app.tool.currency.service.CurrencyService._request_fallback_json", fake_fallback)
 
     with build_client() as client:
         response = client.post(
@@ -417,21 +416,80 @@ def test_query_endpoint_uses_fallback_name_when_llm_naming_fails(monkeypatch) ->
             "/api/v1/query",
             json={"message": "Need a laminate quote", "sessionId": session_id},
         )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["session_state"]["name_assigned"] is True
+    assert first_payload["session_state"]["session_name"] == "Need a laminate quote"
+    assert first_payload["session_state"]["session_name_source"] == "fallback"
+    assert calls["naming"] == 1
+
+
+def test_query_endpoint_retries_naming_after_fallback(monkeypatch) -> None:
+    calls = {"naming": 0}
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        calls["naming"] += 1
+        if calls["naming"] == 1:
+            raise UpstreamServiceError(504, "Transient SLM timeout.")
+        return {"choices": [{"message": {"content": "Expo Floor Plan"}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+        foundry_endpoint="https://example.openai.azure.com",
+        foundry_api_key="test-key",
+        foundry_slm_model=None,
+    )
+
+    session_id = f"naming-retry-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        first = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
         second = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
+        third = client.post(
             "/api/v1/query",
             json={"message": "Need a laminate quote", "sessionId": session_id},
         )
 
     assert first.status_code == 200
     first_payload = first.json()
-    assert first_payload["session_state"]["name_assigned"] is True
     assert first_payload["session_state"]["session_name"] == "Need a laminate quote"
+    assert first_payload["session_state"]["session_name_source"] == "fallback"
 
     assert second.status_code == 200
     second_payload = second.json()
-    assert second_payload["session_state"]["session_name"] == "Need a laminate quote"
-    assert second_payload["session_state"]["name_assigned"] is True
-    assert calls["naming"] == 1
+    assert second_payload["session_state"]["session_name"] == "Expo Floor Plan"
+    assert second_payload["session_state"]["session_name_source"] == "llm"
+
+    assert third.status_code == 200
+    third_payload = third.json()
+    assert third_payload["session_state"]["session_name"] == "Expo Floor Plan"
+    assert third_payload["session_state"]["session_name_source"] == "llm"
+
+    assert calls["naming"] == 2
 
 
 def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) -> None:
@@ -447,14 +505,6 @@ def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) 
             resolved_items=[],
         )
 
-    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
-        calls["naming"] += 1
-        assert model == "gpt-5.4-mini"
-        return {"choices": [{"message": {"content": "Global price check"}}]}
-
-    monkeypatch.setattr(AgentEngine, "run", fake_run)
-    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
-
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
@@ -464,7 +514,17 @@ def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) 
         mock_ui_path="./ui/mock/index.html",
         foundry_endpoint="https://example.openai.azure.com",
         foundry_api_key="test-key",
+        foundry_slm_model=None,
     )
+    expected_model = settings.foundry_model
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        calls["naming"] += 1
+        assert model == expected_model
+        return {"choices": [{"message": {"content": "Global price check"}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     session_id = f"naming-primary-model-{uuid4()}"
     with TestClient(create_app(settings)) as client:
@@ -477,6 +537,7 @@ def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) 
     payload = response.json()
     assert payload["session_state"]["name_assigned"] is True
     assert payload["session_state"]["session_name"] == "Global price check"
+    assert payload["session_state"]["session_name_source"] == "llm"
     assert calls["naming"] == 1
 
 

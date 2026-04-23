@@ -3,11 +3,10 @@ from __future__ import annotations
 import logging
 
 from app.agent import AgentEngine
-from app.config import Settings
+from app.config import Settings, UpstreamServiceError
 from app.schemas import AgentQueryRequest, AgentQueryResponse, SessionState
 from app.session.store import SessionStore
 from app.tool.registry import ToolRegistry
-from app.errors import UpstreamServiceError
 
 
 class OrchestratorService:
@@ -67,19 +66,20 @@ class OrchestratorService:
         )
 
     async def _ensure_session_name(self, session_state: SessionState, message: str) -> None:
-        if session_state.session_name or session_state.name_assigned:
-            return
         compact = message.strip()
         if not compact:
             return
 
         fallback_name = self._fallback_name(compact)
+        if session_state.session_name and session_state.session_name_source != "fallback":
+            return
 
         naming_model = self.settings.foundry_slm_model or self.settings.foundry_model
         if not (self.settings.has_foundry and naming_model):
             if fallback_name:
                 session_state.session_name = fallback_name
                 session_state.name_assigned = True
+                session_state.session_name_source = "fallback"
                 self.logger.warning(
                     "Session naming fallback applied (config unavailable) session_id=%s title=%s",
                     session_state.session_id,
@@ -92,6 +92,7 @@ class OrchestratorService:
             if fallback_name:
                 session_state.session_name = fallback_name
                 session_state.name_assigned = True
+                session_state.session_name_source = "fallback"
                 self.logger.warning(
                     "Session naming fallback applied (upstream) session_id=%s title=%s reason=%s",
                     session_state.session_id,
@@ -105,6 +106,7 @@ class OrchestratorService:
             if fallback_name:
                 session_state.session_name = fallback_name
                 session_state.name_assigned = True
+                session_state.session_name_source = "fallback"
                 self.logger.warning(
                     "Session naming fallback applied (unexpected) session_id=%s title=%s reason=%s",
                     session_state.session_id,
@@ -122,6 +124,7 @@ class OrchestratorService:
         if name:
             session_state.session_name = name
             session_state.name_assigned = True
+            session_state.session_name_source = "llm"
             self.logger.info(
                 "Session naming assigned via llm session_id=%s title=%s",
                 session_state.session_id,
@@ -132,6 +135,7 @@ class OrchestratorService:
         if fallback_name:
             session_state.session_name = fallback_name
             session_state.name_assigned = True
+            session_state.session_name_source = "fallback"
             self.logger.warning(
                 "Session naming fallback applied (empty llm output) session_id=%s title=%s",
                 session_state.session_id,

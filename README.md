@@ -23,7 +23,7 @@ It exposes only MCP `tools` in this refactor:
 - `resolver.*`
 - `session.*`
 - `weather.*`
-- `news.*`
+- `news.*` (each tool now surfaces summarized `topSources`, `topKeywords`, `matchConfidence`, `matchingKeywords`, `matchingArticles`, and `publishedRange` so the agent can verify coverage before answering)
 - `currency.*`
 
 Tool execution is backed by the existing `ToolRegistry`, so the MCP server and the REST diagnostics call the same inventory and plugin services.
