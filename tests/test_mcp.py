@@ -114,7 +114,10 @@ async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
     assert result.structuredContent["data"]["coverage"]["matchedProducts"] == 40
     row = next(item for item in result.structuredContent["data"]["rows"] if item["sku"] == "fl-ca-ca-10m")
     assert row["size"] == "1 x 1 x 0.01 m"
-    assert "total=2566" in row["stock"]
+    assert row["stock"] is not None
+    assert "total=" not in row["stock"]
+    assert "Overall" in row["stock"]
+    assert "in stock" in row["stock"]
 
 
 @pytest.mark.anyio

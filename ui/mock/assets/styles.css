@@ -1100,27 +1100,6 @@ code {
   cursor: wait;
 }
 
-.stop-btn {
-  border: 1px solid #d9c2be;
-  border-radius: 11px;
-  background: #fff4f2;
-  color: #8a3f35;
-  min-width: 84px;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-
-.stop-btn:hover {
-  background: #ffeae6;
-}
-
-.stop-btn:focus-visible {
-  outline: 3px solid rgba(165, 146, 118, 0.34);
-  outline-offset: 1px;
-}
-
 .debug-drawer {
   height: 25%;
   border-top: 1px solid rgba(220, 212, 200, 0.9);

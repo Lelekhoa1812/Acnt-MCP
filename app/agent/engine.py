@@ -415,12 +415,14 @@ class AgentEngine:
                 "The tool outputs above are the authoritative inventory source for this run. "
                 "Write the final user-facing answer now using only those tool results. Ground every "
                 "claim in the returned JSON, use Markdown tables when listing many items, clearly "
-                "state any coverage limits, and do not call tools or ask for new data sources."
+                "state any coverage limits, group variants under a single product row label, rewrite "
+                "raw stock metrics into plain language, and do not call tools or ask for new data sources."
             ),
             (
                 "Your previous response did not contain a user-facing answer. Produce it now. "
                 "If the retrieved evidence is partial, say that plainly and summarize only the "
-                "retrieved rows. Do not call tools. Do not ask for clarification unless a "
+                "retrieved rows. Keep wording non-technical and user-friendly, especially for stock "
+                "availability summaries. Do not call tools. Do not ask for clarification unless a "
                 "clarification payload already exists in the conversation."
             ),
         ]

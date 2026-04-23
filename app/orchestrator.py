@@ -33,12 +33,13 @@ class OrchestratorService:
         if request.preferences:
             session_state.preferences.update(request.preferences)
 
-        # Motivation vs Logic: new sessions get a short descriptive label from the
-        # SLM before the agent starts, so dashboards can track intent without
-        # waiting for the full conversational history.
-        await self._ensure_session_name(session_state, request.message)
-
         run = await self.agent_engine.run(request=request, session_state=session_state)
+
+        # Motivation vs Logic: naming now runs after the agent completes so we can
+        # include resolved evidence/candidates in the LLM prompt instead of relying
+        # on the initial prompt alone, which keeps us from falling back to the first
+        # four words for every session.
+        await self._ensure_session_name(session_state, request.message)
         await self.session_store.save_state(session_state)
         if self.settings.local_chat_memory_enabled:
             await self.session_store.save_local_chat_turn(

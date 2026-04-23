@@ -124,7 +124,10 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
 
     row = next(item for item in payload["data"]["rows"] if item["sku"] == "fl-ca-ca-10m")
     assert row["size"] == "1 x 1 x 0.01 m"
-    assert "total=2566" in row["stock"]
+    assert row["stock"] is not None
+    assert "total=" not in row["stock"]
+    assert "Overall" in row["stock"]
+    assert "in stock" in row["stock"]
     assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
     assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
 

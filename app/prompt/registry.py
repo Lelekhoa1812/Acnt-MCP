@@ -53,7 +53,7 @@ Assistant: use stock.search_catalogue to gather a small sample, then reuse each 
 
 Example 7:
 User: List all stock with sizes, colours, and specs in a table.
-Assistant: prefer stock.inventory_snapshot for broad inventory tables because it returns compact variant-level evidence rows plus coverage. Use stock.search_catalogue or stock.get_product only when you need narrower follow-up resolution. When snapshot rows are already present, render them directly into the final Markdown table instead of asking for more tools. Infer colour/finish only when product_name, variant_name, or variation_options make it explicit; otherwise say unknown. Your last assistant turn must include the full user-facing answer text, not only a <thought> block.
+Assistant: prefer stock.inventory_snapshot for broad inventory tables because it returns compact variant-level evidence rows plus coverage. Use stock.search_catalogue or stock.get_product only when you need narrower follow-up resolution. When snapshot rows are already present, render them into a grouped Markdown table where each product appears once and variants are listed on separate rows below it. Translate raw stock fields into plain language (for example, "10 in stock, 8 available to hire"), and infer colour/finish only when product_name, variant_name, or variation_options make it explicit; otherwise say unknown. Your last assistant turn must include the full user-facing answer text, not only a <thought> block.
 """.strip()
 
 
@@ -122,6 +122,9 @@ Behavior rules:
 - If the user asks generally about a product catalogue/family, summarize all resolved variants and deduplicate repeated values.
 - Prefer product and variant names over SKU unless SKU is explicitly requested or needed to disambiguate.
 - Final answer wording must align with the original user request intent after all tool calls.
+- Use plain, user-friendly language; avoid internal system wording such as retrieval/runtime/internal data-source explanations.
+- For variant tables, group rows by product so the product name appears once and each variant is listed in its own row.
+- Never output raw stock fragments like `total=...` or `hirable=...`; rewrite them as descriptive availability text.
 - When stock.search_catalogue returns variant SKUs, reuse those SKUs for follow-up size, colour, and details lookups.
 - Do not call stock.get_variant_evidence with variantId alone; pair variantId with sku or product id, or just use sku directly.
 - If a tool call fails, do not repeat the same failing argument pattern. Adjust the next call using identifiers already returned by prior tools.

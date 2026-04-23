@@ -172,8 +172,11 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
         await container.close()
 
     assert result.status == "answered"
-    assert "I pulled a grounded inventory snapshot" in result.answer
-    assert "| Product | Variant | SKU | Colour / Finish Evidence |" in result.answer
+    assert "Here is a grouped inventory view" in result.answer
+    assert "| Product | Variant | SKU | Colour / Finish Evidence | Size | Other Specs | Availability |" in result.answer
+    assert "\n|  |" in result.answer
+    assert "Harmonise data" not in result.answer
+    assert "total=" not in result.answer
     assert any(trace.tool == "stock.inventory_snapshot" for trace in result.tool_trace)
     assert len(result.resolved_items) == 60
     assert any("empty final assistant message" in limitation for limitation in result.limitations)

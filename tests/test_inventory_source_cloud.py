@@ -402,8 +402,8 @@ async def test_inventory_snapshot_hydrates_multi_variant_rows_in_cloud_mode() ->
         rows_by_sku = {row.sku: row for row in snapshot.rows}
         assert rows_by_sku["fn-se-ch-alt-bla"].size == "0.5 x 0.5 x 0.9 m"
         assert rows_by_sku["fn-se-ch-alt-whi"].size == "0.5 x 0.5 x 0.9 m"
-        assert "total=50" in (rows_by_sku["fn-se-ch-alt-bla"].stock or "")
-        assert "total=41" in (rows_by_sku["fn-se-ch-alt-whi"].stock or "")
+        assert "Overall has 50 in stock" in (rows_by_sku["fn-se-ch-alt-bla"].stock or "")
+        assert "Overall has 41 in stock" in (rows_by_sku["fn-se-ch-alt-whi"].stock or "")
     finally:
         await source.close()
         await key_value_store.close()

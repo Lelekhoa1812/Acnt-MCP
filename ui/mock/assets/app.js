@@ -67,6 +67,12 @@
         <path d="M22 2l-7 20-4-9-9-4 20-7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
       </svg>
     `,
+    stopCircle: `
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8.4" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor"/>
+      </svg>
+    `,
     check: `
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -128,7 +134,7 @@
     renameDraft: "",
     draftMessage: "",
     isSubmitting: false,
-    activeRequest: null,
+    activeRequests: {},
     debugEnabled: parseStoredBoolean(DEBUG_STORAGE_KEY, false),
     sidebarCollapsed: parseStoredBoolean(SIDEBAR_STORAGE_KEY, false),
     runtimeSummary: "Loading system metadata...",
@@ -148,6 +154,40 @@
     focusEditInput: false,
     feedShouldAutoScroll: true,
   };
+
+  function getActiveRequestForSession(sessionId) {
+    if (!sessionId) {
+      return null;
+    }
+    return state.activeRequests[sessionId] || null;
+  }
+
+  function registerActiveRequest(sessionId, requestEntry) {
+    if (!sessionId) {
+      return;
+    }
+    state.activeRequests[sessionId] = requestEntry;
+    if (state.activeSessionId === sessionId) {
+      state.isSubmitting = Boolean(requestEntry);
+    }
+  }
+
+  function clearActiveRequest(sessionId, runId) {
+    if (!sessionId) {
+      return;
+    }
+    const existing = getActiveRequestForSession(sessionId);
+    if (existing && existing.runId === runId) {
+      delete state.activeRequests[sessionId];
+    }
+    if (state.activeSessionId === sessionId) {
+      state.isSubmitting = Boolean(getActiveRequestForSession(sessionId));
+    }
+  }
+
+  function syncActiveSessionSubmissionState() {
+    state.isSubmitting = Boolean(getActiveRequestForSession(state.activeSessionId));
+  }
 
   function createId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -1600,22 +1640,28 @@
                     ${
                       state.isSubmitting
                         ? `
-                          <button type="button" class="stop-btn" data-action="stop-message" aria-label="Stop generation" title="Stop generation">
-                            <span>Stop</span>
+                          <button
+                            type="button"
+                            class="send-btn stop-btn icon-only"
+                            data-action="stop-message"
+                            aria-label="Stop generation"
+                            title="Stop generation"
+                          >
+                            ${icon("stopCircle")}
                           </button>
                         `
-                        : ""
+                        : `
+                          <button
+                            type="submit"
+                            class="send-btn icon-only"
+                            data-action="send-message"
+                            aria-label="Send message"
+                            title="Send message"
+                          >
+                            ${icon("send")}
+                          </button>
+                        `
                     }
-                    <button
-                      type="submit"
-                      class="send-btn icon-only"
-                      data-action="send-message"
-                      aria-label="${state.isSubmitting ? "Sending" : "Send message"}"
-                      title="${state.isSubmitting ? "Sending" : "Send message"}"
-                      ${state.isSubmitting ? "disabled" : ""}
-                    >
-                      ${icon("send")}
-                    </button>
                   </div>
                 </div>
               </form>
@@ -1725,13 +1771,13 @@
     if (pending && pending.sessionId === sessionId) {
       clearPendingRequest();
     }
-    if (state.activeRequest && state.activeRequest.sessionId === sessionId) {
-      state.activeRequest.stopRequested = true;
-      if (state.activeRequest.fetchController) {
-        state.activeRequest.fetchController.abort();
+    const activeRequest = getActiveRequestForSession(sessionId);
+    if (activeRequest) {
+      activeRequest.stopRequested = true;
+      if (activeRequest.fetchController) {
+        activeRequest.fetchController.abort();
       }
-      state.activeRequest = null;
-      state.isSubmitting = false;
+      clearActiveRequest(sessionId, activeRequest.runId);
     }
 
     state.sessions = state.sessions.filter((session) => session.id !== sessionId);
@@ -1827,18 +1873,19 @@
   }
 
   function requestStopActiveGeneration() {
-    if (!state.activeRequest) {
+    const activeRequest = getActiveRequestForSession(state.activeSessionId);
+    if (!activeRequest) {
       return;
     }
-    state.activeRequest.stopRequested = true;
-    if (state.activeRequest.fetchController) {
-      state.activeRequest.fetchController.abort();
+    activeRequest.stopRequested = true;
+    if (activeRequest.fetchController) {
+      activeRequest.fetchController.abort();
     }
     state.requestState = { tone: "idle", label: "Stopped" };
     state.lastUpdated = `Stopped at ${formatClock(new Date())}`;
     console.info("HTH UI stop requested", {
-      sessionId: state.activeRequest.sessionId,
-      assistantMessageId: state.activeRequest.assistantMessageId,
+      sessionId: activeRequest.sessionId,
+      assistantMessageId: activeRequest.assistantMessageId,
     });
     queueRender();
   }
@@ -1865,6 +1912,7 @@
       state.renameDraft = "";
       state.editingMessageId = null;
       state.editDraft = "";
+      syncActiveSessionSubmissionState();
       queueRender();
       return;
     }
@@ -2214,10 +2262,6 @@
   // versioned snapshots so users can revise any prior prompt, regenerate, and
   // instantly restore the exact state tied to each prompt/response version.
   async function handleSubmit(options = {}) {
-    if (state.isSubmitting) {
-      return;
-    }
-
     const context = prepareSubmitContext(options);
     if (!context) {
       if (options.mode === "edit") {
@@ -2233,6 +2277,9 @@
       }
       return;
     }
+    if (getActiveRequestForSession(context.sessionId)) {
+      return;
+    }
 
     state.sessions = sortSessions(state.sessions);
     saveSessions();
@@ -2245,7 +2292,7 @@
     };
     const runId = createId("run");
     const fetchController = new AbortController();
-    state.activeRequest = {
+    const requestEntry = {
       runId,
       sessionId: context.sessionId,
       userMessageId: context.userMessageId,
@@ -2254,6 +2301,7 @@
       stopRequested: false,
       fetchController,
     };
+    registerActiveRequest(context.sessionId, requestEntry);
 
     savePendingRequest({
       runId,
@@ -2268,7 +2316,7 @@
       lastKnownAnswer: "",
     });
 
-    state.isSubmitting = true;
+    syncActiveSessionSubmissionState();
     state.recoveryNotice = "";
     state.requestState = { tone: "running", label: "Running" };
     state.lastUpdated = `Sent at ${formatClock(context.nowIso)}`;
@@ -2334,7 +2382,7 @@
           });
         },
         {
-          shouldStop: () => Boolean(state.activeRequest && state.activeRequest.runId === runId && state.activeRequest.stopRequested),
+          shouldStop: () => Boolean(requestEntry.stopRequested),
         },
       );
       clearPendingRequest();
@@ -2353,8 +2401,7 @@
       }
     } catch (error) {
       const latencyMs = Math.round(performance.now() - startedAt);
-      const stoppedByUser =
-        isAbortError(error) && Boolean(state.activeRequest && state.activeRequest.runId === runId && state.activeRequest.stopRequested);
+      const stoppedByUser = isAbortError(error) && requestEntry.stopRequested;
 
       if (stoppedByUser) {
         const session = getSessionById(context.sessionId);
@@ -2410,18 +2457,16 @@
         clearPendingRequest();
       }
     } finally {
-      if (state.activeRequest && state.activeRequest.runId === runId) {
-        state.activeRequest = null;
-      }
-      state.isSubmitting = false;
+      clearActiveRequest(context.sessionId, runId);
       queueRender();
     }
   }
 
   async function recoverPendingRequest(pending) {
     const startedAt = performance.now();
-    const currentRunId = state.activeRequest?.runId;
-    const fetchController = state.activeRequest?.fetchController;
+    const activeRequest = getActiveRequestForSession(pending.sessionId);
+    const currentRunId = activeRequest?.runId;
+    const fetchController = activeRequest?.fetchController;
     try {
       const payload = await submitQuery(pending.requestPayload, { signal: fetchController?.signal });
       const answer = payload.answer?.trim() || "No answer returned.";
@@ -2463,7 +2508,7 @@
         },
         {
           shouldStop: () =>
-            Boolean(state.activeRequest && state.activeRequest.runId === currentRunId && state.activeRequest.stopRequested),
+            Boolean(activeRequest && activeRequest.runId === currentRunId && activeRequest.stopRequested),
         },
       );
       finalizeMessageVersion(
@@ -2483,7 +2528,7 @@
     } catch (error) {
       const stoppedByUser =
         isAbortError(error) &&
-        Boolean(state.activeRequest && state.activeRequest.runId === currentRunId && state.activeRequest.stopRequested);
+        Boolean(activeRequest && activeRequest.runId === currentRunId && activeRequest.stopRequested);
       if (stoppedByUser) {
         const session = getSessionById(pending.sessionId);
         if (session) {
@@ -2531,10 +2576,7 @@
       state.lastUpdated = `Recovery failed at ${formatClock(new Date())}`;
     } finally {
       clearPendingRequest();
-      if (state.activeRequest && state.activeRequest.runId === currentRunId) {
-        state.activeRequest = null;
-      }
-      state.isSubmitting = false;
+      clearActiveRequest(pending.sessionId, currentRunId);
       queueRender();
     }
   }
@@ -2561,10 +2603,9 @@
       return;
     }
 
-    state.isSubmitting = true;
     state.editingMessageId = null;
     state.editDraft = "";
-    state.activeRequest = {
+    const requestEntry = {
       runId: pending.runId || createId("run"),
       sessionId: pending.sessionId,
       userMessageId: pending.userMessageId,
@@ -2573,6 +2614,8 @@
       stopRequested: false,
       fetchController: new AbortController(),
     };
+    registerActiveRequest(pending.sessionId, requestEntry);
+    syncActiveSessionSubmissionState();
     state.requestState = { tone: "running", label: "Recovering" };
     state.lastUpdated = "Recovering interrupted response…";
     state.recoveryNotice = "Recovered an in-progress response after refresh.";

@@ -425,26 +425,66 @@ class InventoryService:
         return f"{rendered} m"
 
     def _format_stock(self, evidence: NormalizedEvidence) -> str | None:
+        # Motivation vs Logic: snapshot rows are rendered directly into user-facing
+        # answers, so stock details are translated into plain language instead of
+        # exposing telemetry-like `key=value` fragments.
+        overview = self._describe_stock_scope(
+            scope="Overall",
+            stock_value=evidence.stock.totalStock,
+            hirable_value=evidence.stock.totalHirable,
+        )
+        regional_summaries = [
+            summary
+            for summary in [
+                self._describe_stock_scope(
+                    scope="VIC",
+                    stock_value=evidence.stock.vicStock,
+                    hirable_value=evidence.stock.vicHirable,
+                ),
+                self._describe_stock_scope(
+                    scope="NSW",
+                    stock_value=evidence.stock.nswStock,
+                    hirable_value=evidence.stock.nswHirable,
+                ),
+                self._describe_stock_scope(
+                    scope="QLD",
+                    stock_value=evidence.stock.qldStock,
+                    hirable_value=evidence.stock.qldHirable,
+                ),
+            ]
+            if summary
+        ]
+
         segments: list[str] = []
-        if evidence.stock.totalStock is not None:
-            segments.append(f"total={evidence.stock.totalStock}")
-        if evidence.stock.totalHirable is not None:
-            segments.append(f"hirable={evidence.stock.totalHirable}")
+        if overview:
+            segments.append(overview)
+        if regional_summaries:
+            segments.append("By location: " + "; ".join(regional_summaries))
+        if not segments:
+            return None
+        return ". ".join(segments) + "."
 
-        for label, stock_value, hirable_value in [
-            ("VIC", evidence.stock.vicStock, evidence.stock.vicHirable),
-            ("NSW", evidence.stock.nswStock, evidence.stock.nswHirable),
-            ("QLD", evidence.stock.qldStock, evidence.stock.qldHirable),
-        ]:
-            region_bits: list[str] = []
-            if stock_value is not None:
-                region_bits.append(f"stock {stock_value}")
-            if hirable_value is not None:
-                region_bits.append(f"hirable {hirable_value}")
-            if region_bits:
-                segments.append(f"{label} {' / '.join(region_bits)}")
-
-        return "; ".join(segments) or None
+    def _describe_stock_scope(
+        self,
+        scope: str,
+        stock_value: int | None,
+        hirable_value: int | None,
+    ) -> str | None:
+        if stock_value is None and hirable_value is None:
+            return None
+        if stock_value is not None and hirable_value is not None:
+            if stock_value == 0 and hirable_value == 0:
+                return f"{scope} is currently out of stock and unavailable for hire"
+            if stock_value == hirable_value:
+                return f"{scope} has {stock_value} in stock, with all {hirable_value} available for hire"
+            return f"{scope} has {stock_value} in stock, with {hirable_value} available for hire"
+        if stock_value is not None:
+            if stock_value == 0:
+                return f"{scope} is currently out of stock"
+            return f"{scope} has {stock_value} in stock"
+        if hirable_value == 0:
+            return f"{scope} currently has none available for hire"
+        return f"{scope} has {hirable_value} available for hire"
 
     def _build_known_specs(self, evidence: NormalizedEvidence) -> list[str]:
         # Motivation vs Logic: Non-technical consumers read the table more easily when
