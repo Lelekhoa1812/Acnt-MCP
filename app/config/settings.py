@@ -53,6 +53,24 @@ class Settings(BaseSettings):
     local_chat_memory_enabled: bool = Field(True, alias="HTH_LOCAL_CHAT_MEMORY_ENABLED")
     local_chat_memory_turns: int = Field(6, ge=1, alias="HTH_LOCAL_CHAT_MEMORY_TURNS")
     agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
+    # Motivation vs Logic: recursive detail follow-up should be policy-driven so
+    # runtime fan-out is not hard-coded in engine logic.
+    agent_recursive_follow_up_max_products: int = Field(
+        20,
+        ge=1,
+        alias="HTH_AGENT_RECURSIVE_FOLLOW_UP_MAX_PRODUCTS",
+    )
+    # Motivation vs Logic: autonomous recovery should retry missing evidence in
+    # bounded rounds before returning a limited answer.
+    agent_replan_max_rounds: int = Field(2, ge=0, alias="HTH_AGENT_REPLAN_MAX_ROUNDS")
+    agent_replan_max_steps_per_round: int = Field(
+        10,
+        ge=1,
+        alias="HTH_AGENT_REPLAN_MAX_STEPS_PER_ROUND",
+    )
+    # Motivation vs Logic: runtime follow-up product detail page sizing should
+    # remain configurable instead of fixed in planner glue code.
+    agent_get_product_page_size: int = Field(100, ge=1, le=100, alias="HTH_AGENT_GET_PRODUCT_PAGE_SIZE")
     # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
     # Harmonise detail lookups; any extra items automatically wait on the semaphore.
     stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")

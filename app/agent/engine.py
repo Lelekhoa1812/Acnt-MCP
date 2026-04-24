@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import InventoryNotFoundError, ParameterMappingError, Settings, UpstreamServiceError
 from app.tool.stock.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_composer, render_formatter, render_planner, render_system, render_validator
+from app.prompt.context import render_plan_context
 from app.schemas import (
     AgentDebugGrounding,
     AgentDebugIntent,
@@ -118,6 +119,7 @@ class AgentEngine:
             "formatter": 0,
         }
         run_started_at = perf_counter()
+        replan_rounds_used = 0
 
         planner_started_at = perf_counter()
         plan_status, planning_limitations = await self.plan_query(request.message, session_state)
@@ -139,6 +141,19 @@ class AgentEngine:
         retrieval_started_at = perf_counter()
         for _ in range(self.settings.agent_max_steps):
             if self._all_plan_steps_done(plan_status):
+                if clarification is None and replan_rounds_used < self.settings.agent_replan_max_rounds:
+                    replan_note = await self._append_autonomous_replan_steps(
+                        request_message=request.message,
+                        plan_status=plan_status,
+                        session_state=session_state,
+                        traces=traces,
+                        limitations=limitations,
+                    )
+                    if replan_note is not None:
+                        replan_rounds_used += 1
+                        limitations.append(replan_note)
+                        self._persist_plan_state(session_state, plan_status)
+                        continue
                 break
 
             if len(messages) == 2:
@@ -934,7 +949,16 @@ class AgentEngine:
 
         try:
             trace_payload = result.trace.model_dump(mode="json") if result.trace else {}
-            tool_payload = result.llm_content if result.llm_content is not None else result.data
+            # Root Cause vs Logic: large inventory snapshots can carry 50+ NormalizedEvidence
+            # objects in rows/evidence/items, ballooning the validator prompt to hundreds of
+            # kilobytes. The model then has to produce normalized_rows/evidence back within
+            # only 1400 completion tokens — impossible — so it returns null content.
+            # We sample a small slice here; quality checks (findings, ambiguity, confidence)
+            # are still meaningful on a representative subset, and the full rows/evidence are
+            # reconstructed deterministically from result.data by the fallback path.
+            tool_payload = self._sample_tool_payload_for_validator(
+                result.llm_content if result.llm_content is not None else result.data
+            )
 
             async def run_mode(context_mode: str) -> ValidatorEnvelope:
                 payload = {
@@ -978,6 +1002,21 @@ class AgentEngine:
             fallback.findings.append("Validator model output was invalid; deterministic fallback normalization was used.")
             return fallback
 
+    def _sample_tool_payload_for_validator(self, payload: Any, max_items: int = 6) -> Any:
+        # Motivation vs Logic: the validator only needs a representative sample to
+        # produce findings, ambiguity flags, and a confidence score. Re-emitting
+        # the full rows/evidence in the 1400-token completion budget is impossible
+        # for large snapshots, so we cap the heaviest list fields here. The full
+        # data is always reconstructed from result.data by the fallback path.
+        if not isinstance(payload, dict):
+            return payload
+        sampled = dict(payload)
+        for key in ("rows", "evidence", "items"):
+            value = sampled.get(key)
+            if isinstance(value, list) and len(value) > max_items:
+                sampled[key] = value[:max_items]
+        return sampled
+
     def _fallback_validator_envelope(self, result: ToolResult) -> ValidatorEnvelope:
         return ValidatorEnvelope(
             expected_rows=None,
@@ -993,6 +1032,9 @@ class AgentEngine:
 
     def _fallback_rows(self, data: Any) -> list[dict[str, Any]]:
         if isinstance(data, dict):
+            variant_rows = self._fallback_variant_rows_from_items(data.get("items"))
+            if variant_rows:
+                return variant_rows
             rows = data.get("rows")
             if isinstance(rows, list):
                 return [item for item in rows if isinstance(item, dict)]
@@ -1005,9 +1047,122 @@ class AgentEngine:
         return []
 
     def _fallback_evidence(self, data: Any) -> list[dict[str, Any]]:
+        variant_evidence = self._fallback_variant_evidence_from_items(data)
+        if variant_evidence:
+            return variant_evidence
         evidence: list[NormalizedEvidence] = []
         self._collect_evidence(data, evidence)
         return [item.model_dump(mode="json") for item in evidence]
+
+    def _fallback_variant_rows_from_items(self, items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_name = (item.get("name") or "").strip() or None
+            variants = item.get("variants")
+            if not isinstance(variants, list):
+                continue
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                details = variant.get("details")
+                if not isinstance(details, dict):
+                    details = {}
+                rows.append(
+                    {
+                        "product": product_name,
+                        "variant": (variant.get("name") or "").strip() or None,
+                        "sku": self._compact_identifier(variant.get("sku")),
+                        "size": self._format_dimensions_from_details(details),
+                        "stock": self._format_regional_stock_from_details(details, variant.get("totalHirable")),
+                    }
+                )
+        return [row for row in rows if any(value is not None for value in row.values())]
+
+    def _fallback_variant_evidence_from_items(self, data: Any) -> list[dict[str, Any]]:
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items")
+        if not isinstance(items, list):
+            return []
+        evidence_items: list[dict[str, Any]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_name = (item.get("name") or "").strip() or None
+            variants = item.get("variants")
+            if not isinstance(variants, list):
+                continue
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                details = variant.get("details")
+                if not isinstance(details, dict):
+                    details = {}
+                evidence_items.append(
+                    {
+                        "product_name": product_name,
+                        "variant_name": (variant.get("name") or "").strip() or None,
+                        "sku": self._compact_identifier(variant.get("sku")),
+                        "dimensions": {
+                            "length": details.get("length"),
+                            "width": details.get("width"),
+                            "height": details.get("height"),
+                        },
+                        "stock": {
+                            "vicStock": details.get("vicStock"),
+                            "vicHirable": details.get("vicHirable"),
+                            "nswStock": details.get("nswStock"),
+                            "nswHirable": details.get("nswHirable"),
+                            "qldStock": details.get("qldStock"),
+                            "qldHirable": details.get("qldHirable"),
+                            "totalStock": details.get("totalStock"),
+                            "totalHirable": variant.get("totalHirable"),
+                        },
+                    }
+                )
+        return evidence_items
+
+    def _format_dimensions_from_details(self, details: dict[str, Any]) -> str | None:
+        parts = [details.get("length"), details.get("width"), details.get("height")]
+        values = [value for value in parts if isinstance(value, (int, float))]
+        if not values:
+            return None
+        rendered = " x ".join(f"{float(value):g}" for value in values)
+        return f"{rendered} m"
+
+    def _format_regional_stock_from_details(self, details: dict[str, Any], total_hirable: Any) -> str | None:
+        segments: list[str] = []
+        total_stock = details.get("totalStock")
+        if isinstance(total_stock, int):
+            if isinstance(total_hirable, int):
+                segments.append(f"Overall has {total_stock} in stock, with {total_hirable} available for hire")
+            else:
+                segments.append(f"Overall has {total_stock} in stock")
+        location_descriptions: list[str] = []
+        for location, stock_key, hirable_key in (
+            ("VIC", "vicStock", "vicHirable"),
+            ("NSW", "nswStock", "nswHirable"),
+            ("QLD", "qldStock", "qldHirable"),
+        ):
+            stock_value = details.get(stock_key)
+            hirable_value = details.get(hirable_key)
+            if not isinstance(stock_value, int) and not isinstance(hirable_value, int):
+                continue
+            if isinstance(stock_value, int) and isinstance(hirable_value, int):
+                location_descriptions.append(f"{location}: {stock_value} stock, {hirable_value} hirable")
+            elif isinstance(stock_value, int):
+                location_descriptions.append(f"{location}: {stock_value} stock")
+            elif isinstance(hirable_value, int):
+                location_descriptions.append(f"{location}: {hirable_value} hirable")
+        if location_descriptions:
+            segments.append("By location: " + "; ".join(location_descriptions))
+        if not segments:
+            return None
+        return ". ".join(segments) + "."
 
     def _count_rows(self, data: Any, trace: ToolTrace | None) -> int:
         if trace and trace.result_count is not None:
@@ -1211,37 +1366,68 @@ class AgentEngine:
         self,
         data: Any,
         request_message: str | None = None,
-    ) -> list[tuple[str, dict[str, str]]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         if not isinstance(data, dict):
             return []
         items = data.get("items")
         if not isinstance(items, list) or not items:
             return []
 
-        item = self._best_follow_up_candidate(items, request_message)
-        if isinstance(item, dict):
-            product_id = self._compact_identifier(item.get("id"))
-            if product_id:
-                return [("stock.get_product", {"id": product_id, "page": 1, "pageSize": 50})]
+        # Motivation vs Logic: single-winner follow-up selection caused
+        # multi-item asks (e.g. "Alto and Spencer") to drop valid families.
+        # We now branch across ranked catalogue items and cap fan-out via
+        # settings so retrieval stays comprehensive but bounded.
+        page_size = data.get("pageSize")
+        normalized_page_size = page_size if isinstance(page_size, int) and page_size > 0 else self.settings.agent_get_product_page_size
+        ranked_items = self._rank_follow_up_items(items, request_message)
+        max_products = max(1, self.settings.agent_recursive_follow_up_max_products)
 
-        # Motivation vs Logic: when candidate ranking cannot safely pick one item,
-        # schedule bounded variant-evidence retrieval across returned rows so the
-        # prompt-driven composer can still reason over concrete product evidence.
-        variant_steps = self._derive_variant_follow_up_steps(items, max_variants=6)
-        if variant_steps:
-            return variant_steps
+        follow_up_steps: list[tuple[str, dict[str, Any]]] = []
+        seen_identifiers: set[str] = set()
+        for item in ranked_items:
+            lookup_args = self._build_product_follow_up_args(item, normalized_page_size)
+            if lookup_args is None:
+                continue
+            identifier = self._compact_identifier(lookup_args.get("sku")) or self._compact_identifier(lookup_args.get("id"))
+            if not identifier or identifier in seen_identifiers:
+                continue
+            seen_identifiers.add(identifier)
+            follow_up_steps.append(("stock.get_product", lookup_args))
+            if len(follow_up_steps) >= max_products:
+                break
+        return follow_up_steps
 
-        if not isinstance(item, dict):
-            return []
-        product_id = self._compact_identifier(item.get("id"))
+    def _rank_follow_up_items(self, items: list[Any], request_message: str | None) -> list[dict[str, Any]]:
+        dict_items = [item for item in items if isinstance(item, dict)]
+        if not request_message:
+            return dict_items
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for item in dict_items:
+            parts = [str(item.get("name") or "")]
+            variants = item.get("variants")
+            if isinstance(variants, list):
+                parts.extend(str(variant.get("name") or "") for variant in variants if isinstance(variant, dict))
+            candidate_text = " ".join(part for part in parts if part)
+            scored.append((lexical_overlap(request_message, candidate_text), item))
+        scored.sort(key=lambda entry: entry[0], reverse=True)
+        return [item for _, item in scored]
+
+    def _build_product_follow_up_args(self, item: dict[str, Any], page_size: int) -> dict[str, Any] | None:
         variants = item.get("variants")
-        variant = variants[0] if isinstance(variants, list) and len(variants) == 1 and isinstance(variants[0], dict) else None
-        sku = self._compact_identifier(variant.get("sku")) if isinstance(variant, dict) else None
-        if sku:
-            return [("stock.get_product", {"sku": sku})]
+        preferred_sku = None
+        if isinstance(variants, list):
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                preferred_sku = self._compact_identifier(variant.get("sku"))
+                if preferred_sku:
+                    break
+        if preferred_sku:
+            return {"sku": preferred_sku, "page": 1, "pageSize": page_size}
+        product_id = self._compact_identifier(item.get("id"))
         if product_id:
-            return [("stock.get_product", {"id": product_id})]
-        return []
+            return {"id": product_id, "page": 1, "pageSize": page_size}
+        return None
 
     def _derive_variant_follow_up_steps(self, items: list[Any], max_variants: int = 20) -> list[tuple[str, dict[str, str]]]:
         steps: list[tuple[str, dict[str, str]]] = []
@@ -1291,7 +1477,11 @@ class AgentEngine:
         if not product_id:
             return None
         follow_up_tool = "stock.get_product"
-        follow_up_args: dict[str, Any] = {"id": product_id, "page": 1, "pageSize": 50}
+        follow_up_args: dict[str, Any] = {
+            "id": product_id,
+            "page": 1,
+            "pageSize": self.settings.agent_get_product_page_size,
+        }
         if any(
             step.tool == follow_up_tool and step.args == follow_up_args and step.status != "done"
             for step in plan_status.steps
@@ -1319,30 +1509,6 @@ class AgentEngine:
             "so the final answer includes all variants before any clarification prompt."
         )
 
-    def _best_follow_up_candidate(self, items: list[Any], request_message: str | None) -> dict[str, Any] | None:
-        dict_items = [item for item in items if isinstance(item, dict)]
-        if not dict_items:
-            return None
-        if len(dict_items) == 1 or not request_message:
-            return dict_items[0]
-
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for item in dict_items:
-            parts = [str(item.get("name") or "")]
-            variants = item.get("variants")
-            if isinstance(variants, list):
-                parts.extend(str(variant.get("name") or "") for variant in variants if isinstance(variant, dict))
-            candidate_text = " ".join(part for part in parts if part)
-            scored.append((lexical_overlap(request_message, candidate_text), item))
-
-        scored.sort(key=lambda entry: entry[0], reverse=True)
-        top_score = scored[0][0]
-        second_score = scored[1][0] if len(scored) > 1 else 0.0
-        if top_score <= 0.0:
-            return None
-        if len(scored) > 1 and top_score < 0.55 and top_score - second_score < 0.15:
-            return None
-        return scored[0][1]
 
     def _resolve_or_insert_plan_step(
         self,
@@ -1350,10 +1516,15 @@ class AgentEngine:
         tool_name: str,
         args: dict[str, Any],
     ) -> tuple[PlanStep, bool]:
+        # Root Cause vs Logic: binding by tool name alone merged distinct
+        # multi-item calls into one pending step and overwrote earlier args.
+        # We now bind by exact args first, then only reuse empty placeholders.
         for step in plan_status.steps:
-            if step.tool == tool_name and step.status != "done":
-                if args:
-                    step.args = args
+            if step.tool == tool_name and step.status != "done" and step.args == args:
+                return step, False
+        for step in plan_status.steps:
+            if step.tool == tool_name and step.status != "done" and not step.args and args:
+                step.args = args
                 return step, False
 
         next_id = max((step.id for step in plan_status.steps), default=0) + 1
@@ -2320,7 +2491,7 @@ class AgentEngine:
     def _next_hop_rules(self, plan_status: PlanStatus) -> list[str]:
         rules = [
             "Use stock.search_catalogue to resolve candidate products before exact detail lookups.",
-            "If catalogue search returns identifiers without enough user-facing detail, follow with stock.get_product or stock.extract_variant_evidence.",
+            "If catalogue search returns identifiers without enough user-facing detail, follow with stock.get_product for each unresolved family.",
             "Do not call stock.extract_variant_evidence with variantId alone; supplement it with sku or id.",
         ]
         pending_recursive = [
@@ -2341,6 +2512,121 @@ class AgentEngine:
                     seen.add(compact)
                     blocks.append(compact)
         return blocks
+
+    async def _append_autonomous_replan_steps(
+        self,
+        *,
+        request_message: str,
+        plan_status: PlanStatus,
+        session_state: SessionState,
+        traces: list[ToolTrace],
+        limitations: list[str],
+    ) -> str | None:
+        if self._client is None:
+            return None
+
+        # Motivation vs Logic: retrieval loops were ending with `status=limited`
+        # even when additional evidence paths still existed. This replan pass
+        # asks the model to autonomously propose bounded follow-up steps based on
+        # current plan+memo state instead of stopping early.
+        available_tools = [tool.name for tool in self.tool_registry.list_tools()]
+        payload = {
+            "model": self.settings.foundry_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a strict JSON replan controller. "
+                        "Reason from the request, current plan context, memoized evidence, and limitations. "
+                        "Do not use hard-coded keyword routing. "
+                        "If requested evidence is still missing but retrievable, return additional tool steps."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request_message,
+                            "plan_context": render_plan_context(
+                                plan_status,
+                                session_state.memo_cache,
+                                request_message,
+                                mode="compact",
+                            ),
+                            "traces": [trace.model_dump(mode="json") for trace in traces[-12:]],
+                            "limitations": self._dedupe(limitations)[-12:],
+                            "available_tools": available_tools,
+                            "max_steps": self.settings.agent_replan_max_steps_per_round,
+                            "output_schema": {
+                                "should_replan": "boolean",
+                                "reason": "string",
+                                "steps": [{"tool": "string", "args": "object", "hypothesis": "string"}],
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": 900,
+        }
+
+        try:
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/replan")
+            content = response_payload["choices"][0]["message"].get("content") or ""
+            if not content.strip():
+                return None
+            raw = json.loads(content)
+        except (UpstreamServiceError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(raw, dict) or not raw.get("should_replan"):
+            return None
+
+        raw_steps = raw.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            return None
+
+        completed_step_ids = [step.id for step in plan_status.steps if step.status == "done"]
+        dependency_ids = completed_step_ids[-1:] if completed_step_ids else []
+        inserted_count = 0
+        max_steps = max(1, self.settings.agent_replan_max_steps_per_round)
+        for candidate in raw_steps[:max_steps]:
+            if not isinstance(candidate, dict):
+                continue
+            tool_name = str(candidate.get("tool") or "").strip()
+            args = candidate.get("args")
+            if not tool_name or not isinstance(args, dict):
+                continue
+            if tool_name not in available_tools:
+                continue
+            if any(step.tool == tool_name and step.args == args and step.status != "done" for step in plan_status.steps):
+                continue
+
+            next_id = max((step.id for step in plan_status.steps), default=0) + 1
+            plan_status.steps.append(
+                PlanStep(
+                    id=next_id,
+                    name="autonomous replan retrieval",
+                    tool=tool_name,
+                    status="pending",
+                    args=args,
+                    depends_on=dependency_ids,
+                    parallel_group=None,
+                    hypotheses=[str(candidate.get("hypothesis") or raw.get("reason") or "Additional evidence required.")],
+                    validation=None,
+                )
+            )
+            inserted_count += 1
+
+        if inserted_count == 0:
+            return None
+
+        reason = str(raw.get("reason") or "Requested evidence remained incomplete after the previous plan run.")
+        return (
+            f"Autonomous replan added `{inserted_count}` retrieval step(s) because coverage remained incomplete. "
+            f"reason={reason}"
+        )
 
     def _utc_now_iso(self) -> str:
         return datetime.now(tz=UTC).isoformat()

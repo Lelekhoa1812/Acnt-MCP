@@ -129,10 +129,10 @@ SYSTEM_BEHAVIOR_RULES = [
     "If asked about bookings, quotes, reservations, or event line items, say this workflow is not implemented in the current tool contract.",
     "For news: use `news.headlines` for live/regional coverage, `news.search` for broader research, and `news.sources` for outlets; ground claims in `topSources`, `topKeywords`, `publishedRange`, and `totalResults`.",
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
-    "If search returns identifiers but not requested attributes, add a next hop with `stock.get_product` or `stock.extract_variant_evidence` before answering.",
-    "For product-name queries, run multi-pass search: full name first, then narrower key tokens if no rows.",
+    "If search returns identifiers but not requested attributes, add a next hop with `stock.get_product` before answering product-family questions.",
+    "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
-    "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique variant/product identifier returned.",
+    "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique product family returned.",
     "For product-family requests, prefer one compact stock-detail path; do not stack `stock.inventory_snapshot`, `stock.get_product`, and `stock.compare_variants` unless each hop adds missing evidence.",
     "Avoid duplicate semantic retrieval: once a tool result already covers the requested stock attributes, move on to unsatisfied domains instead of re-fetching the same family in another stock shape.",
     "For mixed intent queries, ensure every requested domain is satisfied in one response (inventory + currency conversion + weather/news as requested).",
@@ -153,6 +153,8 @@ SYSTEM_BEHAVIOR_RULES = [
     "Do not call `stock.get_variant_evidence` with variantId alone; pair with sku or product id, or use sku only.",
     "After a failing tool call, change the next args pattern using returned identifiers; do not repeat the same failing pattern.",
     "When many products/variants are needed, prefer compact answer-ready tools over repeated raw single-product lookups.",
+    "Do not finalize as answered or limited while requested attributes are still retrievable; autonomously replan and continue retrieval until coverage is complete or a true upstream limitation is proven.",
+    "Derive regional availability from retrieved stock evidence fields (for example vic/nsw stock and hirable counts) once detail payloads are available.",
     "For broad inventory asks, plan paginated catalogue search + optional department/category discovery; then answer with structured Markdown and note incompleteness.",
     "After tool calls finish, the next assistant message must include the full user-facing answer (after any <thought> block).",
     "Before every tool call, include a concise <thought> block.",
@@ -203,6 +205,7 @@ If the draft says the run is partial or incomplete, prefer limited or error over
 Keep the answer scoped to the user's requested attributes; do not append unrelated fields.
 If the user asked for a specific variant or SKU, answer only that variant.
 If the user asked generally about a product family, cover all resolved variants and deduplicate repeated values in the response.
+If product detail evidence includes regional stock numbers, state the requested regional availability directly instead of saying it cannot be confirmed.
 After a full product-family answer, optionally end with one short follow-up asking whether the user wants deeper detail on any specific variant.
 Prefer product and variant names in prose; include SKUs only when requested or needed for disambiguation.
 Keep the final wording aligned to the user's original intent.
@@ -334,33 +337,9 @@ def _should_include_stock_policy(
         normalized = {str(value).strip().lower() for value in intent_classes if str(value).strip()}
         if normalized and normalized.issubset({"weather", "news", "currency"}):
             return False
-    if not route.plugin_intents:
-        return True
-    lowered = normalize_text(request)
-    stock_tokens = {
-        "stock",
-        "inventory",
-        "product",
-        "products",
-        "variant",
-        "variants",
-        "catalogue",
-        "catalog",
-        "sku",
-        "size",
-        "sizes",
-        "colour",
-        "color",
-        "chair",
-        "chairs",
-        "table",
-        "tables",
-        "stool",
-        "stools",
-        "furniture",
-    }
-    request_tokens = set(lowered.split())
-    return any(token in request_tokens for token in stock_tokens)
+    # Motivation vs Logic: stock-policy inclusion should be driven by planner
+    # intent classification and live routing context, not hard-coded term lists.
+    return True
 
 
 def _contains_any(normalized: str, tokens: set[str], terms: tuple[str, ...]) -> bool:
@@ -479,13 +458,14 @@ Rules:
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
-- For product name discovery, plan at least two search passes where appropriate (full phrase and concise alias), then deduplicate overlaps by product id/SKU before downstream steps.
+- For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
 - For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock.inventory_snapshot` and `stock.compare_variants` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
 - For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news) and keep dependencies clear.
 - For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
 - Keep the DAG latency-aware: prefer bounded, answer-ready tools over long chains of overlapping stock detail calls.
+- Never mark the plan complete while requested attributes are still missing and additional retrieval paths remain; append replan steps instead.
 - If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock.get_product` or `stock.inventory_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
 - Do not invent booking or quote tools; those workflows are not yet implemented in the current tool contract.
 - Do not invent tools.
@@ -541,21 +521,19 @@ def render_validator(
 You are the validator phase for tool retrieval outputs.
 
 Return STRICT JSON (no markdown) with exactly these keys:
-- expected_rows: integer or null
-- actual_rows: integer or null
-- findings: array of strings
-- ambiguity: array of strings
-- missing_statistics: array of strings
+- expected_rows: integer or null — how many rows the step was expected to return
+- actual_rows: integer or null — how many rows are present in the tool result
+- findings: array of strings — factual observations about completeness or format
+- ambiguity: array of strings — unresolved entity or data ambiguities
+- missing_statistics: array of strings — expected fields that are absent
 - confidence: number between 0 and 1 or null
-- normalized_rows: array of row objects
-- normalized_evidence: array of evidence objects
-- aggregates: object
+- aggregates: object — any useful summary counts or totals derived from the result
 
 Rules:
-- Normalize rows/evidence for cache reuse.
+- Do NOT emit normalized_rows or normalized_evidence; those are reconstructed deterministically.
 - Compare expected rows versus actual rows and mention mismatches in findings.
 - If data appears partial, missing, or ambiguous, reflect it in ambiguity or missing_statistics.
-- Keep findings factual and grounded in the provided tool payload.
+- Keep findings factual and grounded in the provided tool payload sample.
 - Do not output extra keys.
 
 Context:

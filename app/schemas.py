@@ -477,6 +477,8 @@ class StockExtractVariantEvidenceArgs(BaseModel):
     def validate_identifier(self) -> "StockExtractVariantEvidenceArgs":
         if not self.id and not self.sku and not self.variantId:
             raise ValueError("At least one of 'id', 'sku', or 'variantId' must be provided.")
+        if self.variantId and not self.id and not self.sku:
+            raise ValueError("`variantId` requires accompanying `sku` or `id` for product resolution.")
         return self
 
 

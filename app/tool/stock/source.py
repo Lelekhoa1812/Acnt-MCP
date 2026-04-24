@@ -104,10 +104,11 @@ class HarmoniseInventorySource:
         page_size: int,
     ) -> tuple[dict[str, Any], list[str]]:
         if sku:
-            payload = await self._get(
-                f"/api/v1/products/{sku}",
-                params={"page": page, "pageSize": page_size},
-            )
+            # Root Cause vs Logic: /api/v1/products/{sku} is a single-resource
+            # detail endpoint that does not accept pagination query params.
+            # Passing page/pageSize causes a 500 on the cloud Harmonise backend;
+            # Postman confirms the bare URL works correctly without any params.
+            payload = await self._get(f"/api/v1/products/{sku}", params={})
             paged = self._as_paged_payload(payload, page=page, page_size=page_size)
             self._remember_catalogue_items(paged.get("items", []))
             return paged, []

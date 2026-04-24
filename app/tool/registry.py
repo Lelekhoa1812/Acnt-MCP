@@ -302,13 +302,13 @@ class ToolRegistry:
         )
         self._register(
             "stock.extract_variant_evidence",
-            "Normalize a Harmonise product variant into answer-ready evidence. Prefer sku or product id; variantId alone is not enough.",
+            "Normalize one specific Harmonise variant into answer-ready evidence. Use for variant-targeted requests; product-family requests should use stock.get_product or stock.inventory_snapshot.",
             StockExtractVariantEvidenceArgs,
             extract_variant,
         )
         self._register(
             "stock.get_variant_evidence",
-            "Alias for stock.extract_variant_evidence for proposal compatibility. Prefer sku or product id; variantId alone is not enough.",
+            "Alias for stock.extract_variant_evidence for proposal compatibility. Requires variant-specific lookup context (sku or product id alongside variantId).",
             StockExtractVariantEvidenceArgs,
             extract_variant,
         )

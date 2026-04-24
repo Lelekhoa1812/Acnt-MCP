@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import Any
 
@@ -15,6 +16,14 @@ from app.schemas import (
 )
 from app.session.store import SessionStore
 from app.tool.registry import ToolRegistry
+
+
+@dataclass
+class SessionNameCandidate:
+    name: str | None
+    raw_content: str
+    finish_reason: str | None
+    rejection_reason: str | None
 
 
 class OrchestratorService:
@@ -187,7 +196,7 @@ class OrchestratorService:
                 )
             return
         try:
-            name = await self._build_session_name(compact, session_state, naming_model)
+            candidate = await self._build_session_name(compact, session_state, naming_model)
         except UpstreamServiceError as exc:
             if fallback_name:
                 session_state.session_name = fallback_name
@@ -221,14 +230,15 @@ class OrchestratorService:
         # silently using a local first-words shortcut even when LLM naming failed.
         # We now treat that shortcut as explicit fallback and only apply it on
         # real naming errors; successful runs must persist the LLM output.
-        if name:
-            session_state.session_name = name
+        if candidate.name:
+            session_state.session_name = candidate.name
             session_state.name_assigned = True
             session_state.session_name_source = "llm"
             self.logger.info(
-                "Session naming assigned via llm session_id=%s title=%s",
+                "Session naming assigned via llm session_id=%s title=%s finish_reason=%s",
                 session_state.session_id,
-                name,
+                candidate.name,
+                candidate.finish_reason or "unknown",
             )
             return
 
@@ -236,16 +246,30 @@ class OrchestratorService:
             session_state.session_name = fallback_name
             session_state.name_assigned = True
             session_state.session_name_source = "fallback"
+            raw_preview = self._truncate_words(candidate.raw_content, 8) if candidate.raw_content else "<empty>"
             self.logger.warning(
-                "Session naming fallback applied (empty llm output) session_id=%s title=%s",
+                "Session naming fallback applied (%s) session_id=%s title=%s raw_title=%s finish_reason=%s",
+                candidate.rejection_reason or "empty llm output",
                 session_state.session_id,
                 fallback_name,
+                raw_preview,
+                candidate.finish_reason or "unknown",
             )
 
-    async def _build_session_name(self, message: str, session_state: SessionState, model: str) -> str | None:
+    async def _build_session_name(
+        self,
+        message: str,
+        session_state: SessionState,
+        model: str,
+    ) -> SessionNameCandidate:
         snippet = self._truncate_words(message, 50)
         if not snippet:
-            return None
+            return SessionNameCandidate(
+                name=None,
+                raw_content="",
+                finish_reason=None,
+                rejection_reason="empty request snippet",
+            )
 
         # Motivation vs Logic: to keep the naming intelligence strictly inside
         # the LLM we only surface conversation artifacts as context text and let
@@ -270,6 +294,7 @@ class OrchestratorService:
                     "You are a session-naming assistant. Provide a concise, "
                     "business-focused title (2-4 words) that captures the user "
                     "goal without echoing the verbatim start of the request. "
+                    "Return plain text only and never return an empty response. "
                     "Use the context when available to mention the primary object "
                     "being requested (e.g., stock, variant, quote) and the action "
                     "the user expects the assistant to take."
@@ -286,13 +311,51 @@ class OrchestratorService:
             messages=payload,
             max_completion_tokens=40,
         )
-        content = (
-            response.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-            .strip()
+        choice = (response.get("choices") or [{}])[0]
+        raw_content = self._coerce_completion_content(
+            (choice.get("message") or {}).get("content", "")
         )
-        return self._normalize_name(content)
+        normalized = self._normalize_name(raw_content)
+        return SessionNameCandidate(
+            name=normalized,
+            raw_content=raw_content,
+            finish_reason=choice.get("finish_reason"),
+            rejection_reason=self._classify_name_rejection(raw_content, normalized),
+        )
+
+    def _coerce_completion_content(self, content: Any) -> str:
+        # Root Cause vs Logic: Azure chat completions can return message content as
+        # plain text or structured parts. Session naming treated anything that was
+        # not a non-empty string as "empty", which hid whether the model emitted a
+        # short title, structured text parts, or nothing at all.
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                    continue
+                nested = item.get("text", {})
+                if isinstance(nested, dict) and isinstance(nested.get("value"), str):
+                    parts.append(nested["value"])
+            return " ".join(part.strip() for part in parts if part and part.strip()).strip()
+        return ""
+
+    def _classify_name_rejection(self, raw: str, normalized: str | None) -> str | None:
+        if normalized:
+            return None
+        if not raw.strip():
+            return "empty llm output"
+        if len([token for token in raw.split() if token]) < 2:
+            return "too short llm output"
+        return "unusable llm output"
 
     def _truncate_words(self, text: str, limit: int) -> str:
         tokens = [token for token in text.split() if token]
