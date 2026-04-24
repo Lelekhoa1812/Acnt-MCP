@@ -12,7 +12,7 @@ from app.config import (
     ParameterMappingError,
     UpstreamServiceError,
 )
-from app.text.utils import lexical_overlap, normalize_text, significant_tokens
+from app.text.utils import lexical_overlap, significant_tokens
 from app.tool.stock.media import build_harmonise_image_url
 from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
@@ -421,11 +421,6 @@ class InventoryService:
         variant_path = f"{product_path}.variants[{variant_index}]"
         details_path = f"{variant_path}.details"
         option_labels = self._resolve_option_labels(product, variant)
-        variant_label = self._blend_variant_name_with_options(
-            variant_name=variant.name,
-            product_name=product.name,
-            option_labels=option_labels,
-        )
         evidence_paths = {
             "product_name": f"{product_path}.name",
             "variant_name": f"{variant_path}.name",
@@ -459,7 +454,7 @@ class InventoryService:
             product_id=product.id,
             product_name=(product.name or "").strip() or None,
             variant_id=variant.id,
-            variant_name=variant_label,
+            variant_name=(variant.name or "").strip() or None,
             sku=variant.sku,
             variation_options=option_labels,
             salesNote=details.salesNote if details else None,
@@ -517,38 +512,6 @@ class InventoryService:
             if (option.name or "").strip()
         }
         return [option_lookup[option_id] for option_id in variant.optionIds if option_id in option_lookup]
-
-    def _blend_variant_name_with_options(
-        self,
-        variant_name: str | None,
-        product_name: str | None,
-        option_labels: list[str],
-    ) -> str | None:
-        # Motivation vs Logic: colour and finish clues live on variation options,
-        # so we fold them into the variant name instead of promising a separate field.
-        base_variant = (variant_name or "").strip()
-        fallback_product = (product_name or "").strip()
-        base_text = base_variant or fallback_product
-        normalized_base = normalize_text(base_text)
-        seen: set[str] = set()
-        appended: list[str] = []
-        for label in option_labels:
-            normalized_label = normalize_text(label)
-            if not normalized_label or normalized_label in seen:
-                continue
-            seen.add(normalized_label)
-            if normalized_base and normalized_label in normalized_base:
-                continue
-            clean_label = (label or "").strip()
-            if clean_label:
-                appended.append(clean_label)
-        if base_text and appended:
-            return f"{base_text} - {', '.join(appended)}"
-        if base_text:
-            return base_text
-        if appended:
-            return ", ".join(appended)
-        return None
 
     def _build_inventory_row(self, evidence: NormalizedEvidence) -> InventorySnapshotRow:
         return InventorySnapshotRow(

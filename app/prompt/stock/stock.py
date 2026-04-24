@@ -45,6 +45,10 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "already returns variant sizes, options, pricing, and stock, do not plan redundant stock lookups."
         ),
         (
+            "Color/finish are not separate fields; they exist only within variant `name` or options. "
+            "Use these strings for color queries; do not invent or expect a dedicated property."
+        ),
+        (
             f"Confine cataloguing and stock tool calls to the {route.department_name} department by "
             f"setting `departmentId={route.department_id}` and explaining any other departments the "
             "user mentions as unsupported."

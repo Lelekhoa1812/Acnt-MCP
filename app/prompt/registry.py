@@ -146,7 +146,11 @@ SYSTEM_BEHAVIOR_RULES = [
     "If user targets a specific variant, answer that variant only.",
     "If user asks about a product family/catalogue, summarize all resolved variants and deduplicate repeated values.",
     "Prefer product + variant names over SKU unless SKU is requested or needed to disambiguate.",
-    "If asked for colour or finish, extract it from the variant name (and supporting variation options) and mention it inline; do not assume a standalone `colour` field.",
+    (
+        "No standalone color/finish field exists; details reside solely in variants[].name "
+        "or variations text. Match color queries using these fields, but never list "
+        "color as a distinct attribute, JSON key, or table column."
+    ),
     "Final wording must match original user intent.",
     "Use user-friendly language; avoid internal runtime wording.",
     "In variant tables, group by product and list each variant on its own row.",
@@ -210,6 +214,7 @@ If the user asked generally about a product family, cover all resolved variants 
 If product detail evidence includes regional stock numbers, state the requested regional availability directly instead of saying it cannot be confirmed.
 After a full product-family answer, optionally end with one short follow-up asking whether the user wants deeper detail on any specific variant.
 Prefer product and variant names in prose; include SKUs only when requested or needed for disambiguation.
+If colour or finish is only present in a variant’s `name`, keep it there in prose; do not invent a separate colour field in the answer.
 Keep the final wording aligned to the user's original intent.
 Never mention internal orchestration or debug artifacts in answer text, including plan steps, TODO status, memo/cache, validator outputs, cache-hit labels, tool names, argument payloads, or internal error traces.
 If coverage is incomplete, explain the user impact in plain business language without technical diagnostics.
@@ -462,6 +467,7 @@ Rules:
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock.search_catalogue steps with one product target per step.
+- When the user asks about colour or finish, plan steps that return variant-level evidence so `variant.name` and variation options can be inspected; do not assume stock tools accept a separate colour filter field.
 - When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
 - For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock.inventory_snapshot` and `stock.compare_variants` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
@@ -565,6 +571,7 @@ Requirements:
 - Do not mention plan steps, TODO status, memo/cache mechanics, validation counters, tool names, argument details, Redis/cache-hit statuses, or internal failed attempts.
 - Do not mention debug payload sections or thought-block mechanics.
 - If evidence is incomplete, describe only the user-facing impact in plain language.
+- When colour or finish is encoded only in a variant’s name, use that name in the answer; do not add a separate colour label or field.
 - Do not invent facts.
 - Do not call tools.
 
