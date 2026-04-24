@@ -260,7 +260,12 @@ class InventoryService:
         # Motivation vs Logic: enriching snapshot variants requires many product
         # detail calls, so we parallelize these lookups with bounded concurrency
         # to reduce runtime without overwhelming upstream inventory endpoints.
-        parallelism = self._parallel_stock_requests_limit(len(catalogue_items))
+        # Root Cause vs Logic: cloud Harmonise can return 500 when many parallel
+        # detail GETs hit the same route; cap snapshot detail fan-out (see settings).
+        parallelism = min(
+            self._parallel_stock_requests_limit(len(catalogue_items)),
+            self.settings.stock_snapshot_detail_parallel_limit,
+        )
         semaphore = anyio.Semaphore(parallelism)
         detail_results: list[
             tuple[

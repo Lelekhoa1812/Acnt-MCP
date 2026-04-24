@@ -20,6 +20,14 @@ class HarmoniseInventorySource:
         self.logger = logger
         self._catalogue_index: dict[str, dict[str, Any]] = {}
         self._catalogue_scan_complete = False
+        # Root Cause vs Logic: cloud list/search GETs 500 when multiple requests
+        # hit /api/v1/products concurrently. Queue all Harmonise HTTP through one
+        # semaphore; local mode uses a much higher cap so in-process tests stay fast.
+        if settings.local_harmonise:
+            _limit = max(settings.harmonise_concurrent_request_limit, 32)
+        else:
+            _limit = max(1, settings.harmonise_concurrent_request_limit)
+        self._http_concurrency = anyio.Semaphore(_limit)
 
         client_args: dict[str, Any] = {
             "timeout": self.settings.harmonise_timeout_seconds,
@@ -141,7 +149,10 @@ class HarmoniseInventorySource:
         attempt = 1
         while True:
             try:
-                response = await self._client.get(path, params=params)
+                # Hold concurrency only for the actual socket read so retries and
+                # backoff do not block every other Harmonise call.
+                async with self._http_concurrency:
+                    response = await self._client.get(path, params=params)
             except httpx.ReadTimeout as exc:
                 if unbounded_timeout_retries or attempt < max_attempts:
                     await self._sleep_before_retry(
@@ -171,7 +182,7 @@ class HarmoniseInventorySource:
                     detail=f"Harmonise request failed for path '{path}': {exc}",
                 ) from exc
 
-            if response.status_code in {502, 503, 504} and attempt < max_attempts:
+            if response.status_code in {500, 502, 503, 504} and attempt < max_attempts:
                 await self._sleep_before_retry(
                     path=path,
                     attempt=attempt,
@@ -275,7 +286,9 @@ class HarmoniseInventorySource:
         # product-level variant details, which amplified remote latency and timeouts.
         # We now short-circuit once all expected SKUs have hydrated detail payloads.
         for sku in expected_skus:
-            payload = await self._get(f"/api/v1/products/{sku}", params={"page": 1, "pageSize": 1})
+            # Root Cause vs Logic: match get_product(sku): the cloud detail route
+            # returns 500 when page/pageSize query params are present; see get_product.
+            payload = await self._get(f"/api/v1/products/{sku}", params={})
             paged = self._as_paged_payload(payload, page=1, page_size=1)
             items = paged.get("items", []) or []
             if not items:

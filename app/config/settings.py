@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     harmonise_retry_attempts: int = Field(2, ge=0, alias="HTH_HARMONISE_RETRY_ATTEMPTS")
     harmonise_retry_backoff_ms: int = Field(400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_MS")
     harmonise_retry_backoff_cap_ms: int = Field(2400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_CAP_MS")
+    # Motivation vs Logic: the cloud /api/v1/products list route can 500 when many
+    # in-flight GETs run at once (e.g. parallel stock.search_catalogue). This caps
+    # concurrent requests per process to the same Harmonise base URL. Local ASGI
+    # uses a high effective limit in HarmoniseInventorySource.
+    harmonise_concurrent_request_limit: int = Field(2, ge=1, alias="HTH_HARMONISE_CONCURRENT_REQUESTS")
     redis_url: str = Field("redis://localhost:6379", alias="HTH_REDIS_URL")
     cache_ttl_seconds: int = Field(300, alias="HTH_CACHE_TTL_SECONDS")
     session_ttl_seconds: int = Field(1800, alias="HTH_SESSION_TTL_SECONDS")
@@ -77,6 +82,10 @@ class Settings(BaseSettings):
     # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
     # Harmonise detail lookups; any extra items automatically wait on the semaphore.
     stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")
+    # Motivation vs Logic: inventory_snapshot fans out one GET per catalogue row; the
+    # same cloud endpoint can return 500 under high concurrency even when each URL
+    # works from Postman. This caps detail fan-out separately from compare_variants.
+    stock_snapshot_detail_parallel_limit: int = Field(8, ge=1, alias="HTH_STOCK_SNAPSHOT_DETAIL_PARALLEL")
     # Motivation vs Logic: snapshot expansion should be configurable so broadening
     # behavior remains policy-driven instead of hidden magic constants.
     snapshot_expand_max_initial_items: int = Field(3, ge=1, alias="HTH_SNAPSHOT_EXPAND_MAX_INITIAL_ITEMS")
