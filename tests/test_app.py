@@ -226,6 +226,44 @@ def test_variant_evidence_tool_rejects_bare_variant_id_with_clear_guidance() -> 
     assert "variants[].sku" in payload["detail"]
 
 
+def test_disambiguate_candidates_returns_selectable_options_for_small_ambiguity() -> None:
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "resolver.disambiguate_candidates",
+                "args": {"query": "chair", "limit": 10},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool"] == "resolver.disambiguate_candidates"
+    assert payload["data"]["status"] == "needs_clarification"
+    assert payload["data"]["selection_mode"] == "select_option"
+    assert payload["data"]["total_matches"] is not None
+    assert payload["data"]["total_matches"] <= 10
+    assert 1 <= len(payload["data"]["options"]) <= 10
+
+
+def test_disambiguate_candidates_resolves_single_product_family_without_clarification() -> None:
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "resolver.disambiguate_candidates",
+                "args": {"query": "alto chair", "limit": 10},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool"] == "resolver.disambiguate_candidates"
+    assert payload["data"]["status"] == "resolved_product_family"
+    assert payload["data"]["variant_count"] >= 1
+    assert payload["data"]["product_id"]
+
+
 def test_currency_history_rebases_when_primary_base_is_restricted(monkeypatch) -> None:
     async def fake_primary(self, path, params):  # noqa: ANN001
         if path == "/2026-04-22" and params.get("base") == "USD":

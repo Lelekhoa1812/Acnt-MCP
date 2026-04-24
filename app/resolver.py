@@ -129,8 +129,33 @@ class ResolverService:
         self,
         query: str,
         ranked_candidates: list[RankedCandidate],
-        limit: int = 5,
+        *,
+        option_limit: int,
+        total_matches: int,
+        selection_threshold: int,
     ) -> ClarificationPayload:
-        options = [candidate.option for candidate in ranked_candidates[:limit]]
-        question = f"I found multiple plausible matches for '{query}'. Which one did you mean?"
-        return ClarificationPayload(question=question, options=options)
+        if total_matches <= selection_threshold:
+            options = [candidate.option for candidate in ranked_candidates[:option_limit]]
+            question = f"I found {total_matches} plausible matches for '{query}'. Which one did you mean?"
+            return ClarificationPayload(
+                question=question,
+                options=options,
+                total_matches=total_matches,
+                selection_mode="select_option",
+            )
+
+        question = (
+            f"I found {total_matches} plausible matches for '{query}'. "
+            "Please narrow it down so I can return the exact item quickly."
+        )
+        return ClarificationPayload(
+            question=question,
+            options=[],
+            total_matches=total_matches,
+            selection_mode="refine_query",
+            hints=[
+                "Use a more specific product name.",
+                "Add size or dimensions (length/width/height).",
+                "Add colour or finish details.",
+            ],
+        )

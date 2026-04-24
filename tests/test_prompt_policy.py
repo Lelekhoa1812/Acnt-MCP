@@ -11,13 +11,13 @@ def test_render_system_includes_scope_and_variant_policy_guards() -> None:
         session=SessionState(session_id="policy-test"),
         tools=[],
     )
-    assert "You are the Harmonise Orchestrator" in prompt
-    assert "Treat every request as recursive discovery" in prompt
-    assert "Construct tool arguments from the current schema" in prompt
-    assert "Keep answers scoped to the requested attributes" in prompt
-    assert "If the user targets a specific variant directly, answer that variant only." in prompt
-    assert "Prefer product and variant names over SKU" in prompt
-    assert "Final answer wording must align with the original user request intent" in prompt
+    assert "Role: Harmonise Orchestrator" in prompt
+    assert "Handle each request as recursive discovery" in prompt
+    assert "Build tool args from schema + retrieved evidence" in prompt
+    assert "Keep answers scoped to requested attributes only." in prompt
+    assert "If user targets a specific variant, answer that variant only." in prompt
+    assert "Prefer product + variant names over SKU" in prompt
+    assert "Final wording must match original user intent." in prompt
     assert "Do not reveal hidden chain-of-thought" in prompt
 
 
@@ -114,7 +114,7 @@ def test_render_system_uses_compact_memory_and_tool_roster() -> None:
         context_mode="compact",
     )
 
-    assert "Session memory summary:" in prompt
+    assert "Session summary:" in prompt
     assert "memo_cache" not in prompt
     assert "conversation_history" not in prompt
     assert "\"input_schema\"" not in prompt
@@ -166,8 +166,8 @@ def test_render_system_handles_mixed_furniture_and_unsupported_departments() -> 
         tools=[],
     )
 
-    assert "unsupported departments (electronics)" in prompt
-    assert "only Furniture stock is currently available" in prompt or "unsupported departments are currently unavailable" in prompt
+    assert "electronics is unavailable" in prompt
+    assert "only Furniture is supported right now" in prompt
 
 
 def test_render_system_plugin_only_query_avoids_furniture_mapping_rules() -> None:

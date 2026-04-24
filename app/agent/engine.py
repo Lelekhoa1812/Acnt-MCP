@@ -5,6 +5,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import Any
 
 import anyio
@@ -108,8 +109,19 @@ class AgentEngine:
         inventory_snapshot: dict[str, Any] | None = None
         parallel_batches: list[AgentDebugParallelBatch] = []
         used_grounded_snapshot_fallback = False
+        used_snapshot_fast_path = False
+        phase_timings_ms: dict[str, int] = {
+            "planner": 0,
+            "retrieval": 0,
+            "validator": 0,
+            "composer": 0,
+            "formatter": 0,
+        }
+        run_started_at = perf_counter()
 
+        planner_started_at = perf_counter()
         plan_status, planning_limitations = await self.plan_query(request.message, session_state)
+        phase_timings_ms["planner"] = int((perf_counter() - planner_started_at) * 1000)
         limitations.extend(planning_limitations)
         self._persist_plan_state(session_state, plan_status)
 
@@ -119,10 +131,12 @@ class AgentEngine:
         messages = self._build_runtime_messages(
             request=request.message,
             session_state=session_state,
+            intent_classes=plan_status.intent_classes,
             context_mode="normal",
         )
 
         draft_answer = ""
+        retrieval_started_at = perf_counter()
         for _ in range(self.settings.agent_max_steps):
             if self._all_plan_steps_done(plan_status):
                 break
@@ -134,6 +148,7 @@ class AgentEngine:
                         messages=self._build_runtime_messages(
                             request=request.message,
                             session_state=session_state,
+                            intent_classes=plan_status.intent_classes,
                             context_mode=mode,
                         ),
                         enable_tools=True,
@@ -318,6 +333,7 @@ class AgentEngine:
                             self._update_session_with_evidence(session_state, evidence)
                         resolved_items = self._merge_evidence(resolved_items, new_evidence)
 
+                    validator_started_at = perf_counter()
                     validation, memo_update, validation_limitations = await self.validate_and_record(
                         session_state=session_state,
                         plan_status=plan_status,
@@ -326,6 +342,7 @@ class AgentEngine:
                         tool_args=normalized_args,
                         result=result,
                     )
+                    phase_timings_ms["validator"] += int((perf_counter() - validator_started_at) * 1000)
                     limitations.extend(validation_limitations)
                     plan_step.validation = validation
                     plan_step.status = "done"
@@ -342,7 +359,13 @@ class AgentEngine:
                     )
                     if follow_up_note:
                         limitations.append(follow_up_note)
-
+                    resolver_follow_up = self._append_resolver_follow_up(
+                        plan_status=plan_status,
+                        completed_step=plan_step,
+                        result=result,
+                    )
+                    if resolver_follow_up:
+                        limitations.append(resolver_follow_up)
                     tool_content = self._render_tool_content(result)
                 except supported_tool_errors as exc:
                     error_trace = ToolTrace(
@@ -393,6 +416,7 @@ class AgentEngine:
             limitations.append("The agent hit the configured max-step limit.")
             status_hint = "limited"
             plan_status.status = "blocked"
+        phase_timings_ms["retrieval"] = int((perf_counter() - retrieval_started_at) * 1000)
 
         plan_complete = self._all_plan_steps_done(plan_status)
         if clarification is not None:
@@ -410,17 +434,32 @@ class AgentEngine:
             draft_answer = draft_answer or self._plan_incomplete_answer(next_step)
 
         if clarification is None and plan_complete:
-            composed_answer, compose_limitations = await self._compose_answer_from_plan(
-                request=request.message,
-                plan_status=plan_status,
-                session_state=session_state,
-                limitations=limitations,
-                include_thoughts=request.includeThoughts,
-                thoughts=thoughts,
-            )
-            limitations.extend(compose_limitations)
-            if composed_answer:
-                draft_answer = composed_answer
+            if inventory_snapshot:
+                coverage = inventory_snapshot.get("coverage") or {}
+                draft_answer = render_inventory_snapshot_markdown(
+                    rows=inventory_snapshot.get("rows", []),
+                    coverage=coverage,
+                )
+                draft_answer = (
+                    f"{draft_answer}\n\n"
+                    "If you want, I can drill into one specific variant with a deeper breakdown."
+                )
+                status_hint = "limited" if coverage.get("isPartial") or coverage.get("limitations") else "answered"
+                used_snapshot_fast_path = True
+            else:
+                composer_started_at = perf_counter()
+                composed_answer, compose_limitations = await self._compose_answer_from_plan(
+                    request=request.message,
+                    plan_status=plan_status,
+                    session_state=session_state,
+                    limitations=limitations,
+                    include_thoughts=request.includeThoughts,
+                    thoughts=thoughts,
+                )
+                phase_timings_ms["composer"] = int((perf_counter() - composer_started_at) * 1000)
+                limitations.extend(compose_limitations)
+                if composed_answer:
+                    draft_answer = composed_answer
 
         # Root Cause vs Logic: the model sometimes returns its last turn with
         # no tool_calls but also empty `content`, which left `draft_answer` blank
@@ -446,7 +485,7 @@ class AgentEngine:
                 limitations.extend(fallback_limitations)
                 used_grounded_snapshot_fallback = bool(inventory_snapshot and not clarification)
 
-        if used_grounded_snapshot_fallback:
+        if used_grounded_snapshot_fallback or used_snapshot_fast_path:
             envelope = AgentEnvelope(
                 status=status_hint,
                 answer=draft_answer,
@@ -455,6 +494,7 @@ class AgentEngine:
             )
         else:
             try:
+                formatter_started_at = perf_counter()
                 envelope = await self._format(
                     request=request.message,
                     draft=draft_answer or self._default_incomplete_answer(clarification is not None),
@@ -462,6 +502,7 @@ class AgentEngine:
                     clarification=clarification,
                     fallback_status=status_hint,
                 )
+                phase_timings_ms["formatter"] = int((perf_counter() - formatter_started_at) * 1000)
             except UpstreamServiceError as exc:
                 # Root Cause vs Logic: formatting is a polish pass, not source-of-truth
                 # retrieval. If it times out we should still return the grounded draft
@@ -474,6 +515,18 @@ class AgentEngine:
                     limitations=self._dedupe(limitations),
                     clarification=clarification,
                 )
+
+        total_elapsed_ms = int((perf_counter() - run_started_at) * 1000)
+        self.logger.info(
+            "query_phase_timings session_id=%s planner_ms=%s retrieval_ms=%s validator_ms=%s composer_ms=%s formatter_ms=%s total_ms=%s",
+            session_state.session_id,
+            phase_timings_ms["planner"],
+            phase_timings_ms["retrieval"],
+            phase_timings_ms["validator"],
+            phase_timings_ms["composer"],
+            phase_timings_ms["formatter"],
+            total_elapsed_ms,
+        )
 
         self._persist_plan_state(session_state, plan_status)
         debug_payload = (
@@ -809,19 +862,140 @@ class AgentEngine:
     ) -> str | None:
         if result.tool != "stock.search_catalogue":
             return None
-
-        requested_attributes = set(self._requested_attributes(request_message))
-        if not requested_attributes.intersection({"size", "colour", "stock", "pricing", "image", "specifications"}):
+        if completed_step.name == "recursive detail retrieval":
+            return None
+        if any(
+            step.status != "done" and step.tool in {"stock.get_product", "stock.extract_variant_evidence"}
+            for step in plan_status.steps
+        ):
+            return None
+        if any(step.status != "done" and step.name == "recursive detail retrieval" for step in plan_status.steps):
             return None
 
-        follow_up_tool, follow_up_args = self._derive_follow_up_step(
+        follow_up_steps = self._derive_follow_up_steps(
             result.data,
-            requested_attributes,
             request_message=request_message,
         )
-        if not follow_up_tool or not follow_up_args:
+        if not follow_up_steps:
             return None
 
+        inserted_count = 0
+        for follow_up_tool, follow_up_args in follow_up_steps:
+            if any(
+                step.tool == follow_up_tool and step.args == follow_up_args and step.status != "done"
+                for step in plan_status.steps
+            ):
+                continue
+
+            next_id = max((step.id for step in plan_status.steps), default=0) + 1
+            plan_status.steps.append(
+                PlanStep(
+                    id=next_id,
+                    name="recursive detail retrieval",
+                    tool=follow_up_tool,
+                    status="pending",
+                    args=follow_up_args,
+                    depends_on=[completed_step.id],
+                    parallel_group=None,
+                    hypotheses=[
+                        "The initial catalogue search resolved identifiers but not enough user-facing detail, so a follow-up retrieval hop is required."
+                    ],
+                    validation=None,
+                )
+            )
+            inserted_count += 1
+        if inserted_count == 0:
+            return None
+        return (
+            f"Added `{inserted_count}` recursive detail retrieval step(s) because catalogue results were too thin "
+            "to answer requested attributes safely."
+        )
+
+    def _derive_follow_up_steps(
+        self,
+        data: Any,
+        request_message: str | None = None,
+    ) -> list[tuple[str, dict[str, str]]]:
+        if not isinstance(data, dict):
+            return []
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            return []
+
+        item = self._best_follow_up_candidate(items, request_message)
+        if isinstance(item, dict):
+            product_id = self._compact_identifier(item.get("id"))
+            if product_id:
+                return [("stock.get_product", {"id": product_id, "page": 1, "pageSize": 50})]
+
+        # Motivation vs Logic: when candidate ranking cannot safely pick one item,
+        # schedule bounded variant-evidence retrieval across returned rows so the
+        # prompt-driven composer can still reason over concrete product evidence.
+        variant_steps = self._derive_variant_follow_up_steps(items, max_variants=6)
+        if variant_steps:
+            return variant_steps
+
+        if not isinstance(item, dict):
+            return []
+        product_id = self._compact_identifier(item.get("id"))
+        variants = item.get("variants")
+        variant = variants[0] if isinstance(variants, list) and len(variants) == 1 and isinstance(variants[0], dict) else None
+        sku = self._compact_identifier(variant.get("sku")) if isinstance(variant, dict) else None
+        if sku:
+            return [("stock.get_product", {"sku": sku})]
+        if product_id:
+            return [("stock.get_product", {"id": product_id})]
+        return []
+
+    def _derive_variant_follow_up_steps(self, items: list[Any], max_variants: int = 20) -> list[tuple[str, dict[str, str]]]:
+        steps: list[tuple[str, dict[str, str]]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_id = self._compact_identifier(item.get("id"))
+            variants = item.get("variants")
+            if not isinstance(variants, list):
+                continue
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                variant_id = self._compact_identifier(variant.get("id"))
+                sku = self._compact_identifier(variant.get("sku"))
+                lookup = self._compose_variant_lookup(sku=sku, product_id=product_id, variant_id=variant_id)
+                if lookup is None:
+                    continue
+                dedupe_key = (
+                    lookup.get("sku", ""),
+                    lookup.get("variantId", lookup.get("id", "")),
+                )
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                steps.append(("stock.extract_variant_evidence", lookup))
+                if len(steps) >= max_variants:
+                    return steps
+        return steps
+
+    def _append_resolver_follow_up(
+        self,
+        *,
+        plan_status: PlanStatus,
+        completed_step: PlanStep,
+        result: ToolResult,
+    ) -> str | None:
+        if result.tool != "resolver.disambiguate_candidates":
+            return None
+        if not isinstance(result.data, dict):
+            return None
+        if result.data.get("status") != "resolved_product_family":
+            return None
+
+        product_id = self._compact_identifier(result.data.get("product_id"))
+        if not product_id:
+            return None
+        follow_up_tool = "stock.get_product"
+        follow_up_args: dict[str, Any] = {"id": product_id, "page": 1, "pageSize": 50}
         if any(
             step.tool == follow_up_tool and step.args == follow_up_args and step.status != "done"
             for step in plan_status.steps
@@ -832,56 +1006,22 @@ class AgentEngine:
         plan_status.steps.append(
             PlanStep(
                 id=next_id,
-                name="recursive detail retrieval",
+                name="resolved family detail retrieval",
                 tool=follow_up_tool,
                 status="pending",
                 args=follow_up_args,
                 depends_on=[completed_step.id],
                 parallel_group=None,
                 hypotheses=[
-                    "The initial catalogue search resolved identifiers but not enough user-facing detail, so a follow-up retrieval hop is required."
+                    "Resolver narrowed ambiguity to one product family, so retrieve full product details for all variants."
                 ],
                 validation=None,
             )
         )
         return (
-            f"Recursive follow-up step `{next_id}` was added for `{follow_up_tool}` "
-            "because the catalogue result was too thin to answer the requested attributes safely."
+            f"Resolved product family follow-up step `{next_id}` was added for `{follow_up_tool}` "
+            "so the final answer includes all variants before any clarification prompt."
         )
-
-    def _derive_follow_up_step(
-        self,
-        data: Any,
-        requested_attributes: set[str],
-        request_message: str | None = None,
-    ) -> tuple[str | None, dict[str, str] | None]:
-        if not isinstance(data, dict):
-            return None, None
-        items = data.get("items")
-        if not isinstance(items, list) or not items:
-            return None, None
-
-        item = self._best_follow_up_candidate(items, request_message)
-        if not isinstance(item, dict):
-            return None, None
-
-        product_id = self._compact_identifier(item.get("id"))
-        variants = item.get("variants")
-        variant = variants[0] if isinstance(variants, list) and len(variants) == 1 and isinstance(variants[0], dict) else None
-        sku = self._compact_identifier(variant.get("sku")) if isinstance(variant, dict) else None
-        variant_id = self._compact_identifier(variant.get("id")) if isinstance(variant, dict) else None
-        needs_variant_evidence = bool(requested_attributes.intersection({"size", "colour", "pricing", "image", "specifications"}))
-
-        if needs_variant_evidence:
-            lookup = self._compose_variant_lookup(sku=sku, product_id=product_id, variant_id=variant_id)
-            if lookup is not None:
-                return "stock.extract_variant_evidence", lookup
-
-        if sku:
-            return "stock.get_product", {"sku": sku}
-        if product_id:
-            return "stock.get_product", {"id": product_id}
-        return None, None
 
     def _best_follow_up_candidate(self, items: list[Any], request_message: str | None) -> dict[str, Any] | None:
         dict_items = [item for item in items if isinstance(item, dict)]
@@ -1334,17 +1474,19 @@ class AgentEngine:
             memo.entries.extend(parsed.memo.entries)
             memo.aggregates = parsed.memo.aggregates or memo.aggregates
 
-        return PlanStatus(
+        plan = PlanStatus(
             goal=parsed.goal or request,
+            intent_classes=list(parsed.intent_classes),
             steps=sanitized_steps,
             memo=memo,
             status="in-progress",
         )
+        return plan
 
     def _fallback_plan(self, request: str, session_state: SessionState) -> PlanStatus:
         tool_names = [tool.name for tool in self.tool_registry.list_tools()]
         default_tool = tool_names[0] if tool_names else "session.get_state"
-        return PlanStatus(
+        plan = PlanStatus(
             goal=request,
             steps=[
                 PlanStep(
@@ -1362,6 +1504,7 @@ class AgentEngine:
             memo=session_state.memo_cache.model_copy(deep=True),
             status="in-progress",
         )
+        return plan
 
     async def _compose_answer_from_plan(
         self,
@@ -1441,6 +1584,7 @@ class AgentEngine:
         *,
         request: str,
         session_state: SessionState,
+        intent_classes: list[str] | tuple[str, ...] | None = None,
         context_mode: str = "normal",
     ) -> list[dict[str, Any]]:
         return [
@@ -1450,6 +1594,7 @@ class AgentEngine:
                     request=request,
                     session=session_state,
                     tools=self.tool_registry.list_tools(),
+                    intent_classes=intent_classes,
                     context_mode=context_mode,
                 ),
             },
@@ -1773,14 +1918,13 @@ class AgentEngine:
         limitations: list[str],
         parallel_batches: list[AgentDebugParallelBatch],
     ) -> AgentDebugPayload:
-        requested_attributes = self._requested_attributes(request)
         return AgentDebugPayload(
             intent=AgentDebugIntent(
                 current_goal=plan_status.goal,
-                primary_entity_guess=self._primary_entity_guess(request, resolved_items),
-                requested_attributes=requested_attributes,
+                primary_entity_guess=self._primary_entity_guess(resolved_items),
+                requested_attributes=[],
                 inferred_filters=self._inferred_filters(request, session_state),
-                scope_status=self._scope_status(request),
+                scope_status="prompt_routed",
             ),
             plan=AgentDebugPlan(
                 goal=plan_status.goal,
@@ -1816,58 +1960,17 @@ class AgentEngine:
             grounding=AgentDebugGrounding(
                 resolved_identifiers=list(session_state.recent_resolved_identifiers[:6]),
                 evidence_count=len(resolved_items),
-                unresolved_attributes=self._unresolved_attributes(requested_attributes, resolved_items),
+                unresolved_attributes=[],
                 user_impact_limitations=self._composer_limitations(limitations),
             ),
         )
 
-    def _requested_attributes(self, request: str) -> list[str]:
-        lowered = request.lower()
-        attribute_terms = {
-            "size": ("size", "sizes", "dimension", "dimensions", "length", "width", "height"),
-            "colour": (
-                "colour",
-                "color",
-                "finish",
-                "white",
-                "black",
-                "grey",
-                "gray",
-                "charcoal",
-                "oak",
-                "bleached",
-                "red",
-                "blue",
-                "green",
-            ),
-            "stock": ("stock", "availability", "available", "hire", "hirable"),
-            "pricing": ("price", "pricing", "rate", "rates", "cost"),
-            "image": ("image", "photo", "picture"),
-            "specifications": ("spec", "specs", "specification", "specifications", "details"),
-        }
-        requested: list[str] = []
-        for attribute, terms in attribute_terms.items():
-            if any(term in lowered for term in terms):
-                requested.append(attribute)
-        return requested
-
-    def _primary_entity_guess(self, request: str, resolved_items: list[NormalizedEvidence]) -> str:
+    def _primary_entity_guess(self, resolved_items: list[NormalizedEvidence]) -> str:
         if any(item.variant_id or item.variant_name for item in resolved_items):
             return "variant"
         if any(item.product_id or item.product_name for item in resolved_items):
             return "product"
-        lowered = request.lower()
-        if "department" in lowered:
-            return "department"
-        if "category" in lowered:
-            return "category"
-        if "weather" in lowered:
-            return "weather"
-        if "news" in lowered or "headline" in lowered:
-            return "news"
-        if "currency" in lowered or "exchange" in lowered:
-            return "currency"
-        return "variant" if "sku" in lowered or "colour" in lowered or "color" in lowered else "product"
+        return "unknown"
 
     def _inferred_filters(self, request: str, session_state: SessionState) -> dict[str, Any]:
         filters = dict(session_state.last_filters)
@@ -1877,12 +1980,6 @@ class AgentEngine:
         elif request.strip():
             filters.setdefault("search", request.strip())
         return filters
-
-    def _scope_status(self, request: str) -> str:
-        lowered = request.lower()
-        if any(term in lowered for term in ("booking", "quote", "reservation", "event line item")):
-            return "not_implemented_in_current_tool_contract"
-        return "stock_supported"
 
     def _ready_step_ids(self, plan_status: PlanStatus) -> list[int]:
         completed = {step.id for step in plan_status.steps if step.status == "done"}
@@ -1920,52 +2017,6 @@ class AgentEngine:
                     seen.add(compact)
                     blocks.append(compact)
         return blocks
-
-    def _unresolved_attributes(
-        self,
-        requested_attributes: list[str],
-        resolved_items: list[NormalizedEvidence],
-    ) -> list[str]:
-        unresolved: list[str] = []
-        for attribute in requested_attributes:
-            if not self._attribute_is_grounded(attribute, resolved_items):
-                unresolved.append(attribute)
-        return unresolved
-
-    def _attribute_is_grounded(self, attribute: str, resolved_items: list[NormalizedEvidence]) -> bool:
-        if not resolved_items:
-            return False
-        for item in resolved_items:
-            if attribute == "size" and any(
-                value is not None
-                for value in [item.dimensions.length, item.dimensions.width, item.dimensions.height]
-            ):
-                return True
-            if attribute == "colour" and (
-                item.variation_options
-                or (item.variant_name and item.variant_name.strip())
-                or (item.product_name and item.product_name.strip())
-            ):
-                return True
-            if attribute == "stock" and any(
-                value is not None
-                for value in [item.stock.totalStock, item.stock.vicStock, item.stock.nswStock, item.stock.qldStock]
-            ):
-                return True
-            if attribute == "pricing" and any(
-                value is not None
-                for value in [item.pricing.generalRate, item.pricing.expoRate, item.pricing.cost]
-            ):
-                return True
-            if attribute == "image" and (item.media.imageFileName or item.media.imageUrl):
-                return True
-            if attribute == "specifications" and (
-                item.salesNote
-                or item.components
-                or any(value is not None for value in [item.dimensions.length, item.dimensions.width, item.dimensions.height])
-            ):
-                return True
-        return False
 
     def _utc_now_iso(self) -> str:
         return datetime.now(tz=UTC).isoformat()

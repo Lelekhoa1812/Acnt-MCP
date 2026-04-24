@@ -220,6 +220,9 @@ class ClarificationPayload(BaseModel):
     status: Literal["needs_clarification"] = "needs_clarification"
     question: str
     options: list[CandidateOption]
+    total_matches: int | None = None
+    selection_mode: Literal["select_option", "refine_query"] | None = None
+    hints: list[str] = Field(default_factory=list)
 
 
 class PlanValidation(BaseModel):
@@ -267,6 +270,7 @@ class PlanMetadata(BaseModel):
 
 class PlanStatus(BaseModel):
     goal: str
+    intent_classes: list[str] = Field(default_factory=list)
     steps: list[PlanStep] = Field(default_factory=list)
     memo: MemoCache = Field(default_factory=MemoCache)
     status: Literal["in-progress", "complete", "blocked", "needs_clarification", "error"] = "in-progress"
@@ -477,7 +481,10 @@ class StockExtractVariantEvidenceArgs(BaseModel):
 
 
 class StockCompareVariantsArgs(BaseModel):
-    identifiers: list[str] = Field(min_length=2, max_length=5)
+    # Motivation vs Logic: catalogue products can have >5 colour/SKU variants; a low cap
+    # caused validation errors when comparing full variant sets. The service semaphore
+    # (HTH_STOCK_PARALLEL_REQUESTS_LIMIT) still bounds concurrent Harmonise fan-out.
+    identifiers: list[str] = Field(min_length=2, max_length=20)
 
 
 class StockInventorySnapshotArgs(BaseModel):
@@ -490,7 +497,7 @@ class StockInventorySnapshotArgs(BaseModel):
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):
     query: str
-    limit: int = Field(5, ge=2, le=5)
+    limit: int = Field(10, ge=2, le=10)
     departmentId: int | None = None
     categoryId: str | None = None
 

@@ -1240,3 +1240,217 @@ async def test_inventory_snapshot_expands_department_scan_when_broad_search_is_t
     finally:
         await source.close()
         await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_skips_department_expansion_for_specific_query() -> None:
+    class _TrackingDepartmentExpansionSource(_DepartmentExpansionSource):
+        def __init__(self) -> None:
+            super().__init__()
+            self.broaden_calls = 0
+
+        async def search_catalogue(
+            self,
+            page: int,
+            page_size: int,
+            search: str | None,
+            department_id: int | None,
+            category_id: str | None,
+        ) -> tuple[dict[str, Any], list[str]]:
+            if search is None and department_id is not None:
+                self.broaden_calls += 1
+            return await super().search_catalogue(page, page_size, search, department_id, category_id)
+
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _TrackingDepartmentExpansionSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.specificity-gate"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.specificity-gate"),
+    )
+
+    try:
+        snapshot, _, notes = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, pageSize=10, search="alto chair")
+        )
+        assert snapshot.coverage.matchedProducts == 1
+        assert source.broaden_calls == 0
+        assert not any("Expanded catalogue coverage via department scan" in note for note in notes)
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_parallelizes_broadened_page_fetches() -> None:
+    class _ParallelBroadeningSource:
+        def __init__(self) -> None:
+            self.active_broaden_calls = 0
+            self.max_active_broaden_calls = 0
+
+        async def search_catalogue(
+            self,
+            page: int,
+            page_size: int,
+            search: str | None,
+            department_id: int | None,
+            category_id: str | None,
+        ) -> tuple[dict[str, Any], list[str]]:
+            if search is not None:
+                return {
+                    "items": [
+                        {
+                            "id": "prod-alto",
+                            "name": "Alto Chair",
+                            "departmentId": 3,
+                            "subDepartmentId": None,
+                            "categoryId": "cat-chair",
+                            "isActive": True,
+                            "variations": [],
+                            "variants": [
+                                {
+                                    "id": "var-alto-black",
+                                    "name": "Alto Chair - Black",
+                                    "sku": "fn-se-ch-alt-bla",
+                                    "totalHirable": 100,
+                                    "optionIds": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "page": 1,
+                    "pageSize": page_size,
+                    "totalCount": 1,
+                    "totalPages": 1,
+                }, []
+
+            self.active_broaden_calls += 1
+            self.max_active_broaden_calls = max(self.max_active_broaden_calls, self.active_broaden_calls)
+            await anyio.sleep(0.02)
+            self.active_broaden_calls -= 1
+            return {
+                "items": [
+                    {
+                        "id": f"prod-broaden-{page}",
+                        "name": f"Broaden Chair {page}",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [
+                            {
+                                "id": f"var-broaden-{page}",
+                                "name": f"Broaden Chair {page} - Black",
+                                "sku": f"sku-broaden-{page}",
+                                "totalHirable": 10,
+                                "optionIds": [],
+                            }
+                        ],
+                    }
+                ],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 4,
+                "totalPages": 4,
+            }, []
+
+        async def get_product(
+            self,
+            product_id: str | None,
+            sku: str | None,
+            page: int,
+            page_size: int,
+        ) -> tuple[dict[str, Any], list[str]]:
+            key = product_id or "prod-alto"
+            return {
+                "items": [
+                    {
+                        "id": key,
+                        "name": f"Product {key}",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [
+                            {
+                                "id": f"var-{key}",
+                                "name": f"Variant {key}",
+                                "sku": f"sku-{key}",
+                                "totalHirable": 5,
+                                "optionIds": [],
+                                "details": {
+                                    "departmentId": 3,
+                                    "subDepartmentId": None,
+                                    "isActive": True,
+                                    "generalRate": None,
+                                    "expoRate": None,
+                                    "assignedCategoryId": "cat-chair",
+                                    "dimensional": False,
+                                    "canBeSoldInPortions": False,
+                                    "startDate": None,
+                                    "endDate": None,
+                                    "salesNote": None,
+                                    "length": 0.5,
+                                    "width": 0.5,
+                                    "height": 0.9,
+                                    "vicStock": 5,
+                                    "vicHirable": 5,
+                                    "nswStock": 0,
+                                    "nswHirable": 0,
+                                    "qldStock": 0,
+                                    "qldHirable": 0,
+                                    "totalStock": 5,
+                                    "lastUpdatedDate": None,
+                                    "imageFileName": None,
+                                    "cost": None,
+                                    "components": [],
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 1,
+                "totalPages": 1,
+            }, []
+
+        async def close(self) -> None:
+            return
+
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _ParallelBroadeningSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.parallel-broaden"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.parallel-broaden"),
+    )
+
+    try:
+        await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=10, search="chair"))
+        assert source.max_active_broaden_calls > 1
+    finally:
+        await source.close()
+        await key_value_store.close()

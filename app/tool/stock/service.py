@@ -12,7 +12,7 @@ from app.config import (
     ParameterMappingError,
     UpstreamServiceError,
 )
-from app.text.utils import significant_tokens
+from app.text.utils import lexical_overlap, significant_tokens
 from app.tool.stock.media import build_harmonise_image_url
 from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
@@ -639,7 +639,9 @@ class InventoryService:
         matched_tokens = significant_tokens(args.search)
         if not matched_tokens:
             return initial_items, [], [], initial_total_pages
-        if len(initial_items) > max(2, len(matched_tokens)):
+        if len(initial_items) > self.settings.snapshot_expand_max_initial_items:
+            return initial_items, [], [], initial_total_pages
+        if self._query_specificity_score(args.search, initial_items) >= self.settings.snapshot_specificity_threshold:
             return initial_items, [], [], initial_total_pages
 
         broadened_args = StockSearchCatalogueArgs(
@@ -653,7 +655,18 @@ class InventoryService:
         broadened_items = list(broadened_response.items)
         broadened_cache_statuses = [broadened_cache_status]
         if broadened_response.totalPages > 1:
-            for page_number in range(2, broadened_response.totalPages + 1):
+            page_numbers = list(range(2, broadened_response.totalPages + 1))
+            page_results: list[tuple[ProductListItemDtoPagedResponse, str, list[str]] | None] = [None] * len(page_numbers)
+            parallelism = max(
+                1,
+                min(
+                    self.settings.snapshot_expand_parallel_pages_limit,
+                    len(page_numbers),
+                ),
+            )
+            semaphore = anyio.Semaphore(parallelism)
+
+            async def fetch_page(index: int, page_number: int) -> None:
                 page_args = StockSearchCatalogueArgs(
                     page=page_number,
                     pageSize=broadened_args.pageSize,
@@ -661,7 +674,17 @@ class InventoryService:
                     departmentId=department_id,
                     categoryId=args.categoryId,
                 )
-                page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
+                async with semaphore:
+                    page_results[index] = await self.search_catalogue(page_args)
+
+            async with anyio.create_task_group() as task_group:
+                for index, page_number in enumerate(page_numbers):
+                    task_group.start_soon(fetch_page, index, page_number)
+
+            for item in page_results:
+                if item is None:
+                    continue
+                page_response, page_cache_status, page_notes = item
                 broadened_cache_statuses.append(page_cache_status)
                 broadened_notes.extend(page_notes)
                 broadened_items.extend(page_response.items)
@@ -682,6 +705,30 @@ class InventoryService:
         )
         merged_items = self._dedupe_products([*initial_items, *filtered_broadened])
         return merged_items, broadened_cache_statuses, broadened_notes, max(initial_total_pages, broadened_response.totalPages)
+
+    def _query_specificity_score(self, query: str | None, products: list[ProductListItemDto]) -> float:
+        if not query or not products:
+            return 0.0
+        query_tokens = significant_tokens(query)
+        # Motivation vs Logic: single-token queries (for example, broad family
+        # nouns) are usually underspecified and should not suppress expansion.
+        if len(query_tokens) <= 1:
+            return 0.0
+
+        best = 0.0
+        for product in products:
+            candidate_text = " ".join(
+                part
+                for part in [
+                    product.name or "",
+                    *(variant.name or "" for variant in product.variants),
+                ]
+                if part
+            )
+            score = lexical_overlap(query, candidate_text)
+            if score > best:
+                best = score
+        return best
 
     def _dominant_department_id(self, products: list[ProductListItemDto]) -> int | None:
         counts: dict[int, int] = {}

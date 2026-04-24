@@ -477,7 +477,42 @@ class ToolRegistry:
             )
             search_result, _, notes = await self.inventory_service.search_catalogue(search_args)
             ranked = self.resolver_service.rank_candidates(validated.query, search_result.items, limit=validated.limit)
-            clarification = self.resolver_service.build_clarification(validated.query, ranked, limit=validated.limit)
+            ranked_product_ids = {candidate.option.product_id for candidate in ranked if candidate.option.product_id}
+            if len(ranked_product_ids) <= 1 and ranked:
+                top = ranked[0]
+                payload = {
+                    "status": "resolved_product_family",
+                    "query": validated.query,
+                    "product_id": top.option.product_id or top.product.id,
+                    "product_name": top.product.name,
+                    "variant_count": len(top.product.variants),
+                    "candidate_count": len(ranked),
+                }
+                trace = ToolTrace(
+                    thought=thought,
+                    tool="resolver.disambiguate_candidates",
+                    args=validated.model_dump(exclude_none=True),
+                    status="ok",
+                    cache_status="resolver",
+                    source_data="harmonise -> ranked_candidates[*]",
+                    result_count=len(ranked),
+                    normalization_notes=notes,
+                )
+                return ToolResult(
+                    tool="resolver.disambiguate_candidates",
+                    data=payload,
+                    llm_content=payload,
+                    normalization_notes=notes,
+                    trace=trace,
+                )
+
+            clarification = self.resolver_service.build_clarification(
+                validated.query,
+                ranked,
+                option_limit=validated.limit,
+                total_matches=search_result.totalCount,
+                selection_threshold=validated.limit,
+            )
             trace = ToolTrace(
                 thought=thought,
                 tool="resolver.disambiguate_candidates",
@@ -497,7 +532,7 @@ class ToolRegistry:
 
         self._register(
             "resolver.disambiguate_candidates",
-            "Rank likely catalogue candidates and build a clarification payload when the request is ambiguous.",
+            "Use only when catalogue search could mean multiple distinct products. Ranks candidates and returns a user-facing disambiguation prompt. Do not use when you already have a confirmed product and only need variant-level details—use `stock.get_product` or `stock.inventory_snapshot` instead.",
             ResolverDisambiguateCandidatesArgs,
             disambiguate,
         )

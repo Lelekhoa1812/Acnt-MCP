@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
     # Harmonise detail lookups; any extra items automatically wait on the semaphore.
     stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")
+    # Motivation vs Logic: snapshot expansion should be configurable so broadening
+    # behavior remains policy-driven instead of hidden magic constants.
+    snapshot_expand_max_initial_items: int = Field(3, ge=1, alias="HTH_SNAPSHOT_EXPAND_MAX_INITIAL_ITEMS")
+    snapshot_specificity_threshold: float = Field(0.78, ge=0.0, le=1.0, alias="HTH_SNAPSHOT_SPECIFICITY_THRESHOLD")
+    snapshot_expand_parallel_pages_limit: int = Field(8, ge=1, alias="HTH_SNAPSHOT_EXPAND_PARALLEL_PAGES_LIMIT")
     # Motivation vs Logic: broad inventory answers can legitimately need large
     # Markdown tables, so the agent completion budget is configurable instead of
     # hard-coded to a small single-paragraph default.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 # Motivation vs Logic: furniture routing rules and category mappings are kept in
@@ -126,13 +127,28 @@ def furniture_department_rules() -> list[str]:
 
 
 def furniture_category_rules() -> list[str]:
+    compact_reference = json.dumps(
+        [
+            {
+                "name": route.name,
+                "category_id": route.category_id,
+                "description": route.description,
+            }
+            for route in FURNITURE_CATEGORY_ROUTES
+        ],
+        ensure_ascii=True,
+        indent=2,
+    )
     return [
+        f"FURNITURE_CATEGORY_ROUTES reference:\n{compact_reference}",
         (
-            f"When the query targets `{route.name}`, use the attached description "
-            f"({route.description.lower()}) to reason how user language maps to that "
-            f"category and assign `categoryId={route.category_id}`."
-        )
-        for route in FURNITURE_CATEGORY_ROUTES
+            "Resolve stock category filters by reasoning over each route name and description in "
+            "FURNITURE_CATEGORY_ROUTES, then assign the most likely `categoryId`."
+        ),
+        (
+            "If category confidence is uncertain, skip `categoryId` and prioritize name-driven "
+            "`search` arguments to avoid false-negative exclusions."
+        ),
     ]
 
 
