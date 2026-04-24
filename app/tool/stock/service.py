@@ -277,7 +277,7 @@ class InventoryService:
             detail_args = StockGetProductArgs(
                 id=product.id,
                 page=1,
-                pageSize=max(20, len(product.variants) or 1),
+                pageSize=min(100, max(20, len(product.variants) or 1)),
             )
             # Root Cause vs Logic: Harmonise detail lookups were bubbling up as
             # fatal errors when upstream timeouts occurred, so capture the failure
