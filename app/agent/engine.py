@@ -244,6 +244,13 @@ class AgentEngine:
                     }
                 )
 
+            tool_calls = await self._expand_single_item_search_calls(
+                tool_calls=tool_calls,
+                request_message=request.message,
+            )
+            if messages and isinstance(messages[-1], dict):
+                messages[-1]["tool_calls"] = tool_calls
+
             prepared_calls: list[dict[str, Any]] = []
             assistant_thought = (assistant.get("content") or "").strip()
             for tool_call in tool_calls:
@@ -1492,6 +1499,142 @@ class AgentEngine:
                 "so family-level variant coverage can continue without unsafe SKU guessing."
             ),
         )
+
+    async def _expand_single_item_search_calls(
+        self,
+        *,
+        tool_calls: list[dict[str, Any]],
+        request_message: str,
+    ) -> list[dict[str, Any]]:
+        expanded_calls: list[dict[str, Any]] = []
+        seen_signatures: set[tuple[str, str]] = set()
+
+        def append_unique(call: dict[str, Any]) -> None:
+            function_payload = call.get("function")
+            if not isinstance(function_payload, dict):
+                expanded_calls.append(call)
+                return
+            signature = (
+                str(function_payload.get("name") or ""),
+                str(function_payload.get("arguments") or ""),
+            )
+            if signature in seen_signatures:
+                return
+            seen_signatures.add(signature)
+            expanded_calls.append(call)
+
+        # Root Cause vs Logic: planner outputs could merge multiple product
+        # names into one search phrase, which under-retrieved catalogue
+        # families. Expand and dedupe into one search call per inferred item.
+        for tool_call in tool_calls:
+            function = tool_call.get("function")
+            if not isinstance(function, dict) or function.get("name") != "stock.search_catalogue":
+                append_unique(tool_call)
+                continue
+
+            raw_arguments = function.get("arguments") or "{}"
+            try:
+                parsed_args = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                append_unique(tool_call)
+                continue
+            if not isinstance(parsed_args, dict):
+                append_unique(tool_call)
+                continue
+
+            search_term = parsed_args.get("search")
+            if not isinstance(search_term, str) or not search_term.strip():
+                append_unique(tool_call)
+                continue
+
+            split_terms = await self._split_search_terms_for_single_item_search(
+                request_message=request_message,
+                search_term=search_term,
+            )
+            if len(split_terms) <= 1:
+                append_unique(tool_call)
+                continue
+
+            base_id = str(tool_call.get("id") or "tool_call")
+            for index, split_term in enumerate(split_terms, start=1):
+                split_args = dict(parsed_args)
+                split_args["search"] = split_term
+                append_unique(
+                    {
+                        **tool_call,
+                        "id": f"{base_id}_split_{index}",
+                        "function": {
+                            **function,
+                            "arguments": json.dumps(split_args, ensure_ascii=False),
+                        },
+                    }
+                )
+        return expanded_calls
+
+    async def _split_search_terms_for_single_item_search(
+        self,
+        *,
+        request_message: str,
+        search_term: str,
+    ) -> list[str]:
+        if self._client is None:
+            return [search_term]
+        payload = {
+            "model": self.settings.foundry_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Split a stock catalogue search phrase into one-item-at-a-time product search terms. "
+                        "Return strict JSON with key `items` as an ordered array of search strings. "
+                        "Keep each term self-contained and include the product noun when needed. "
+                        "If the input already targets one item, return it unchanged as a single-item array."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request_message,
+                            "search": search_term,
+                            "max_items": self.settings.agent_search_split_max_items,
+                            "schema": {"items": ["string"]},
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "max_completion_tokens": 220,
+        }
+        try:
+            response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/search-split")
+            content = response_payload["choices"][0]["message"].get("content") or ""
+            if not content.strip():
+                return [search_term]
+            raw = json.loads(content)
+        except (UpstreamServiceError, json.JSONDecodeError):
+            return [search_term]
+        if not isinstance(raw, dict):
+            return [search_term]
+        values = raw.get("items")
+        if not isinstance(values, list):
+            return [search_term]
+
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = " ".join(str(value).split()).strip()
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            cleaned.append(normalized)
+            if len(cleaned) >= self.settings.agent_search_split_max_items:
+                break
+        return cleaned or [search_term]
 
     def _derive_variant_follow_up_steps(self, items: list[Any], max_variants: int = 20) -> list[tuple[str, dict[str, str]]]:
         steps: list[tuple[str, dict[str, str]]] = []

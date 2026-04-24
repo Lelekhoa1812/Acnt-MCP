@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # Motivation vs Logic: runtime follow-up product detail page sizing should
     # remain configurable instead of fixed in planner glue code.
     agent_get_product_page_size: int = Field(100, ge=1, le=100, alias="HTH_AGENT_GET_PRODUCT_PAGE_SIZE")
+    # Motivation vs Logic: one-request-many-items should split into bounded,
+    # single-item search calls so decomposition stays explicit and controllable.
+    agent_search_split_max_items: int = Field(10, ge=1, alias="HTH_AGENT_SEARCH_SPLIT_MAX_ITEMS")
     # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
     # Harmonise detail lookups; any extra items automatically wait on the semaphore.
     stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")

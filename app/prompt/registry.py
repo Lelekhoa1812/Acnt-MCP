@@ -131,6 +131,7 @@ SYSTEM_BEHAVIOR_RULES = [
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
     "If search returns identifiers but not requested attributes, add a next hop with `stock.get_product` before answering product-family questions.",
     "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
+    "For multi-item requests, execute one `stock.search_catalogue` call per item term instead of one combined term that mixes multiple products.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
     "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique product family returned.",
     "For product-family requests, prefer one compact stock-detail path; do not stack `stock.inventory_snapshot`, `stock.get_product`, and `stock.compare_variants` unless each hop adds missing evidence.",
@@ -459,6 +460,7 @@ Rules:
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
+- For multi-item requests, emit separate stock.search_catalogue steps with one product target per step.
 - When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
 - For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock.inventory_snapshot` and `stock.compare_variants` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
