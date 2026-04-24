@@ -615,11 +615,12 @@ class InventoryService:
         return "cache_mixed"
 
     def _parallel_stock_requests_limit(self, item_count: int) -> int:
-        # Root Cause vs Logic: cloud Harmonise detail endpoints became unstable
-        # under the previous 8-way fan-out during large snapshot enrichments.
-        # We keep local simulation fast while using a gentler cloud limit.
-        limit = 8 if self.settings.local_harmonise else 4
-        return max(1, min(limit, item_count))
+        # Motivation vs Logic: variant-rich catalogue requests were bottlenecked by
+        # a tiny fan-out, so we now allow up to the configurable concurrency limit
+        # (default 50). The semaphore still caps active workers per session,
+        # sending any remaining items to sequential retries.
+        limit = max(1, self.settings.stock_parallel_requests_limit)
+        return max(1, min(limit, max(1, item_count)))
 
     async def _expand_catalogue_matches_for_snapshot(
         self,

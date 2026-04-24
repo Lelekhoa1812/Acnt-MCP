@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     local_chat_memory_enabled: bool = Field(True, alias="HTH_LOCAL_CHAT_MEMORY_ENABLED")
     local_chat_memory_turns: int = Field(6, ge=1, alias="HTH_LOCAL_CHAT_MEMORY_TURNS")
     agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
+    # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
+    # Harmonise detail lookups; any extra items automatically wait on the semaphore.
+    stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")
     # Motivation vs Logic: broad inventory answers can legitimately need large
     # Markdown tables, so the agent completion budget is configurable instead of
     # hard-coded to a small single-paragraph default.
