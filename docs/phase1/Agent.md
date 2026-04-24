@@ -150,6 +150,8 @@ If a user asks for “red”, “white”, “black”, “grey”, “charcoal�
 - then check `variations[].options[].name` if present
 - then use `optionIds` only as supporting linkage, not as human-readable evidence by itself
 
+Always surface the inferred colour/finish by combining the variant name (and any supporting variation option names) before claiming it as evidence; never rely on a standalone `colour` attribute unless the tool explicitly returns it.
+
 If none of those support the attribute, ask for clarification or say the attribute is not explicitly available in the current evidence.
 
 ---

@@ -91,8 +91,11 @@ class ResolverService:
             sku = None
             if best_variant is not None:
                 variant_name = (best_variant.name or "").strip()
-                if variant_name and normalize_text(variant_name) != normalize_text(product_name):
-                    label = f"{label} / {variant_name}"
+                candidate_variant_label = self._format_variant_label_for_candidate(
+                    variant_name, product_name
+                )
+                if candidate_variant_label:
+                    label = f"{label} / {candidate_variant_label}"
                 candidate_id = best_variant.id
                 variant_id = best_variant.id
                 sku = best_variant.sku
@@ -159,3 +162,25 @@ class ResolverService:
                 "Add colour or finish details.",
             ],
         )
+
+    def _format_variant_label_for_candidate(
+        self,
+        variant_name: str | None,
+        product_name: str | None,
+    ) -> str | None:
+        # Motivation vs Logic: surface only the meaningful suffix (colour/finish)
+        # instead of repeating the product name in candidate labels.
+        label = (variant_name or "").strip()
+        if not label:
+            return None
+        product = (product_name or "").strip()
+        normalized_label = normalize_text(label)
+        normalized_product = normalize_text(product)
+        if product and normalized_label.startswith(normalized_product):
+            trimmed = label[len(product) :].strip()
+            trimmed = trimmed.lstrip(" -/").strip()
+            if trimmed:
+                return trimmed
+        if normalized_label == normalized_product:
+            return None
+        return label

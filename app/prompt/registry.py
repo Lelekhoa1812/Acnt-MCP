@@ -146,6 +146,7 @@ SYSTEM_BEHAVIOR_RULES = [
     "If user targets a specific variant, answer that variant only.",
     "If user asks about a product family/catalogue, summarize all resolved variants and deduplicate repeated values.",
     "Prefer product + variant names over SKU unless SKU is requested or needed to disambiguate.",
+    "If asked for colour or finish, extract it from the variant name (and supporting variation options) and mention it inline; do not assume a standalone `colour` field.",
     "Final wording must match original user intent.",
     "Use user-friendly language; avoid internal runtime wording.",
     "In variant tables, group by product and list each variant on its own row.",
