@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Literal
 
 from app.schemas import ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, SessionState
-from app.text.utils import lexical_overlap, normalize_text, significant_tokens
+from app.text.utils import lexical_overlap, significant_tokens
 
 # Motivation vs Logic: prompt rendering now scores and chunks session memory so
 # the model sees only the relevant slice instead of a raw session dump.
@@ -574,164 +573,11 @@ def _render_conversation_summary(conversation: list[dict[str, Any]]) -> str:
 
 
 def _summarize_history(turns: list[ConversationTurn], request: str, settings: dict[str, int]) -> list[dict[str, Any]]:
-    if not turns:
-        return []
+    # Motivation vs Logic: delegate conversation chunking/selection to SummarizerAgent so the prompt
+    # renderer stays focused on structure, and summarization heuristics live in one place.
+    from app.agent.summarizer import summarize_history as _summarize_history_impl
 
-    selected_turns = _select_turns(turns, request, settings["history_turns"])
-    summaries: list[dict[str, Any]] = []
-    for turn in selected_turns:
-        blocks = _split_text_blocks(turn.content)
-        selected_blocks = _select_blocks(blocks, request, settings["history_block_chars"])
-        if not selected_blocks:
-            continue
-        summaries.append(
-            {
-                "role": turn.role,
-                "blocks": selected_blocks,
-                "truncated": len(selected_blocks) < len(blocks),
-            }
-        )
-    return summaries
-
-
-def _select_turns(turns: list[ConversationTurn], request: str, limit: int) -> list[ConversationTurn]:
-    request_tokens = significant_tokens(request)
-    scored: list[tuple[float, int, ConversationTurn]] = []
-    total = len(turns)
-    for index, turn in enumerate(turns):
-        overlap = lexical_overlap(request, turn.content) if request_tokens else 0.0
-        recency = (index + 1) / max(total, 1)
-        score = overlap * 2.0 + recency * 0.2
-        scored.append((score, index, turn))
-    top = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)[:limit]
-    selected_indices = sorted(index for _, index, _ in top)
-    return [turns[index] for index in selected_indices]
-
-
-def _split_text_blocks(text: str) -> list[str]:
-    compact = text.strip()
-    if not compact:
-        return []
-
-    raw_blocks = [block.strip() for block in re.split(r"\n\s*\n", compact) if block.strip()]
-    blocks: list[str] = []
-    for block in raw_blocks:
-        if _looks_like_table(block):
-            blocks.extend(_chunk_table_block(block))
-            continue
-        if _looks_like_bullets(block):
-            blocks.append(_summarize_bullets(block))
-            continue
-        if len(block) > 2400:
-            blocks.append(_summarize_paragraph(block))
-            continue
-        blocks.append(block)
-    return blocks
-
-
-def _select_blocks(blocks: list[str], request: str, block_limit: int) -> list[str]:
-    if not blocks:
-        return []
-
-    request_tokens = significant_tokens(request)
-    scored: list[tuple[float, int, str]] = []
-    total = len(blocks)
-    for index, block in enumerate(blocks):
-        overlap = lexical_overlap(request, block) if request_tokens else 0.0
-        recency = (index + 1) / max(total, 1)
-        score = overlap * 2.0 + recency * 0.1
-        scored.append((score, index, block))
-
-    max_blocks = 2 if block_limit < 1200 else 3
-    top = sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)[:max_blocks]
-    selected_indices = sorted(index for _, index, _ in top)
-    selected = [blocks[index] for index in selected_indices]
-    rendered: list[str] = []
-    for block in selected:
-        if len(block) > block_limit:
-            rendered.append(_truncate_block(block, block_limit))
-        else:
-            rendered.append(block)
-    return rendered
-
-
-def _looks_like_table(block: str) -> bool:
-    lines = [line.rstrip() for line in block.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return False
-    if not _looks_like_table_row(lines[0]) or not _looks_like_table_separator(lines[1]):
-        return False
-    return all(_looks_like_table_row(line) or _looks_like_table_separator(line) for line in lines)
-
-
-def _chunk_table_block(block: str) -> list[str]:
-    lines = [line.rstrip() for line in block.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return [block]
-
-    header = lines[0]
-    separator = lines[1]
-    rows = [line for line in lines[2:] if _looks_like_table_row(line)]
-    if not rows:
-        return [block]
-
-    chunk_size = MODE_SETTINGS["normal"]["rows_per_table_chunk"]
-    total_chunks = max(1, (len(rows) + chunk_size - 1) // chunk_size)
-    chunks: list[str] = []
-    for chunk_index, start in enumerate(range(0, len(rows), chunk_size), start=1):
-        chunk_rows = rows[start : start + chunk_size]
-        rendered = [f"table chunk {chunk_index}/{total_chunks}:", header, separator, *chunk_rows]
-        chunks.append("\n".join(rendered))
-    return chunks
-
-
-def _looks_like_table_row(line: str) -> bool:
-    stripped = line.strip()
-    return stripped.startswith("|") and stripped.endswith("|")
-
-
-def _looks_like_table_separator(line: str) -> bool:
-    # Root Cause vs Logic: markdown separator rows keep their inner pipes, so
-    # we must inspect each cell instead of treating the full line as dash-only
-    # text; otherwise table chunking never activates for normal markdown tables.
-    stripped = line.strip()
-    if not (stripped.startswith("|") and stripped.endswith("|")):
-        return False
-
-    cells = [cell.strip().replace(" ", "") for cell in stripped.strip("|").split("|")]
-    return bool(cells) and all(cell and set(cell) <= {"-", ":"} for cell in cells)
-
-
-def _looks_like_bullets(block: str) -> bool:
-    lines = [line.strip() for line in block.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return False
-    return all(
-        line.startswith(("- ", "* ", "• ")) or re.match(r"^\d+[.)]\s+", line) is not None
-        for line in lines
-    )
-
-
-def _summarize_bullets(block: str) -> str:
-    lines = [line.strip() for line in block.splitlines() if line.strip()]
-    if len(lines) <= 5:
-        return "\n".join(lines)
-    selected = lines[:3] + [f"... {len(lines) - 3} more lines"]
-    return "\n".join(selected)
-
-
-def _summarize_paragraph(block: str) -> str:
-    paragraphs = [part.strip() for part in re.split(r"(?<=[.!?])\s+", block) if part.strip()]
-    if not paragraphs:
-        return _truncate_block(block, 900)
-    tokens = significant_tokens(block)
-    if tokens:
-        matching = [sentence for sentence in paragraphs if any(token in normalize_text(sentence) for token in tokens)]
-        if matching:
-            joined = " ".join(matching[:4])
-            return _truncate_block(joined, 900)
-    joined = " ".join(paragraphs[:2])
-    return _truncate_block(joined, 900)
+    return _summarize_history_impl(turns, request, settings)
 
 
 def _truncate_block(block: str, limit: int) -> str:
