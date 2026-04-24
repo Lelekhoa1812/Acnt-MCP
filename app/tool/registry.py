@@ -473,10 +473,17 @@ class ToolRegistry:
             normalized = (value or "").strip()
             if not normalized:
                 continue
-            if normalized in {product, variant} and compact:
+            # Root Cause vs Logic: previously we skipped *both* product and variant
+            # when compact was non-empty, so a short label (e.g. option) could cause
+            # the full variant name to be dropped; colour then looked "missing".
+            if normalized == product and compact:
                 continue
             if normalized not in compact:
                 compact.append(normalized)
+        if not compact and (variant or product):
+            for fallback in (variant, product):
+                if fallback and fallback not in compact:
+                    compact.append(fallback)
         return compact[:2]
 
     def _compact_known_specs(self, specs: list[str]) -> list[str]:

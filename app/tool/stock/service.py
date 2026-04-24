@@ -14,6 +14,7 @@ from app.config import (
 )
 from app.text.utils import lexical_overlap, significant_tokens
 from app.tool.stock.media import build_harmonise_image_url
+from app.text.stock.names import trailing_label_after_separator
 from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
     InventorySnapshotCoverage,
@@ -528,6 +529,7 @@ class InventoryService:
                     evidence.variant_name,
                     evidence.product_name,
                     *evidence.variation_options,
+                    trailing_label_after_separator(evidence.variant_name),
                 ]
             ),
             size=self._format_dimensions(evidence),

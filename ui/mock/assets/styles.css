@@ -873,13 +873,14 @@ code {
   width: 100%;
   border-collapse: collapse;
   margin: 12px 0 2px;
-  font-size: 14px;
+  font-size: 8px;
+  line-height: 1.35;
 }
 
 .bubble-content .markdown-table th,
 .bubble-content .markdown-table td {
   border: 1px solid #ded8cc;
-  padding: 10px 12px;
+  padding: 5px 7px;
   vertical-align: top;
 }
 
@@ -888,6 +889,8 @@ code {
   color: #3e352a;
   text-align: left;
   font-weight: 620;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .bubble-content .markdown-table tbody tr:nth-child(odd) {

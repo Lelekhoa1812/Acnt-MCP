@@ -2,6 +2,21 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.text.stock.names import trailing_label_after_separator
+
+
+def _colour_finish_display(row: dict[str, Any]) -> str:
+    # Motivation vs Logic: colour is not a separate API field; use variant naming
+    # so the column is not empty when names include a finish (e.g. "Chair - Black").
+    direct = [x for x in (row.get("attributeEvidence") or []) if (x or "").strip()]
+    if direct:
+        return ", ".join(direct)
+    variant = (row.get("variant") or "").strip()
+    tail = trailing_label_after_separator(variant)
+    if tail:
+        return tail
+    return variant or (row.get("product") or "").strip()
+
 
 def render_inventory_snapshot_markdown(
     rows: list[dict[str, Any]],
@@ -28,7 +43,7 @@ def render_inventory_snapshot_markdown(
                         _cell(product_value, "unknown" if variant_index == 0 else ""),
                         _cell(row.get("variant"), "unknown"),
                         _cell(row.get("sku"), "unknown"),
-                        _cell(", ".join(row.get("attributeEvidence", [])), "unknown"),
+                        _cell(_colour_finish_display(row), "unknown"),
                         _cell(row.get("size"), "unknown"),
                         _cell("; ".join(row.get("knownSpecs", [])), "unknown"),
                         _cell(row.get("stock"), "unknown"),
