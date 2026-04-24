@@ -254,6 +254,12 @@ class AgentEngine:
                 except json.JSONDecodeError:
                     parsed_args = {"_raw": raw_arguments}
                 normalized_args = parsed_args if isinstance(parsed_args, dict) else {"value": parsed_args}
+                tool_name, normalized_args, rewrite_note = self._rewrite_variant_family_tool_call(
+                    tool_name=tool_name,
+                    args=normalized_args,
+                )
+                if rewrite_note is not None:
+                    limitations.append(rewrite_note)
 
                 plan_step, inserted = self._resolve_or_insert_plan_step(plan_status, tool_name, normalized_args)
                 plan_step.status = "in-progress"
@@ -528,6 +534,13 @@ class AgentEngine:
             draft_answer = draft_answer or self._plan_incomplete_answer(next_step)
 
         stock_snapshot_fast_path = bool(inventory_snapshot and self._can_use_stock_snapshot_fast_path(plan_status))
+        memo_stock_rows = self._memo_stock_rows(session_state.memo_cache)
+        memo_stock_fast_path = bool(
+            not stock_snapshot_fast_path
+            and clarification is None
+            and self._can_use_stock_snapshot_fast_path(plan_status)
+            and memo_stock_rows
+        )
 
         if clarification is None and plan_complete:
             if stock_snapshot_fast_path:
@@ -541,6 +554,25 @@ class AgentEngine:
                     "If you want, I can drill into one specific variant with a deeper breakdown."
                 )
                 status_hint = "limited" if coverage.get("isPartial") or coverage.get("limitations") else "answered"
+                used_snapshot_fast_path = True
+            elif memo_stock_fast_path:
+                memo_coverage = {
+                    "matchedProducts": len({row.get("product") for row in memo_stock_rows if row.get("product")}),
+                    "matchedPages": 1,
+                    "enrichedProducts": len({row.get("product") for row in memo_stock_rows if row.get("product")}),
+                    "enrichedVariants": len(memo_stock_rows),
+                    "isPartial": False,
+                    "limitations": [],
+                }
+                draft_answer = render_inventory_snapshot_markdown(
+                    rows=memo_stock_rows,
+                    coverage=memo_coverage,
+                )
+                draft_answer = (
+                    f"{draft_answer}\n\n"
+                    "If you want, I can drill into one specific variant with a deeper breakdown."
+                )
+                status_hint = "answered"
                 used_snapshot_fast_path = True
             else:
                 composer_started_at = perf_counter()
@@ -1429,6 +1461,38 @@ class AgentEngine:
             return {"id": product_id, "page": 1, "pageSize": page_size}
         return None
 
+    def _rewrite_variant_family_tool_call(
+        self,
+        *,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> tuple[str, dict[str, Any], str | None]:
+        if tool_name not in {"stock.extract_variant_evidence", "stock.get_variant_evidence"}:
+            return tool_name, args, None
+        compact_id = self._compact_identifier(args.get("id"))
+        compact_sku = self._compact_identifier(args.get("sku"))
+        compact_variant_id = self._compact_identifier(args.get("variantId"))
+        if not compact_id or compact_sku or compact_variant_id:
+            return tool_name, args, None
+
+        # Root Cause vs Logic: family-level queries were routed through the
+        # variant tool with product id only, which triggers multi-variant
+        # safety failures. Rewrite those calls to product-detail retrieval so
+        # all variants can be answered without unnecessary SKU clarification.
+        rewritten_args = {
+            "id": compact_id,
+            "page": 1,
+            "pageSize": self.settings.agent_get_product_page_size,
+        }
+        return (
+            "stock.get_product",
+            rewritten_args,
+            (
+                "Rewrote a variant-evidence call with product-id-only args to `stock.get_product` "
+                "so family-level variant coverage can continue without unsafe SKU guessing."
+            ),
+        )
+
     def _derive_variant_follow_up_steps(self, items: list[Any], max_variants: int = 20) -> list[tuple[str, dict[str, str]]]:
         steps: list[tuple[str, dict[str, str]]] = []
         seen: set[tuple[str, str]] = set()
@@ -2302,6 +2366,50 @@ class AgentEngine:
     def _can_use_stock_snapshot_fast_path(self, plan_status: PlanStatus) -> bool:
         requested_domains = self._requested_domains(plan_status)
         return requested_domains == {"stock"}
+
+    def _memo_stock_rows(self, memo_cache: Any) -> list[dict[str, Any]]:
+        entries = getattr(memo_cache, "entries", None)
+        if not isinstance(entries, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            tool_name = getattr(entry, "tool", "")
+            if tool_name not in {"stock.get_product", "stock.inventory_snapshot"}:
+                continue
+            candidate_rows = getattr(entry, "rows", [])
+            if not isinstance(candidate_rows, list):
+                continue
+            for row in candidate_rows:
+                if not isinstance(row, dict):
+                    continue
+                if not row.get("product") or not row.get("variant"):
+                    continue
+                if not row.get("size") and not row.get("stock"):
+                    continue
+                rows.append(
+                    {
+                        "product": row.get("product"),
+                        "variant": row.get("variant"),
+                        "sku": row.get("sku"),
+                        "attributeEvidence": row.get("attributeEvidence", []),
+                        "size": row.get("size"),
+                        "stock": row.get("stock"),
+                        "knownSpecs": row.get("knownSpecs", []),
+                    }
+                )
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for row in rows:
+            key = (
+                str(row.get("product") or ""),
+                str(row.get("variant") or ""),
+                str(row.get("sku") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        return deduped
 
     def _requested_domains(self, plan_status: PlanStatus) -> set[str]:
         explicit = {intent for intent in plan_status.intent_classes if intent in {"stock", "weather", "news", "currency"}}
