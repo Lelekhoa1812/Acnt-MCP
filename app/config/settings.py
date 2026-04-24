@@ -73,6 +73,18 @@ class Settings(BaseSettings):
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
     open_weather_api_key: str | None = Field(None, alias="OPEN_WEATHER_API")
     news_api_key: str | None = Field(None, alias="NEWS_API")
+    mcp_path: str = Field("/mcp", alias="HTH_MCP_PATH")
+    mcp_stateless: bool = Field(False, alias="HTH_MCP_STATELESS")
+    mcp_json_response: bool = Field(False, alias="HTH_MCP_JSON_RESPONSE")
+    mcp_retry_interval_ms: int | None = Field(2500, ge=0, alias="HTH_MCP_RETRY_INTERVAL_MS")
+    mcp_session_idle_timeout_seconds: float | None = Field(
+        1800.0,
+        ge=0,
+        alias="HTH_MCP_SESSION_IDLE_TIMEOUT_SECONDS",
+    )
+    mcp_bearer_token: str | None = Field(None, alias="HTH_MCP_BEARER_TOKEN")
+    mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
+    mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
 
     @property
     def harmonise_timeout_seconds(self) -> float | None:
@@ -177,7 +189,25 @@ class Settings(BaseSettings):
                 "HTH_LOCAL_CHAT_MEMORY_ENABLED=true; local `/api/v1/query` calls retain a short in-process "
                 f"conversation buffer ({self.local_chat_memory_turns} turns, device-local only, non-Redis)."
             )
+        if not self.mcp_bearer_token:
+            notes.append(
+                "HTH_MCP_BEARER_TOKEN is not configured; the public `/mcp` transport will accept unauthenticated requests."
+            )
         return notes
+
+    @staticmethod
+    def _split_csv(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        return [part.strip() for part in raw.split(",") if part.strip()]
+
+    @property
+    def parsed_mcp_allowed_hosts(self) -> list[str]:
+        return self._split_csv(self.mcp_allowed_hosts)
+
+    @property
+    def parsed_mcp_allowed_origins(self) -> list[str]:
+        return self._split_csv(self.mcp_allowed_origins)
 
 
 @lru_cache

@@ -17,6 +17,8 @@ def test_render_system_includes_scope_and_variant_policy_guards() -> None:
     assert "Keep answers scoped to requested attributes only." in prompt
     assert "If user targets a specific variant, answer that variant only." in prompt
     assert "Prefer product + variant names over SKU" in prompt
+    assert "Avoid duplicate semantic retrieval" in prompt
+    assert "reasonable latency budget" in prompt
     assert "Final wording must match original user intent." in prompt
     assert "Do not reveal hidden chain-of-thought" in prompt
 
@@ -56,6 +58,8 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "- depends_on: array of earlier step ids" in planner_prompt
     assert "- parallel_group: integer or null" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
+    assert "avoid planning both `stock.inventory_snapshot` and `stock.compare_variants`" in planner_prompt
+    assert "latency-aware" in planner_prompt
     assert "not yet implemented in the current tool contract" in planner_prompt
 
 

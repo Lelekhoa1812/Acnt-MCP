@@ -133,8 +133,12 @@ SYSTEM_BEHAVIOR_RULES = [
     "For product-name queries, run multi-pass search: full name first, then narrower key tokens if no rows.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
     "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique variant/product identifier returned.",
+    "For product-family requests, prefer one compact stock-detail path; do not stack `stock.inventory_snapshot`, `stock.get_product`, and `stock.compare_variants` unless each hop adds missing evidence.",
+    "Avoid duplicate semantic retrieval: once a tool result already covers the requested stock attributes, move on to unsatisfied domains instead of re-fetching the same family in another stock shape.",
     "For mixed intent queries, ensure every requested domain is satisfied in one response (inventory + currency conversion + weather/news as requested).",
+    "For mixed stock + utility queries, ground stock and pricing first, derive any currency conversion from retrieved costs/rates second, and keep independent news/weather branches parallel where possible.",
     "If `stock.search_catalogue` returns no rows, replan: note failure in a concise thought, adjust args, retry, then report failure only after retry.",
+    "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over long raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
     "Keep answers scoped to requested attributes only.",
@@ -477,7 +481,11 @@ Rules:
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
 - For product name discovery, plan at least two search passes where appropriate (full phrase and concise alias), then deduplicate overlaps by product id/SKU before downstream steps.
 - When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
+- For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock.inventory_snapshot` and `stock.compare_variants` unless the first path cannot satisfy the requested evidence.
+- Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
 - For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news) and keep dependencies clear.
+- For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
+- Keep the DAG latency-aware: prefer bounded, answer-ready tools over long chains of overlapping stock detail calls.
 - If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock.get_product` or `stock.inventory_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
 - Do not invent booking or quote tools; those workflows are not yet implemented in the current tool contract.
 - Do not invent tools.

@@ -5,6 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+ENV HTH_PORT=3000 \
+    HTH_MCP_PATH=/mcp \
+    HTH_MCP_SESSION_IDLE_TIMEOUT_SECONDS=1800 \
+    HTH_MCP_RETRY_INTERVAL_MS=2500
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

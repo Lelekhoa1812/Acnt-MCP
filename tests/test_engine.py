@@ -582,6 +582,72 @@ async def test_agent_engine_executes_next_planned_step_when_model_skips_tool_cal
                     }
                 ]
             }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 2,
+                                    "actual_rows": 2,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.94,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 2,
+                                    "actual_rows": 2,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.94,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 2,
+                                    "actual_rows": 2,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.94,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
         if endpoint_name == "/api/v1/query":
             return {
                 "choices": [
@@ -1178,6 +1244,583 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
     assert not result.clarification
     assert any(trace.tool == "resolver.disambiguate_candidates" for trace in result.tool_trace)
     assert any(trace.tool == "stock.get_product" for trace in result.tool_trace)
+
+
+@pytest.mark.anyio
+async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Summarize the product family",
+                                    "intent_classes": ["stock"],
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "inventory snapshot",
+                                            "tool": "stock.inventory_snapshot",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3},
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Retrieve the family in one compact payload first."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 2,
+                                            "name": "compare family variants",
+                                            "tool": "stock.compare_variants",
+                                            "status": "planned",
+                                            "args": {
+                                                "identifiers": [
+                                                    "fn-se-ch-alt-bla",
+                                                    "fn-se-ch-alt-blu",
+                                                    "fn-se-ch-alt-sag",
+                                                    "fn-se-ch-alt-sof",
+                                                    "fn-se-ch-alt-ste",
+                                                    "fn-se-ch-alt-whi",
+                                                ]
+                                            },
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Compare every resolved variant side by side."],
+                                            "validation": None,
+                                        },
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 2,
+                                    "actual_rows": 2,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.94,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<thought>\n"
+                                "goal: fetch the family and compare it\n"
+                                "entity_guess: product\n"
+                                "strategy: retrieval then comparison\n"
+                                "tool: multi\n"
+                                "args_draft: {}\n"
+                                "risk: none\n"
+                                "</thought>"
+                            ),
+                            "tool_calls": [
+                                {
+                                    "id": "call_snapshot",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "stock.inventory_snapshot",
+                                        "arguments": json.dumps({"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3}),
+                                    },
+                                },
+                                {
+                                    "id": "call_compare",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "stock.compare_variants",
+                                        "arguments": json.dumps(
+                                            {
+                                                "identifiers": [
+                                                    "fn-se-ch-alt-bla",
+                                                    "fn-se-ch-alt-blu",
+                                                    "fn-se-ch-alt-sag",
+                                                    "fn-se-ch-alt-sof",
+                                                    "fn-se-ch-alt-ste",
+                                                    "fn-se-ch-alt-whi",
+                                                ]
+                                            }
+                                        ),
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        if tool_name == "stock.compare_variants":
+            raise AssertionError("stock.compare_variants should be pruned once snapshot evidence exists")
+        if tool_name == "stock.inventory_snapshot":
+            variant_specs = [
+                ("Black", "fn-se-ch-alt-bla", 172, 120, 50.0),
+                ("Blue", "fn-se-ch-alt-blu", 96, 70, 48.0),
+                ("Sage", "fn-se-ch-alt-sag", 64, 48, 47.0),
+                ("Soft", "fn-se-ch-alt-sof", 88, 61, 49.0),
+                ("Steel", "fn-se-ch-alt-ste", 105, 75, 51.0),
+                ("White", "fn-se-ch-alt-whi", 232, 180, 41.0),
+            ]
+            snapshot_data = {
+                "rows": [
+                    {
+                        "product": "Alto Chair",
+                        "variant": f"Alto Chair - {color}",
+                        "sku": sku,
+                        "attributeEvidence": [f"Alto Chair - {color}", color],
+                        "size": "0.5 x 0.5 x 0.9 m",
+                        "stock": f"Overall has {total_stock} in stock. By location: VIC has {vic_stock} in stock.",
+                        "knownSpecs": [f"cost={cost:g}", "generalRate=90"],
+                    }
+                    for color, sku, total_stock, vic_stock, cost in variant_specs
+                ],
+                "evidence": [
+                    {
+                        "product_id": "prod-alto",
+                        "product_name": "Alto Chair",
+                        "variant_id": f"var-{color.lower()}",
+                        "variant_name": f"Alto Chair - {color}",
+                        "sku": sku,
+                        "variation_options": [color],
+                        "salesNote": None,
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "pricing": {"generalRate": 90.0, "expoRate": 90.0, "cost": cost},
+                        "dimensions": {"dimensional": True, "canBeSoldInPortions": False, "length": 0.5, "width": 0.5, "height": 0.9},
+                        "stock": {"totalHirable": total_stock - 10, "vicStock": vic_stock, "vicHirable": max(vic_stock - 8, 0), "nswStock": 20, "nswHirable": 18, "qldStock": 12, "qldHirable": 10, "totalStock": total_stock},
+                        "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
+                        "media": {"imageFileName": None, "imageUrl": None},
+                        "components": [],
+                        "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
+                        "evidence_paths": {},
+                    }
+                    for color, sku, total_stock, vic_stock, cost in variant_specs
+                ],
+                "coverage": {
+                    "requestedPage": 1,
+                    "requestedPageSize": 10,
+                    "matchedProducts": 1,
+                    "matchedPages": 1,
+                    "enrichedProducts": 1,
+                    "enrichedVariants": 6,
+                    "isPartial": False,
+                    "limitations": [],
+                },
+            }
+            return ToolResult(
+                tool=tool_name,
+                data=snapshot_data,
+                llm_content=snapshot_data,
+                trace=ToolTrace(
+                    thought=thought,
+                    tool=tool_name,
+                    args=raw_args,
+                    status="ok",
+                    result_count=6,
+                ),
+            )
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-pruned-compare")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="Let me know all details about an Alto chair.",
+                sessionId="engine-pruned-compare",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert "Alto Chair - Black" in result.answer
+    assert "Alto Chair - White" in result.answer
+    assert not any(trace.tool == "stock.compare_variants" for trace in result.tool_trace)
+    assert any("Pruned planned step" in item for item in result.limitations)
+
+
+@pytest.mark.anyio
+async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Answer the furniture research request",
+                                    "intent_classes": ["stock", "currency", "news"],
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "inventory snapshot",
+                                            "tool": "stock.inventory_snapshot",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3},
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Retrieve all chair variants first."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 2,
+                                            "name": "redundant compare",
+                                            "tool": "stock.compare_variants",
+                                            "status": "planned",
+                                            "args": {"identifiers": ["fn-se-ch-alt-bla", "fn-se-ch-alt-whi"]},
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Compare the same variants again."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 3,
+                                            "name": "convert currency",
+                                            "tool": "currency.convert",
+                                            "status": "planned",
+                                            "args": {"from": "AUD", "to": "USD", "amount": 90.0},
+                                            "depends_on": [1],
+                                            "parallel_group": 2,
+                                            "hypotheses": ["Convert the chair cost for comparison."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 4,
+                                            "name": "melbourne news",
+                                            "tool": "news.search",
+                                            "status": "planned",
+                                            "args": {"q": "Melbourne events business hospitality demand", "pageSize": 3},
+                                            "depends_on": [],
+                                            "parallel_group": 2,
+                                            "hypotheses": ["Assess local demand signals."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 5,
+                                            "name": "table search",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 5, "search": "table", "departmentId": 3},
+                                            "depends_on": [],
+                                            "parallel_group": 2,
+                                            "hypotheses": ["Find matching tables."],
+                                            "validation": None,
+                                        },
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 1,
+                                    "actual_rows": 1,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.93,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "Alto Chair is available in black and white, costs 90 AUD and about 58.5 USD, "
+                                "Melbourne headlines show active hospitality demand, and the retrieved table search "
+                                "returned matching table options."
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": (
+                                        "Alto Chair is available in black and white, costs 90 AUD and about 58.5 USD, "
+                                        "Melbourne headlines show active hospitality demand, and the retrieved table "
+                                        "search returned matching table options."
+                                    ),
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            tool_messages = [message for message in payload["messages"] if message.get("role") == "tool"]
+            if not tool_messages:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "<thought>goal: satisfy all requested domains</thought>",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_snapshot",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.inventory_snapshot",
+                                            "arguments": json.dumps({"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3}),
+                                        },
+                                    },
+                                    {
+                                        "id": "call_compare",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.compare_variants",
+                                            "arguments": json.dumps({"identifiers": ["fn-se-ch-alt-bla", "fn-se-ch-alt-whi"]}),
+                                        },
+                                    },
+                                    {
+                                        "id": "call_currency",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "currency.convert",
+                                            "arguments": json.dumps({"from": "AUD", "to": "USD", "amount": 90.0}),
+                                        },
+                                    },
+                                    {
+                                        "id": "call_news",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "news.search",
+                                            "arguments": json.dumps({"q": "Melbourne events business hospitality demand", "pageSize": 3}),
+                                        },
+                                    },
+                                    {
+                                        "id": "call_tables",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.search_catalogue",
+                                            "arguments": json.dumps({"page": 1, "pageSize": 5, "search": "table", "departmentId": 3}),
+                                        },
+                                    },
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": "Use the grounded evidence and finish the mixed-domain answer."}}]}
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        if tool_name == "stock.compare_variants":
+            raise AssertionError("stock.compare_variants should be pruned for the mixed-domain query too")
+        if tool_name == "stock.inventory_snapshot":
+            snapshot_data = {
+                "rows": [
+                    {
+                        "product": "Alto Chair",
+                        "variant": "Alto Chair - Black",
+                        "sku": "fn-se-ch-alt-bla",
+                        "attributeEvidence": ["Alto Chair - Black", "Black"],
+                        "size": "0.5 x 0.5 x 0.9 m",
+                        "stock": "Overall has 172 in stock. By location: VIC has 120 in stock.",
+                        "knownSpecs": ["cost=90", "generalRate=90"],
+                    },
+                    {
+                        "product": "Alto Chair",
+                        "variant": "Alto Chair - White",
+                        "sku": "fn-se-ch-alt-whi",
+                        "attributeEvidence": ["Alto Chair - White", "White"],
+                        "size": "0.5 x 0.5 x 0.9 m",
+                        "stock": "Overall has 232 in stock. By location: VIC has 180 in stock.",
+                        "knownSpecs": ["cost=90", "generalRate=90"],
+                    },
+                ],
+                "evidence": [
+                    {
+                        "product_id": "prod-alto",
+                        "product_name": "Alto Chair",
+                        "variant_id": "var-black",
+                        "variant_name": "Alto Chair - Black",
+                        "sku": "fn-se-ch-alt-bla",
+                        "variation_options": ["Black"],
+                        "salesNote": None,
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "pricing": {"generalRate": 90.0, "expoRate": 90.0, "cost": 90.0},
+                        "dimensions": {"dimensional": True, "canBeSoldInPortions": False, "length": 0.5, "width": 0.5, "height": 0.9},
+                        "stock": {"totalHirable": 160, "vicStock": 120, "vicHirable": 110, "nswStock": 40, "nswHirable": 38, "qldStock": 12, "qldHirable": 12, "totalStock": 172},
+                        "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
+                        "media": {"imageFileName": None, "imageUrl": None},
+                            "components": [],
+                            "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
+                            "evidence_paths": {},
+                        },
+                        {
+                            "product_id": "prod-alto",
+                            "product_name": "Alto Chair",
+                            "variant_id": "var-white",
+                            "variant_name": "Alto Chair - White",
+                            "sku": "fn-se-ch-alt-whi",
+                            "variation_options": ["White"],
+                            "salesNote": None,
+                            "departmentId": 3,
+                            "subDepartmentId": None,
+                            "categoryId": "cat-chair",
+                            "isActive": True,
+                            "pricing": {"generalRate": 90.0, "expoRate": 90.0, "cost": 90.0},
+                            "dimensions": {"dimensional": True, "canBeSoldInPortions": False, "length": 0.5, "width": 0.5, "height": 0.9},
+                            "stock": {"totalHirable": 220, "vicStock": 180, "vicHirable": 170, "nswStock": 38, "nswHirable": 35, "qldStock": 14, "qldHirable": 12, "totalStock": 232},
+                            "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
+                            "media": {"imageFileName": None, "imageUrl": None},
+                            "components": [],
+                            "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[1].details"},
+                            "evidence_paths": {},
+                        },
+                    ],
+                "coverage": {
+                    "requestedPage": 1,
+                    "requestedPageSize": 10,
+                    "matchedProducts": 1,
+                    "matchedPages": 1,
+                    "enrichedProducts": 1,
+                    "enrichedVariants": 2,
+                    "isPartial": False,
+                    "limitations": [],
+                },
+            }
+            return ToolResult(
+                tool=tool_name,
+                data=snapshot_data,
+                llm_content=snapshot_data,
+                trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=2),
+            )
+        if tool_name == "currency.convert":
+            return ToolResult(
+                tool=tool_name,
+                data={"query": {"from": "AUD", "to": "USD", "amount": 90.0}, "result": 58.5, "info": {"rate": 0.65}},
+                trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=1),
+            )
+        if tool_name == "news.search":
+            return ToolResult(
+                tool=tool_name,
+                data={"topSources": ["The Age"], "topKeywords": ["Melbourne", "events"], "publishedRange": {"from": "2026-04-20", "to": "2026-04-24"}, "totalResults": 3, "matchingArticles": [{"title": "Melbourne hospitality demand rises", "matchingKeywords": ["Melbourne", "hospitality"]}]},
+                trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=3),
+            )
+        if tool_name == "stock.search_catalogue":
+            return ToolResult(
+                tool=tool_name,
+                data={"items": [{"id": "table-1", "name": "Arc Side Table", "variants": [{"id": "var-table-1", "name": "Arc Side Table - Oak", "sku": "tb-arc-side-oak"}]}], "page": 1, "pageSize": 5, "totalCount": 1, "totalPages": 1},
+                llm_content={"items": [{"id": "table-1", "name": "Arc Side Table", "variants": [{"id": "var-table-1", "name": "Arc Side Table - Oak", "sku": "tb-arc-side-oak"}]}]},
+                trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=1),
+            )
+        if tool_name == "stock.get_product":
+            return ToolResult(
+                tool=tool_name,
+                data={
+                    "items": [
+                        {
+                            "id": "table-1",
+                            "name": "Arc Side Table",
+                            "variants": [{"id": "var-table-1", "name": "Arc Side Table - Oak", "sku": "tb-arc-side-oak"}],
+                        }
+                    ],
+                    "page": 1,
+                    "pageSize": 50,
+                    "totalCount": 1,
+                    "totalPages": 1,
+                },
+                llm_content={"items": [{"id": "table-1", "name": "Arc Side Table"}]},
+                trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=1),
+            )
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-mixed-query")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message=(
+                    "Let me know the size, colours, stock in Victoria, cost in AUD and USD, compare it, "
+                    "check Melbourne news for demand signals, and suggest matching tables."
+                ),
+                sessionId="engine-mixed-query",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert "58.5 USD" in result.answer
+    assert "Melbourne headlines" in result.answer
+    assert "table options" in result.answer
+    assert not result.clarification
+    assert not any(trace.tool == "stock.compare_variants" for trace in result.tool_trace)
+    assert {trace.tool for trace in result.tool_trace} == {
+        "stock.inventory_snapshot",
+        "currency.convert",
+        "news.search",
+        "stock.search_catalogue",
+        "stock.get_product",
+    }
 
 
 @pytest.mark.anyio

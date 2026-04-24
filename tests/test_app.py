@@ -19,6 +19,11 @@ from app.schemas import (
     MemoCache,
     PlanStatus,
     PlanStep,
+    ProductListItemDto,
+    ProductListItemDtoPagedResponse,
+    ProductVariantDto,
+    ProductVariationDto,
+    ProductVariationOptionDto,
     ToolTrace,
 )
 
@@ -246,7 +251,57 @@ def test_disambiguate_candidates_returns_selectable_options_for_small_ambiguity(
     assert 1 <= len(payload["data"]["options"]) <= 10
 
 
-def test_disambiguate_candidates_resolves_single_product_family_without_clarification() -> None:
+def test_disambiguate_candidates_resolves_single_product_family_without_clarification(monkeypatch) -> None:
+    async def fake_search_catalogue(self, args):  # noqa: ANN001
+        return (
+            ProductListItemDtoPagedResponse(
+                items=[
+                    ProductListItemDto(
+                        id="prod-alto",
+                        name="Alto Chair",
+                        departmentId=3,
+                        subDepartmentId=None,
+                        categoryId="cat-chair",
+                        isActive=True,
+                        variations=[
+                            ProductVariationDto(
+                                id="var-colour",
+                                name="Colour",
+                                options=[
+                                    ProductVariationOptionDto(id="opt-black", name="Black"),
+                                    ProductVariationOptionDto(id="opt-white", name="White"),
+                                ],
+                            )
+                        ],
+                        variants=[
+                            ProductVariantDto(
+                                id="var-alto-black",
+                                name="Alto Chair - Black",
+                                sku="fn-se-ch-alt-bla",
+                                totalHirable=172,
+                                optionIds=["opt-black"],
+                            ),
+                            ProductVariantDto(
+                                id="var-alto-white",
+                                name="Alto Chair - White",
+                                sku="fn-se-ch-alt-whi",
+                                totalHirable=232,
+                                optionIds=["opt-white"],
+                            ),
+                        ],
+                    )
+                ],
+                page=1,
+                pageSize=50,
+                totalCount=1,
+                totalPages=1,
+            ),
+            "memory_hit",
+            [],
+        )
+
+    monkeypatch.setattr("app.tool.stock.service.InventoryService.search_catalogue", fake_search_catalogue)
+
     with build_client() as client:
         response = client.post(
             "/api/v1/tools/call",
@@ -544,6 +599,53 @@ def test_query_endpoint_replays_local_chat_history_across_turns(monkeypatch) -> 
         {"role": "user", "content": "First question"},
         {"role": "assistant", "content": "Echo: First question"},
     ]
+
+
+def test_query_endpoint_persists_session_evidence_for_pronoun_follow_up(monkeypatch) -> None:
+    seen_state: list[dict[str, object]] = []
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        seen_state.append(
+            {
+                "message": request.message,
+                "recent_product_names": list(session_state.recent_product_names),
+                "recent_resolved_identifiers": list(session_state.recent_resolved_identifiers),
+            }
+        )
+        if request.message != "them":
+            session_state.recent_product_names = ["Alto Chair", *session_state.recent_product_names]
+            session_state.recent_resolved_identifiers = [
+                "prod-alto",
+                "fn-se-ch-alt-bla",
+                *session_state.recent_resolved_identifiers,
+            ]
+        return AgentRun(
+            status="answered",
+            answer=f"Echo: {request.message}",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+
+    session_id = f"pronoun-follow-up-{uuid4()}"
+    with build_client() as client:
+        first = client.post(
+            "/api/v1/query",
+            json={"message": "Tell me about Alto Chair", "sessionId": session_id},
+        )
+        second = client.post(
+            "/api/v1/query",
+            json={"message": "them", "sessionId": session_id},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert seen_state[0]["recent_product_names"] == []
+    assert seen_state[1]["recent_product_names"] == ["Alto Chair"]
+    assert seen_state[1]["recent_resolved_identifiers"] == ["prod-alto", "fn-se-ch-alt-bla"]
 
 
 def test_query_endpoint_can_disable_local_chat_history(monkeypatch) -> None:

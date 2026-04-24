@@ -838,7 +838,157 @@ async def test_inventory_snapshot_scans_all_matched_catalogue_pages_for_complete
         assert snapshot.coverage.enrichedProducts == 3
         assert snapshot.coverage.enrichedVariants == 3
         assert len(snapshot.rows) == 3
-        assert source.catalogue_calls == [(1, 1), (2, 1), (3, 1)]
+        assert source.catalogue_calls[0] == (1, 1)
+        assert set(source.catalogue_calls[1:]) == {(2, 1), (3, 1)}
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_parallelizes_remaining_matched_pages() -> None:
+    class _ParallelMatchedPagesSource:
+        def __init__(self) -> None:
+            self.active_search_calls = 0
+            self.max_active_search_calls = 0
+
+        async def search_catalogue(
+            self,
+            page: int,
+            page_size: int,
+            search: str | None,
+            department_id: int | None,
+            category_id: str | None,
+        ) -> tuple[dict[str, Any], list[str]]:
+            if page == 1:
+                return {
+                    "items": [
+                        {
+                            "id": "prod-1",
+                            "name": "Parallel Family 1",
+                            "departmentId": 3,
+                            "subDepartmentId": None,
+                            "categoryId": "cat-chair",
+                            "isActive": True,
+                            "variations": [],
+                            "variants": [{"id": "var-1", "name": "Parallel Family 1 - Black", "sku": "sku-1", "totalHirable": 10, "optionIds": []}],
+                        }
+                    ],
+                    "page": 1,
+                    "pageSize": page_size,
+                    "totalCount": 3,
+                    "totalPages": 3,
+                }, []
+
+            self.active_search_calls += 1
+            self.max_active_search_calls = max(self.max_active_search_calls, self.active_search_calls)
+            await anyio.sleep(0.02)
+            self.active_search_calls -= 1
+            return {
+                "items": [
+                    {
+                        "id": f"prod-{page}",
+                        "name": f"Parallel Family {page}",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [{"id": f"var-{page}", "name": f"Parallel Family {page} - Black", "sku": f"sku-{page}", "totalHirable": 10, "optionIds": []}],
+                    }
+                ],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 3,
+                "totalPages": 3,
+            }, []
+
+        async def get_product(
+            self,
+            product_id: str | None,
+            sku: str | None,
+            page: int,
+            page_size: int,
+        ) -> tuple[dict[str, Any], list[str]]:
+            key = product_id or "prod-1"
+            return {
+                "items": [
+                    {
+                        "id": key,
+                        "name": f"Product {key}",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [
+                            {
+                                "id": f"var-{key}",
+                                "name": f"Variant {key}",
+                                "sku": f"sku-{key}",
+                                "totalHirable": 5,
+                                "optionIds": [],
+                                "details": {
+                                    "departmentId": 3,
+                                    "subDepartmentId": None,
+                                    "isActive": True,
+                                    "generalRate": 10.0,
+                                    "expoRate": 10.0,
+                                    "assignedCategoryId": "cat-chair",
+                                    "dimensional": True,
+                                    "canBeSoldInPortions": False,
+                                    "startDate": None,
+                                    "endDate": None,
+                                    "salesNote": None,
+                                    "length": 0.5,
+                                    "width": 0.5,
+                                    "height": 0.9,
+                                    "vicStock": 5,
+                                    "vicHirable": 5,
+                                    "nswStock": 0,
+                                    "nswHirable": 0,
+                                    "qldStock": 0,
+                                    "qldHirable": 0,
+                                    "totalStock": 5,
+                                    "lastUpdatedDate": None,
+                                    "imageFileName": None,
+                                    "cost": 4.0,
+                                    "components": [],
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 1,
+                "totalPages": 1,
+            }, []
+
+        async def close(self) -> None:
+            return
+
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _ParallelMatchedPagesSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.parallel-pages"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.parallel-pages"),
+    )
+
+    try:
+        await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=1, search="parallel family"))
+        assert source.max_active_search_calls > 1
     finally:
         await source.close()
         await key_value_store.close()

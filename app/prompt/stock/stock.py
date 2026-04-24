@@ -41,6 +41,10 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "decide whether stock tooling is warranted before invoking any tools."
         ),
         (
+            "Prefer the smallest stock-tool chain that can answer the request; once a product-family tool "
+            "already returns variant sizes, options, pricing, and stock, do not plan redundant stock lookups."
+        ),
+        (
             f"Confine cataloguing and stock tool calls to the {route.department_name} department by "
             f"setting `departmentId={route.department_id}` and explaining any other departments the "
             "user mentions as unsupported."
@@ -55,4 +59,3 @@ def _build_examples(*, context_mode: str) -> str:
         return ""
 
     return FURNITURE_EXAMPLES
-

@@ -110,6 +110,7 @@ class OrchestratorService:
             tool_name=tool_name,
             tool_args=args,
             result=result,
+            use_model_validator=False,
         )
         step.validation = validation
         step.status = "done"

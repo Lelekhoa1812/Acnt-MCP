@@ -252,6 +252,7 @@ class AgentEngine:
                     }
                 )
 
+            prepared_calls = self._order_prepared_calls(prepared_calls)
             self._persist_plan_state(session_state, plan_status)
 
             execute_in_parallel = self._should_execute_parallel(prepared_calls)
@@ -265,7 +266,7 @@ class AgentEngine:
                     )
                 )
 
-            raw_outcomes: list[ToolResult | Exception] = []
+            raw_outcomes: list[ToolResult | Exception | dict[str, str]] = []
             if execute_in_parallel:
                 raw_outcomes = [RuntimeError("tool batch not started")] * len(prepared_calls)
 
@@ -285,15 +286,46 @@ class AgentEngine:
                         task_group.start_soon(run_prepared_call, index, item)
             else:
                 for item in prepared_calls:
-                    try:
-                        raw_outcomes.append(
-                            await self.tool_registry.call_tool(
-                                item["tool_name"],
-                                item["normalized_args"],
-                                session_id=session_state.session_id,
-                                thought=assistant_thought,
+                    if item["plan_step"].status == "done":
+                        skip_reason = (
+                            item["plan_step"].validation.findings[0]
+                            if item["plan_step"].validation and item["plan_step"].validation.findings
+                            else (
+                                f"Skipped `{item['tool_name']}` because the required evidence was already "
+                                "captured earlier in the run."
                             )
                         )
+                        raw_outcomes.append(
+                            {"skip_reason": skip_reason}
+                        )
+                        continue
+                    skip_reason = self._skip_prepared_call_reason(
+                        item=item,
+                        traces=traces,
+                        inventory_snapshot=inventory_snapshot,
+                    )
+                    if skip_reason is not None:
+                        raw_outcomes.append({"skip_reason": skip_reason})
+                        continue
+                    try:
+                        outcome = await self.tool_registry.call_tool(
+                            item["tool_name"],
+                            item["normalized_args"],
+                            session_id=session_state.session_id,
+                            thought=assistant_thought,
+                        )
+                        raw_outcomes.append(outcome)
+                        if outcome.tool == "stock.inventory_snapshot" and isinstance(outcome.data, dict):
+                            inventory_snapshot = outcome.data
+                            prune_notes = self._prune_redundant_stock_steps(
+                                session_state=session_state,
+                                plan_status=plan_status,
+                                completed_step=item["plan_step"],
+                                inventory_snapshot=inventory_snapshot,
+                            )
+                            if prune_notes:
+                                limitations.extend(prune_notes)
+                                self._persist_plan_state(session_state, plan_status)
                     except Exception as exc:  # pragma: no cover - mirrored error flow
                         raw_outcomes.append(exc)
 
@@ -310,14 +342,52 @@ class AgentEngine:
                     )
 
                 try:
+                    if isinstance(outcome, dict) and outcome.get("skip_reason"):
+                        skip_reason = str(outcome["skip_reason"])
+                        if not (
+                            plan_step.status == "done"
+                            and plan_step.validation is not None
+                            and skip_reason in plan_step.validation.findings
+                        ):
+                            traces.append(
+                                ToolTrace(
+                                    thought=assistant_thought,
+                                    tool=tool_name,
+                                    args=normalized_args,
+                                    status="skipped",
+                                    normalization_notes=[skip_reason],
+                                )
+                            )
+                            limitations.append(skip_reason)
+                            validation, _ = self._record_skipped_step(
+                                session_state=session_state,
+                                plan_status=plan_status,
+                                step=plan_step,
+                                tool_name=tool_name,
+                                tool_args=normalized_args,
+                                reason=skip_reason,
+                            )
+                            plan_step.validation = validation
+                            plan_step.status = "done"
+                        tool_content = json.dumps({"skipped": {"reason": skip_reason}}, ensure_ascii=False)
+                        self._persist_plan_state(session_state, plan_status)
+                        tool_messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call["id"],
+                                "content": tool_content,
+                            }
+                        )
+                        continue
+
                     if isinstance(outcome, Exception):
                         if not isinstance(outcome, supported_tool_errors):
                             raise outcome
                         raise outcome
 
                     result = outcome
-                    if result.tool == "stock.inventory_snapshot" and isinstance(result.llm_content, dict):
-                        inventory_snapshot = result.llm_content
+                    if result.tool == "stock.inventory_snapshot" and isinstance(result.data, dict):
+                        inventory_snapshot = result.data
                     if result.trace:
                         traces.append(result.trace)
 
@@ -366,6 +436,15 @@ class AgentEngine:
                     )
                     if resolver_follow_up:
                         limitations.append(resolver_follow_up)
+                    prune_notes = self._prune_plan_after_result(
+                        session_state=session_state,
+                        plan_status=plan_status,
+                        completed_step=plan_step,
+                        result=result,
+                        inventory_snapshot=inventory_snapshot,
+                    )
+                    if prune_notes:
+                        limitations.extend(prune_notes)
                     tool_content = self._render_tool_content(result)
                 except supported_tool_errors as exc:
                     error_trace = ToolTrace(
@@ -433,8 +512,10 @@ class AgentEngine:
             limitations.append(self._plan_incomplete_note(next_step))
             draft_answer = draft_answer or self._plan_incomplete_answer(next_step)
 
+        stock_snapshot_fast_path = bool(inventory_snapshot and self._can_use_stock_snapshot_fast_path(plan_status))
+
         if clarification is None and plan_complete:
-            if inventory_snapshot:
+            if stock_snapshot_fast_path:
                 coverage = inventory_snapshot.get("coverage") or {}
                 draft_answer = render_inventory_snapshot_markdown(
                     rows=inventory_snapshot.get("rows", []),
@@ -479,11 +560,12 @@ class AgentEngine:
                 fallback_answer, fallback_status, fallback_limitations = self._grounded_fallback_answer(
                     clarification=clarification,
                     inventory_snapshot=inventory_snapshot,
+                    allow_snapshot_answer=stock_snapshot_fast_path,
                 )
                 draft_answer = fallback_answer
                 status_hint = fallback_status
                 limitations.extend(fallback_limitations)
-                used_grounded_snapshot_fallback = bool(inventory_snapshot and not clarification)
+                used_grounded_snapshot_fallback = bool(stock_snapshot_fast_path and not clarification)
 
         if used_grounded_snapshot_fallback or used_snapshot_fast_path:
             envelope = AgentEnvelope(
@@ -607,19 +689,28 @@ class AgentEngine:
         tool_name: str,
         tool_args: dict[str, Any],
         result: ToolResult,
+        use_model_validator: bool = True,
     ) -> tuple[PlanValidation, MemoEntry, list[str]]:
         # Motivation vs Logic: every retrieval now writes normalized rows,
         # evidence, and validation findings into a shared memo cache so follow-up
         # steps reuse grounded data instead of re-deriving from raw tool payloads.
         limitations: list[str] = []
-        validator = await self._validator_envelope(
-            plan_status=plan_status,
-            step=step,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            result=result,
-            memo_cache=session_state.memo_cache,
-        )
+        if use_model_validator:
+            validator = await self._validator_envelope(
+                plan_status=plan_status,
+                step=step,
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result=result,
+                memo_cache=session_state.memo_cache,
+            )
+        else:
+            # Root Cause vs Logic: direct `/tools/call` requests were reusing the
+            # query-time validator LLM pass, which turned simple deterministic
+            # tool invocations into remote model round-trips and made local/mock
+            # regression tests hang behind network latency. We keep the shared
+            # plan+memo lifecycle but use deterministic normalization here.
+            validator = self._fallback_validator_envelope(result)
 
         actual_rows = validator.actual_rows
         if actual_rows is None:
@@ -735,6 +826,99 @@ class AgentEngine:
         self._update_plan_metadata(session_state, plan_status, step.id, validation)
         return validation, memo_entry
 
+    def _record_skipped_step(
+        self,
+        *,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        step: PlanStep,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        reason: str,
+    ) -> tuple[PlanValidation, MemoEntry]:
+        validation = PlanValidation(
+            expected_rows=0,
+            actual_rows=0,
+            cache_status="skipped",
+            findings=[reason],
+            ambiguity=[],
+            missing_statistics=[],
+            confidence=1.0,
+        )
+
+        memo_entry = MemoEntry(
+            step_id=step.id,
+            tool=tool_name,
+            args=tool_args,
+            rows=[],
+            evidence=[],
+            aggregates={},
+            provenance={
+                "tool": tool_name,
+                "args": tool_args,
+                "skipped": True,
+                "reason": reason,
+                "captured_at": self._utc_now_iso(),
+            },
+        )
+        session_state.memo_cache.entries.append(memo_entry)
+        session_state.memo_cache.aggregates = self._recompute_memo_aggregates(session_state)
+        plan_status.memo = session_state.memo_cache
+        self._update_plan_metadata(session_state, plan_status, step.id, validation)
+        return validation, memo_entry
+
+    def _prune_plan_after_result(
+        self,
+        *,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        completed_step: PlanStep,
+        result: ToolResult,
+        inventory_snapshot: dict[str, Any] | None,
+    ) -> list[str]:
+        if result.tool != "stock.inventory_snapshot" or inventory_snapshot is None:
+            return []
+        return self._prune_redundant_stock_steps(
+            session_state=session_state,
+            plan_status=plan_status,
+            completed_step=completed_step,
+            inventory_snapshot=inventory_snapshot,
+        )
+
+    def _prune_redundant_stock_steps(
+        self,
+        *,
+        session_state: SessionState,
+        plan_status: PlanStatus,
+        completed_step: PlanStep,
+        inventory_snapshot: dict[str, Any],
+    ) -> list[str]:
+        notes: list[str] = []
+        for step in plan_status.steps:
+            if step.id == completed_step.id or step.status == "done":
+                continue
+            reason = self._snapshot_skip_reason(
+                tool_name=step.tool,
+                args=step.args,
+                inventory_snapshot=inventory_snapshot,
+            )
+            if reason is None:
+                continue
+            validation, _ = self._record_skipped_step(
+                session_state=session_state,
+                plan_status=plan_status,
+                step=step,
+                tool_name=step.tool,
+                tool_args=step.args,
+                reason=reason,
+            )
+            step.validation = validation
+            step.status = "done"
+            notes.append(
+                f"Pruned planned step `{step.id}` (`{step.tool}`) because the inventory snapshot already covered that evidence."
+            )
+        return notes
+
     async def _validator_envelope(
         self,
         *,
@@ -847,10 +1031,114 @@ class AgentEngine:
             return trace.result_count
         return actual_rows
 
+    def _order_prepared_calls(self, prepared_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if len(prepared_calls) < 2:
+            return prepared_calls
+        # Motivation vs Logic: answer-ready snapshot retrieval can satisfy broad
+        # family queries on its own, so we run it before narrower stock-detail
+        # tools and give the runtime a chance to prune redundant follow-up work.
+        return sorted(
+            prepared_calls,
+            key=lambda item: (
+                0 if item["tool_name"] == "stock.inventory_snapshot" else 1,
+                item["plan_step"].id,
+            ),
+        )
+
     def _should_execute_parallel(self, prepared_calls: list[dict[str, Any]]) -> bool:
         if len(prepared_calls) < 2:
             return False
+        tool_names = {str(item["tool_name"]) for item in prepared_calls}
+        if "stock.inventory_snapshot" in tool_names and tool_names.intersection(
+            {
+                "stock.compare_variants",
+                "stock.extract_variant_evidence",
+                "stock.get_variant_evidence",
+                "stock.get_product",
+            }
+        ):
+            return False
         return not any(str(item["tool_name"]).startswith("session.") for item in prepared_calls)
+
+    def _skip_prepared_call_reason(
+        self,
+        *,
+        item: dict[str, Any],
+        traces: list[ToolTrace],
+        inventory_snapshot: dict[str, Any] | None,
+    ) -> str | None:
+        tool_name = str(item["tool_name"])
+        normalized_args = item["normalized_args"]
+        for trace in traces:
+            if trace.status != "error" or trace.tool != tool_name or trace.args != normalized_args:
+                continue
+            return (
+                f"Skipped `{tool_name}` because the same arguments already failed earlier in this run; "
+                "the runtime will not repeat an identical failing retrieval pattern."
+            )
+
+        if inventory_snapshot is not None:
+            snapshot_reason = self._snapshot_skip_reason(
+                tool_name=tool_name,
+                args=normalized_args,
+                inventory_snapshot=inventory_snapshot,
+            )
+            if snapshot_reason is not None:
+                return snapshot_reason
+        return None
+
+    def _snapshot_skip_reason(
+        self,
+        *,
+        tool_name: str,
+        args: dict[str, Any],
+        inventory_snapshot: dict[str, Any],
+    ) -> str | None:
+        coverage = inventory_snapshot.get("coverage") or {}
+        if coverage.get("isPartial"):
+            return None
+
+        snapshot_identifiers = self._snapshot_identifier_set(inventory_snapshot)
+        if not snapshot_identifiers:
+            return None
+
+        if tool_name == "stock.compare_variants":
+            identifiers = args.get("identifiers")
+            if isinstance(identifiers, list) and identifiers and all(
+                self._compact_identifier(identifier) in snapshot_identifiers for identifier in identifiers
+            ):
+                return (
+                    "Skipped `stock.compare_variants` because the inventory snapshot already contains "
+                    "the requested variant evidence for this family."
+                )
+
+        if tool_name in {"stock.extract_variant_evidence", "stock.get_variant_evidence", "stock.get_product"}:
+            requested_identifiers = [
+                self._compact_identifier(args.get("sku")),
+                self._compact_identifier(args.get("id")),
+                self._compact_identifier(args.get("variantId")),
+            ]
+            requested_identifiers = [identifier for identifier in requested_identifiers if identifier]
+            if requested_identifiers and all(identifier in snapshot_identifiers for identifier in requested_identifiers):
+                return (
+                    f"Skipped `{tool_name}` because the inventory snapshot already resolved the "
+                    "requested stock evidence."
+                )
+        return None
+
+    def _snapshot_identifier_set(self, inventory_snapshot: dict[str, Any]) -> set[str]:
+        identifiers: set[str] = set()
+        evidence = inventory_snapshot.get("evidence")
+        if not isinstance(evidence, list):
+            return identifiers
+        for item in evidence:
+            if not isinstance(item, dict):
+                continue
+            for key in ("product_id", "variant_id", "sku"):
+                identifier = self._compact_identifier(item.get(key))
+                if identifier:
+                    identifiers.add(identifier)
+        return identifiers
 
     def _append_recursive_follow_up(
         self,
@@ -1832,15 +2120,43 @@ class AgentEngine:
             "Please retry or narrow the scope so I can finish cleanly."
         )
 
+    def _can_use_stock_snapshot_fast_path(self, plan_status: PlanStatus) -> bool:
+        requested_domains = self._requested_domains(plan_status)
+        return requested_domains == {"stock"}
+
+    def _requested_domains(self, plan_status: PlanStatus) -> set[str]:
+        explicit = {intent for intent in plan_status.intent_classes if intent in {"stock", "weather", "news", "currency"}}
+        if explicit:
+            return explicit
+
+        domains: set[str] = set()
+        for step in plan_status.steps:
+            domain = self._tool_domain(step.tool)
+            if domain is not None:
+                domains.add(domain)
+        return domains or {"stock"}
+
+    def _tool_domain(self, tool_name: str) -> str | None:
+        if tool_name.startswith(("stock.", "resolver.")):
+            return "stock"
+        if tool_name.startswith("news."):
+            return "news"
+        if tool_name.startswith("currency."):
+            return "currency"
+        if tool_name.startswith("weather."):
+            return "weather"
+        return None
+
     def _grounded_fallback_answer(
         self,
         clarification: ClarificationPayload | None,
         inventory_snapshot: dict[str, Any] | None,
+        allow_snapshot_answer: bool,
     ) -> tuple[str, str, list[str]]:
         if clarification is not None:
             return self._default_incomplete_answer(True), "needs_clarification", []
 
-        if inventory_snapshot:
+        if inventory_snapshot and allow_snapshot_answer:
             coverage = inventory_snapshot.get("coverage") or {}
             limitations = [
                 "The model finished retrieval but did not produce a final answer, so the runtime rendered the grounded inventory snapshot directly."

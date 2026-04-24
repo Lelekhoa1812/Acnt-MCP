@@ -419,12 +419,24 @@ class ToolRegistry:
 
     def _inventory_snapshot_model_view(self, data: InventorySnapshotResponse) -> dict[str, Any]:
         return {
-            "rows": [self._compact_snapshot_row(row.model_dump(mode="json")) for row in data.rows],
+            "rows": [
+                self._compact_snapshot_row(
+                    row.model_dump(mode="json"),
+                    evidence=data.evidence[index] if index < len(data.evidence) else None,
+                )
+                for index, row in enumerate(data.rows)
+            ],
             "coverage": data.coverage.model_dump(mode="json"),
+            "evidence": [self._compact_snapshot_evidence(item) for item in data.evidence],
         }
 
-    def _compact_snapshot_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
+    def _compact_snapshot_row(
+        self,
+        row: dict[str, Any],
+        *,
+        evidence: NormalizedEvidence | None,
+    ) -> dict[str, Any]:
+        compact_row = {
             "product": row.get("product"),
             "variant": row.get("variant"),
             "sku": row.get("sku"),
@@ -432,6 +444,25 @@ class ToolRegistry:
             "size": row.get("size"),
             "stock": row.get("stock"),
             "knownSpecs": self._compact_known_specs(row.get("knownSpecs", [])),
+        }
+        if evidence is None:
+            return compact_row
+        compact_row["variationOptions"] = evidence.variation_options
+        compact_row["pricing"] = evidence.pricing.model_dump(mode="json")
+        compact_row["stockNumbers"] = evidence.stock.model_dump(mode="json")
+        return compact_row
+
+    def _compact_snapshot_evidence(self, evidence: NormalizedEvidence) -> dict[str, Any]:
+        return {
+            "product": evidence.product_name,
+            "variant": evidence.variant_name,
+            "sku": evidence.sku,
+            "variationOptions": evidence.variation_options,
+            "dimensions": evidence.dimensions.model_dump(mode="json"),
+            "stock": evidence.stock.model_dump(mode="json"),
+            "pricing": evidence.pricing.model_dump(mode="json"),
+            "salesNote": evidence.salesNote,
+            "media": evidence.media.model_dump(mode="json"),
         }
 
     def _compact_attribute_evidence(self, row: dict[str, Any]) -> list[str]:

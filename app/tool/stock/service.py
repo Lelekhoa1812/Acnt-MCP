@@ -223,18 +223,16 @@ class InventoryService:
         catalogue_items = list(catalogue_response.items)
         cache_statuses = [catalogue_cache_status]
         if catalogue_response.totalPages > args.page:
-            for page_number in range(args.page + 1, catalogue_response.totalPages + 1):
-                page_args = StockSearchCatalogueArgs(
-                    page=page_number,
-                    pageSize=args.pageSize,
-                    search=args.search,
-                    departmentId=args.departmentId,
-                    categoryId=args.categoryId,
-                )
-                page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
-                cache_statuses.append(page_cache_status)
-                notes.extend(page_notes)
-                catalogue_items.extend(page_response.items)
+            extra_items, extra_cache_statuses, extra_notes = await self._fetch_catalogue_pages(
+                page_numbers=list(range(args.page + 1, catalogue_response.totalPages + 1)),
+                page_size=args.pageSize,
+                search=args.search,
+                department_id=args.departmentId,
+                category_id=args.categoryId,
+            )
+            cache_statuses.extend(extra_cache_statuses)
+            notes.extend(extra_notes)
+            catalogue_items.extend(extra_items)
 
         # Root Cause vs Logic: cloud catalogue search can under-return broad
         # family queries such as "chair" even though additional matching
@@ -622,6 +620,52 @@ class InventoryService:
         limit = max(1, self.settings.stock_parallel_requests_limit)
         return max(1, min(limit, max(1, item_count)))
 
+    async def _fetch_catalogue_pages(
+        self,
+        *,
+        page_numbers: list[int],
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[list[ProductListItemDto], list[str], list[str]]:
+        if not page_numbers:
+            return [], [], []
+
+        # Motivation vs Logic: catalogue pagination is I/O-bound, so a shared
+        # helper keeps page hydration concurrent and reusable instead of
+        # repeating bespoke loops for each snapshot-broadening path.
+        page_results: list[tuple[ProductListItemDtoPagedResponse, str, list[str]] | None] = [None] * len(page_numbers)
+        parallelism = max(1, min(self.settings.snapshot_expand_parallel_pages_limit, len(page_numbers)))
+        semaphore = anyio.Semaphore(parallelism)
+
+        async def fetch_page(index: int, page_number: int) -> None:
+            page_args = StockSearchCatalogueArgs(
+                page=page_number,
+                pageSize=page_size,
+                search=search,
+                departmentId=department_id,
+                categoryId=category_id,
+            )
+            async with semaphore:
+                page_results[index] = await self.search_catalogue(page_args)
+
+        async with anyio.create_task_group() as task_group:
+            for index, page_number in enumerate(page_numbers):
+                task_group.start_soon(fetch_page, index, page_number)
+
+        items: list[ProductListItemDto] = []
+        cache_statuses: list[str] = []
+        notes: list[str] = []
+        for item in page_results:
+            if item is None:
+                continue
+            page_response, page_cache_status, page_notes = item
+            cache_statuses.append(page_cache_status)
+            notes.extend(page_notes)
+            items.extend(page_response.items)
+        return items, cache_statuses, notes
+
     async def _expand_catalogue_matches_for_snapshot(
         self,
         *,
@@ -655,39 +699,16 @@ class InventoryService:
         broadened_items = list(broadened_response.items)
         broadened_cache_statuses = [broadened_cache_status]
         if broadened_response.totalPages > 1:
-            page_numbers = list(range(2, broadened_response.totalPages + 1))
-            page_results: list[tuple[ProductListItemDtoPagedResponse, str, list[str]] | None] = [None] * len(page_numbers)
-            parallelism = max(
-                1,
-                min(
-                    self.settings.snapshot_expand_parallel_pages_limit,
-                    len(page_numbers),
-                ),
+            extra_items, extra_cache_statuses, extra_notes = await self._fetch_catalogue_pages(
+                page_numbers=list(range(2, broadened_response.totalPages + 1)),
+                page_size=broadened_args.pageSize,
+                search=None,
+                department_id=department_id,
+                category_id=args.categoryId,
             )
-            semaphore = anyio.Semaphore(parallelism)
-
-            async def fetch_page(index: int, page_number: int) -> None:
-                page_args = StockSearchCatalogueArgs(
-                    page=page_number,
-                    pageSize=broadened_args.pageSize,
-                    search=None,
-                    departmentId=department_id,
-                    categoryId=args.categoryId,
-                )
-                async with semaphore:
-                    page_results[index] = await self.search_catalogue(page_args)
-
-            async with anyio.create_task_group() as task_group:
-                for index, page_number in enumerate(page_numbers):
-                    task_group.start_soon(fetch_page, index, page_number)
-
-            for item in page_results:
-                if item is None:
-                    continue
-                page_response, page_cache_status, page_notes = item
-                broadened_cache_statuses.append(page_cache_status)
-                broadened_notes.extend(page_notes)
-                broadened_items.extend(page_response.items)
+            broadened_cache_statuses.extend(extra_cache_statuses)
+            broadened_notes.extend(extra_notes)
+            broadened_items.extend(extra_items)
 
         filtered_broadened = [
             product
