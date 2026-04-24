@@ -274,22 +274,28 @@ class InventoryService:
         ] = [None] * len(catalogue_items)
 
         async def fetch_detail(index: int, product: ProductListItemDto) -> None:
+            sku = self._detail_lookup_sku(product)
+            # Root Cause vs Logic: Harmonise's products endpoint consistently
+            # returns 500 for id-based lookups; sku-based lookups succeed.
+            # We never fall back to product.id — if no variant carries a sku,
+            # the product is recorded as a coverage gap and skipped cleanly.
+            if not sku:
+                detail_results[index] = (product, None, None, [], None)
+                return
             detail_args = StockGetProductArgs(
-                id=product.id,
+                id=None,
+                sku=sku,
                 page=1,
                 pageSize=min(100, max(20, len(product.variants) or 1)),
             )
-            # Root Cause vs Logic: Harmonise detail lookups were bubbling up as
-            # fatal errors when upstream timeouts occurred, so capture the failure
-            # here and continue enriching the remaining catalogue items.
             try:
                 async with semaphore:
                     product_response, product_cache_status, product_notes = await self.get_product(detail_args)
                 detail_results[index] = (product, product_response, product_cache_status, product_notes, None)
             except UpstreamServiceError as exc:
                 self.logger.warning(
-                    "Detail lookup failed for product %s: %s (status %s)",
-                    product.id,
+                    "Detail lookup failed for sku %s: %s (status %s)",
+                    sku,
                     exc.detail,
                     exc.status_code,
                 )
@@ -303,9 +309,10 @@ class InventoryService:
             if detail_result is None:
                 continue
             product, product_response, product_cache_status, product_notes, detail_error = detail_result
+            result_sku = self._detail_lookup_sku(product) or f"(no-sku:{product.id})"
             if detail_error is not None:
                 detail_lookup_failures.append(
-                    f"{product.id} (status {detail_error.status_code}): {detail_error.detail}"
+                    f"sku={result_sku} (status {detail_error.status_code}): {detail_error.detail}"
                 )
                 continue
 
@@ -315,7 +322,7 @@ class InventoryService:
 
             if product_response is None or not product_response.items:
                 coverage_limitations.append(
-                    f"No detail payload was returned for product id {product.id}; its variants were skipped."
+                    f"No detail payload was returned for sku {result_sku}; its variants were skipped."
                 )
                 continue
 
@@ -337,8 +344,8 @@ class InventoryService:
             failure_count = len(detail_lookup_failures)
             coverage_limitations.append(
                 (
-                    f"Detail lookups failed for {failure_count} catalogue "
-                    f"item{'s' if failure_count != 1 else ''}; last failure was "
+                    f"Detail lookups failed for {failure_count} sku"
+                    f"{'s' if failure_count != 1 else ''}; last failure was "
                     f"{detail_lookup_failures[-1]}. Some specs may be incomplete."
                 )
             )
@@ -365,6 +372,14 @@ class InventoryService:
 
     def _cache_key(self, payload: dict[str, Any]) -> str:
         return json.dumps(payload, sort_keys=True, default=str)
+
+    def _detail_lookup_sku(self, product: ProductListItemDto) -> str | None:
+        # Root Cause vs Logic: Harmonise detail lookups fail when using a
+        # catalogue product id directly, so prefer the first variant sku instead.
+        for variant in product.variants:
+            if variant.sku:
+                return variant.sku
+        return None
 
     def _default_match_reasons(self, args: StockExtractVariantEvidenceArgs) -> list[str]:
         reasons: list[str] = []

@@ -959,7 +959,15 @@ class AgentEngine:
                     "max_completion_tokens": 1400,
                 }
                 response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/validator")
-                content = response_payload["choices"][0]["message"].get("content", "")
+                content = response_payload["choices"][0]["message"].get("content") or ""
+                # Root Cause vs Logic: the model occasionally returns an empty or
+                # null content body (e.g. on a content-filter block or refusal).
+                # json.loads("") raises "Expecting value: line 1 column 1 (char 0)",
+                # which is logged as a cryptic fallback warning. Raising here
+                # produces a descriptive ValueError that routes cleanly through the
+                # existing JSONDecodeError/ValidationError fallback path below.
+                if not content.strip():
+                    raise json.JSONDecodeError("Validator returned empty content", content, 0)
                 raw = json.loads(content)
                 return ValidatorEnvelope.model_validate(raw)
 
