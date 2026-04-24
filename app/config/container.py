@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from app.agent import AgentEngine
 from app.config.settings import Settings
 from app.tool.currency import CurrencyService
-from app.inventory.service import InventoryService
-from app.inventory.source import HarmoniseInventorySource
+from app.tool.stock.service import InventoryService
+from app.tool.stock.source import HarmoniseInventorySource
 from app.tool.news import NewsService
 from app.orchestrator import OrchestratorService
 from app.resolver import ResolverService

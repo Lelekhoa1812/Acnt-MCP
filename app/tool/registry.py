@@ -17,8 +17,8 @@ from app.tool.currency import (
     CurrencyTimeseriesArgs,
 )
 from app.config import ParameterMappingError, UnsupportedToolError
-from app.inventory.media import build_harmonise_image_url
-from app.inventory.service import InventoryService
+from app.tool.stock.media import build_harmonise_image_url
+from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.tool.news.formatter import format_news_articles, format_news_sources
 from app.resolver import ResolverService

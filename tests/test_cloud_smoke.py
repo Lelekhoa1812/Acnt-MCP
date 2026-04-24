@@ -7,8 +7,8 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.inventory.media import build_harmonise_image_url
-from app.inventory.source import HarmoniseInventorySource
+from app.tool.stock.media import build_harmonise_image_url
+from app.tool.stock.source import HarmoniseInventorySource
 
 
 RUN_LIVE_CLOUD_SMOKE = os.getenv("HTH_RUN_LIVE_CLOUD_SMOKE", "").strip().lower() in {"1", "true", "yes"}

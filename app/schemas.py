@@ -238,6 +238,8 @@ class PlanStep(BaseModel):
     tool: str
     status: Literal["planned", "pending", "in-progress", "done"] = "planned"
     args: dict[str, Any] = Field(default_factory=dict)
+    depends_on: list[int] = Field(default_factory=list)
+    parallel_group: int | None = None
     hypotheses: list[str] = Field(default_factory=list)
     validation: PlanValidation | None = None
 
@@ -294,7 +296,7 @@ class SessionState(BaseModel):
 
 class ThoughtBlock(BaseModel):
     goal: str
-    entity_guess: Literal["product", "variant", "category", "department", "unknown"]
+    entity_guess: Literal["product", "variant", "category", "department", "weather", "news", "currency", "unknown"]
     strategy: str
     tool: str
     args_draft: dict[str, Any] = Field(default_factory=dict)
@@ -342,6 +344,66 @@ class ToolDefinition(BaseModel):
     input_schema: dict[str, Any]
 
 
+class AgentDebugIntent(BaseModel):
+    current_goal: str
+    primary_entity_guess: str = "unknown"
+    requested_attributes: list[str] = Field(default_factory=list)
+    inferred_filters: dict[str, Any] = Field(default_factory=dict)
+    scope_status: str = "stock_supported"
+
+
+class AgentDebugPlanStep(BaseModel):
+    id: int
+    name: str
+    tool: str
+    status: str
+    depends_on: list[int] = Field(default_factory=list)
+    parallel_group: int | None = None
+
+
+class AgentDebugPlan(BaseModel):
+    goal: str
+    status: str
+    ready_steps: list[int] = Field(default_factory=list)
+    blocked_steps: list[int] = Field(default_factory=list)
+    dag: list[AgentDebugPlanStep] = Field(default_factory=list)
+    next_hop_rules: list[str] = Field(default_factory=list)
+
+
+class AgentDebugTraceSummary(BaseModel):
+    tool: str
+    status: str
+    result_count: int | None = None
+    cache_status: str | None = None
+
+
+class AgentDebugParallelBatch(BaseModel):
+    batch_id: int
+    execution_mode: Literal["parallel", "sequential"] = "parallel"
+    tools: list[str] = Field(default_factory=list)
+    step_ids: list[int] = Field(default_factory=list)
+
+
+class AgentDebugRetrieval(BaseModel):
+    thought_blocks: list[str] = Field(default_factory=list)
+    trace_summary: list[AgentDebugTraceSummary] = Field(default_factory=list)
+    parallel_batches: list[AgentDebugParallelBatch] = Field(default_factory=list)
+
+
+class AgentDebugGrounding(BaseModel):
+    resolved_identifiers: list[str] = Field(default_factory=list)
+    evidence_count: int = 0
+    unresolved_attributes: list[str] = Field(default_factory=list)
+    user_impact_limitations: list[str] = Field(default_factory=list)
+
+
+class AgentDebugPayload(BaseModel):
+    intent: AgentDebugIntent
+    plan: AgentDebugPlan
+    retrieval: AgentDebugRetrieval
+    grounding: AgentDebugGrounding
+
+
 class CallToolRequest(BaseModel):
     tool: str
     args: dict[str, Any] = Field(default_factory=dict)
@@ -360,6 +422,7 @@ class AgentQueryResponse(BaseModel):
     status: Literal["answered", "needs_clarification", "out_of_scope", "limited", "error"]
     answer: str
     thoughts: list[str] = Field(default_factory=list)
+    debug: AgentDebugPayload | None = None
     tool_trace: list[ToolTrace] = Field(default_factory=list)
     clarification: ClarificationPayload | None = None
     resolved_items: list[NormalizedEvidence] = Field(default_factory=list)

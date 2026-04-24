@@ -12,8 +12,9 @@ from app.config import (
     ParameterMappingError,
     UpstreamServiceError,
 )
-from app.inventory.media import build_harmonise_image_url
-from app.inventory.source import HarmoniseInventorySource
+from app.text.utils import significant_tokens
+from app.tool.stock.media import build_harmonise_image_url
+from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
     InventorySnapshotCoverage,
     InventorySnapshotResponse,
@@ -215,15 +216,53 @@ class InventoryService:
         )
         catalogue_response, catalogue_cache_status, notes = await self.search_catalogue(catalogue_args)
 
-        evidence_items: list[NormalizedEvidence] = []
+        # Motivation vs Logic: broad inventory questions often need complete
+        # coverage, and relying on a single page caused under-counted snapshots.
+        # We now continue scanning remaining matched pages so enrichment can
+        # include every matched catalogue product in the requested slice.
+        catalogue_items = list(catalogue_response.items)
         cache_statuses = [catalogue_cache_status]
+        if catalogue_response.totalPages > args.page:
+            for page_number in range(args.page + 1, catalogue_response.totalPages + 1):
+                page_args = StockSearchCatalogueArgs(
+                    page=page_number,
+                    pageSize=args.pageSize,
+                    search=args.search,
+                    departmentId=args.departmentId,
+                    categoryId=args.categoryId,
+                )
+                page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
+                cache_statuses.append(page_cache_status)
+                notes.extend(page_notes)
+                catalogue_items.extend(page_response.items)
+
+        # Root Cause vs Logic: cloud catalogue search can under-return broad
+        # family queries such as "chair" even though additional matching
+        # products exist in the same department. We widen the scan using the
+        # inferred department, then locally filter by the original query so the
+        # snapshot can hydrate every matching chair variant by SKU.
+        (
+            catalogue_items,
+            expansion_cache_statuses,
+            expansion_notes,
+            matched_pages,
+        ) = await self._expand_catalogue_matches_for_snapshot(
+            args=args,
+            initial_items=catalogue_items,
+            initial_total_pages=catalogue_response.totalPages,
+        )
+        cache_statuses.extend(expansion_cache_statuses)
+        notes.extend(expansion_notes)
+        catalogue_items = self._dedupe_products(catalogue_items)
+
+        evidence_items: list[NormalizedEvidence] = []
         coverage_limitations: list[str] = []
         enriched_products = 0
         detail_lookup_failures: list[str] = []
         # Motivation vs Logic: enriching snapshot variants requires many product
         # detail calls, so we parallelize these lookups with bounded concurrency
         # to reduce runtime without overwhelming upstream inventory endpoints.
-        parallelism = self._parallel_stock_requests_limit(len(catalogue_response.items))
+        parallelism = self._parallel_stock_requests_limit(len(catalogue_items))
         semaphore = anyio.Semaphore(parallelism)
         detail_results: list[
             tuple[
@@ -234,7 +273,7 @@ class InventoryService:
                 UpstreamServiceError | None,
             ]
             | None
-        ] = [None] * len(catalogue_response.items)
+        ] = [None] * len(catalogue_items)
 
         async def fetch_detail(index: int, product: ProductListItemDto) -> None:
             detail_args = StockGetProductArgs(
@@ -259,7 +298,7 @@ class InventoryService:
                 detail_results[index] = (product, None, None, [], exc)
 
         async with anyio.create_task_group() as task_group:
-            for index, product in enumerate(catalogue_response.items):
+            for index, product in enumerate(catalogue_items):
                 task_group.start_soon(fetch_detail, index, product)
 
         for detail_result in detail_results:
@@ -306,19 +345,14 @@ class InventoryService:
                 )
             )
 
-        if catalogue_response.totalPages > args.page:
-            coverage_limitations.append(
-                "Only the requested catalogue page was enriched. Additional matched pages remain outside this snapshot."
-            )
-
         response = InventorySnapshotResponse(
             rows=[self._build_inventory_row(item) for item in evidence_items],
             evidence=evidence_items,
             coverage=InventorySnapshotCoverage(
                 requestedPage=args.page,
                 requestedPageSize=args.pageSize,
-                matchedProducts=catalogue_response.totalCount,
-                matchedPages=catalogue_response.totalPages,
+                matchedProducts=len(catalogue_items),
+                matchedPages=matched_pages,
                 enrichedProducts=enriched_products,
                 enrichedVariants=len(evidence_items),
                 isPartial=bool(coverage_limitations),
@@ -581,7 +615,102 @@ class InventoryService:
         return "cache_mixed"
 
     def _parallel_stock_requests_limit(self, item_count: int) -> int:
-        return max(1, min(8, item_count))
+        # Root Cause vs Logic: cloud Harmonise detail endpoints became unstable
+        # under the previous 8-way fan-out during large snapshot enrichments.
+        # We keep local simulation fast while using a gentler cloud limit.
+        limit = 8 if self.settings.local_harmonise else 4
+        return max(1, min(limit, item_count))
+
+    async def _expand_catalogue_matches_for_snapshot(
+        self,
+        *,
+        args: StockInventorySnapshotArgs,
+        initial_items: list[ProductListItemDto],
+        initial_total_pages: int,
+    ) -> tuple[list[ProductListItemDto], list[str], list[str], int]:
+        if not args.search:
+            return initial_items, [], [], initial_total_pages
+
+        department_id = args.departmentId or self._dominant_department_id(initial_items)
+        if department_id is None:
+            return initial_items, [], [], initial_total_pages
+
+        matched_tokens = significant_tokens(args.search)
+        if not matched_tokens:
+            return initial_items, [], [], initial_total_pages
+        if len(initial_items) > max(2, len(matched_tokens)):
+            return initial_items, [], [], initial_total_pages
+
+        broadened_args = StockSearchCatalogueArgs(
+            page=1,
+            pageSize=max(args.pageSize, 100),
+            search=None,
+            departmentId=department_id,
+            categoryId=args.categoryId,
+        )
+        broadened_response, broadened_cache_status, broadened_notes = await self.search_catalogue(broadened_args)
+        broadened_items = list(broadened_response.items)
+        broadened_cache_statuses = [broadened_cache_status]
+        if broadened_response.totalPages > 1:
+            for page_number in range(2, broadened_response.totalPages + 1):
+                page_args = StockSearchCatalogueArgs(
+                    page=page_number,
+                    pageSize=broadened_args.pageSize,
+                    search=None,
+                    departmentId=department_id,
+                    categoryId=args.categoryId,
+                )
+                page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
+                broadened_cache_statuses.append(page_cache_status)
+                broadened_notes.extend(page_notes)
+                broadened_items.extend(page_response.items)
+
+        filtered_broadened = [
+            product
+            for product in self._dedupe_products(broadened_items)
+            if self._product_matches_query_tokens(product, matched_tokens)
+        ]
+        if len(filtered_broadened) <= len(initial_items):
+            return initial_items, broadened_cache_statuses, broadened_notes, initial_total_pages
+
+        broadened_notes.append(
+            (
+                "Expanded catalogue coverage via department scan because the initial "
+                f"search for '{args.search}' returned fewer products than the inferred department catalogue."
+            )
+        )
+        merged_items = self._dedupe_products([*initial_items, *filtered_broadened])
+        return merged_items, broadened_cache_statuses, broadened_notes, max(initial_total_pages, broadened_response.totalPages)
+
+    def _dominant_department_id(self, products: list[ProductListItemDto]) -> int | None:
+        counts: dict[int, int] = {}
+        for product in products:
+            counts[product.departmentId] = counts.get(product.departmentId, 0) + 1
+        if not counts:
+            return None
+        return max(sorted(counts), key=lambda department_id: counts[department_id])
+
+    def _product_matches_query_tokens(self, product: ProductListItemDto, query_tokens: list[str]) -> bool:
+        haystack = " ".join(
+            value
+            for value in [
+                product.name or "",
+                *(variant.name or "" for variant in product.variants),
+                *(variant.sku or "" for variant in product.variants),
+            ]
+            if value
+        ).lower()
+        return all(token in haystack for token in query_tokens)
+
+    def _dedupe_products(self, products: list[ProductListItemDto]) -> list[ProductListItemDto]:
+        deduped: list[ProductListItemDto] = []
+        seen: set[str] = set()
+        for product in products:
+            if product.id in seen:
+                continue
+            seen.add(product.id)
+            deduped.append(product)
+        return deduped
 
     def _dedupe_text(self, values: list[str | None]) -> list[str]:
         deduped: list[str] = []

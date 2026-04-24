@@ -7,13 +7,22 @@ from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import anyio
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import InventoryNotFoundError, ParameterMappingError, Settings, UpstreamServiceError
-from app.inventory.presenter import render_inventory_snapshot_markdown
+from app.tool.stock.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_composer, render_formatter, render_planner, render_system, render_validator
 from app.schemas import (
+    AgentDebugGrounding,
+    AgentDebugIntent,
+    AgentDebugParallelBatch,
+    AgentDebugPayload,
+    AgentDebugPlan,
+    AgentDebugPlanStep,
+    AgentDebugRetrieval,
+    AgentDebugTraceSummary,
     AgentQueryRequest,
     CandidateOption,
     ClarificationPayload,
@@ -23,9 +32,11 @@ from app.schemas import (
     PlanStep,
     PlanValidation,
     SessionState,
+    ThoughtBlock,
     ToolResult,
     ToolTrace,
 )
+from app.text.utils import lexical_overlap
 from app.tool.registry import ToolRegistry
 
 
@@ -42,6 +53,7 @@ class AgentEnvelope(BaseModel):
 
 class AgentRun(AgentEnvelope):
     thoughts: list[str] = Field(default_factory=list)
+    debug: AgentDebugPayload | None = None
     tool_trace: list[ToolTrace] = Field(default_factory=list)
     resolved_items: list[NormalizedEvidence] = Field(default_factory=list)
     plan_status: PlanStatus | None = None
@@ -94,6 +106,7 @@ class AgentEngine:
         clarification: ClarificationPayload | None = None
         status_hint = "answered"
         inventory_snapshot: dict[str, Any] | None = None
+        parallel_batches: list[AgentDebugParallelBatch] = []
         used_grounded_snapshot_fallback = False
 
         plan_status, planning_limitations = await self.plan_query(request.message, session_state)
@@ -153,17 +166,18 @@ class AgentEngine:
 
                 resolved_args, resolution_note = self._resolve_planned_step_args(next_step, session_state)
                 if resolved_args is None:
-                    # Root Cause vs Logic: auto-executing an incomplete planned
-                    # `stock.get_product` step caused raw schema validation
-                    # errors to leak into user-visible limitations. We now stop
-                    # and ask for an identifier explicitly when recovery fails.
+                    # Root Cause vs Logic: auto-executing incomplete lookup steps
+                    # (for both product and variant evidence tools) leaked raw
+                    # schema validation errors into user-visible limitations. We
+                    # now stop earlier and request the missing identifier safely.
+                    clarification_question = self._clarification_question_for_step(next_step)
                     clarification = ClarificationPayload(
-                        question="Please share the exact product SKU or product ID so I can continue safely.",
+                        question=clarification_question,
                         options=[],
                     )
                     if resolution_note:
                         limitations.append(resolution_note)
-                    draft_answer = "Please share the exact product SKU or product ID so I can continue safely."
+                    draft_answer = clarification_question
                     status_hint = "needs_clarification"
                     plan_status.status = "needs_clarification"
                     break
@@ -200,6 +214,8 @@ class AgentEngine:
                     }
                 )
 
+            prepared_calls: list[dict[str, Any]] = []
+            assistant_thought = (assistant.get("content") or "").strip()
             for tool_call in tool_calls:
                 tool_name = tool_call["function"]["name"]
                 raw_arguments = tool_call["function"].get("arguments") or "{}"
@@ -210,21 +226,81 @@ class AgentEngine:
                 normalized_args = parsed_args if isinstance(parsed_args, dict) else {"value": parsed_args}
 
                 plan_step, inserted = self._resolve_or_insert_plan_step(plan_status, tool_name, normalized_args)
-                if inserted:
+                plan_step.status = "in-progress"
+                prepared_calls.append(
+                    {
+                        "tool_call": tool_call,
+                        "tool_name": tool_name,
+                        "normalized_args": normalized_args,
+                        "plan_step": plan_step,
+                        "inserted": inserted,
+                    }
+                )
+
+            self._persist_plan_state(session_state, plan_status)
+
+            execute_in_parallel = self._should_execute_parallel(prepared_calls)
+            if len(prepared_calls) > 1:
+                parallel_batches.append(
+                    AgentDebugParallelBatch(
+                        batch_id=len(parallel_batches) + 1,
+                        execution_mode="parallel" if execute_in_parallel else "sequential",
+                        tools=[item["tool_name"] for item in prepared_calls],
+                        step_ids=[item["plan_step"].id for item in prepared_calls],
+                    )
+                )
+
+            raw_outcomes: list[ToolResult | Exception] = []
+            if execute_in_parallel:
+                raw_outcomes = [RuntimeError("tool batch not started")] * len(prepared_calls)
+
+                async def run_prepared_call(index: int, item: dict[str, Any]) -> None:
+                    try:
+                        raw_outcomes[index] = await self.tool_registry.call_tool(
+                            item["tool_name"],
+                            item["normalized_args"],
+                            session_id=session_state.session_id,
+                            thought=assistant_thought,
+                        )
+                    except Exception as exc:  # pragma: no cover - mirrored error flow
+                        raw_outcomes[index] = exc
+
+                async with anyio.create_task_group() as task_group:
+                    for index, item in enumerate(prepared_calls):
+                        task_group.start_soon(run_prepared_call, index, item)
+            else:
+                for item in prepared_calls:
+                    try:
+                        raw_outcomes.append(
+                            await self.tool_registry.call_tool(
+                                item["tool_name"],
+                                item["normalized_args"],
+                                session_id=session_state.session_id,
+                                thought=assistant_thought,
+                            )
+                        )
+                    except Exception as exc:  # pragma: no cover - mirrored error flow
+                        raw_outcomes.append(exc)
+
+            supported_tool_errors = (InventoryNotFoundError, ParameterMappingError, UpstreamServiceError, ValueError)
+            tool_messages: list[dict[str, Any]] = []
+            for prepared, outcome in zip(prepared_calls, raw_outcomes):
+                tool_call = prepared["tool_call"]
+                tool_name = prepared["tool_name"]
+                normalized_args = prepared["normalized_args"]
+                plan_step = prepared["plan_step"]
+                if prepared["inserted"]:
                     limitations.append(
                         f"Plan step was added at runtime for `{tool_name}` so retrieval stayed explicit before execution."
                     )
-                plan_step.status = "in-progress"
-                self._persist_plan_state(session_state, plan_status)
 
                 try:
-                    result = await self.tool_registry.call_tool(
-                        tool_name,
-                        normalized_args,
-                        session_id=session_state.session_id,
-                        thought=(assistant.get("content") or "").strip(),
-                    )
+                    if isinstance(outcome, Exception):
+                        if not isinstance(outcome, supported_tool_errors):
+                            raise outcome
+                        raise outcome
 
+                    result = outcome
                     if result.tool == "stock.inventory_snapshot" and isinstance(result.llm_content, dict):
                         inventory_snapshot = result.llm_content
                     if result.trace:
@@ -258,10 +334,19 @@ class AgentEngine:
                     result.memo_update = memo_update
                     result.validation = validation
 
+                    follow_up_note = self._append_recursive_follow_up(
+                        request_message=request.message,
+                        plan_status=plan_status,
+                        completed_step=plan_step,
+                        result=result,
+                    )
+                    if follow_up_note:
+                        limitations.append(follow_up_note)
+
                     tool_content = self._render_tool_content(result)
-                except (InventoryNotFoundError, ParameterMappingError, UpstreamServiceError, ValueError) as exc:
+                except supported_tool_errors as exc:
                     error_trace = ToolTrace(
-                        thought=(assistant.get("content") or "").strip(),
+                        thought=assistant_thought,
                         tool=tool_name,
                         args=normalized_args,
                         status="error",
@@ -294,13 +379,15 @@ class AgentEngine:
                 finally:
                     self._persist_plan_state(session_state, plan_status)
 
-                messages.append(
+                tool_messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
                         "content": tool_content,
                     }
                 )
+
+            messages.extend(tool_messages)
         else:
             draft_answer = "I reached the tool-step limit before I could finish safely."
             limitations.append("The agent hit the configured max-step limit.")
@@ -389,12 +476,27 @@ class AgentEngine:
                 )
 
         self._persist_plan_state(session_state, plan_status)
+        debug_payload = (
+            self._build_debug_payload(
+                request=request.message,
+                plan_status=plan_status,
+                session_state=session_state,
+                thoughts=thoughts,
+                traces=traces,
+                resolved_items=resolved_items,
+                limitations=self._dedupe(limitations + envelope.limitations),
+                parallel_batches=parallel_batches,
+            )
+            if request.includeThoughts
+            else None
+        )
         return AgentRun(
             status=envelope.status,
             answer=envelope.answer,
             limitations=self._dedupe(limitations + envelope.limitations),
             clarification=envelope.clarification or clarification,
             thoughts=thoughts if request.includeThoughts else [],
+            debug=debug_payload,
             tool_trace=traces,
             resolved_items=resolved_items,
             plan_status=plan_status,
@@ -692,6 +794,120 @@ class AgentEngine:
             return trace.result_count
         return actual_rows
 
+    def _should_execute_parallel(self, prepared_calls: list[dict[str, Any]]) -> bool:
+        if len(prepared_calls) < 2:
+            return False
+        return not any(str(item["tool_name"]).startswith("session.") for item in prepared_calls)
+
+    def _append_recursive_follow_up(
+        self,
+        *,
+        request_message: str,
+        plan_status: PlanStatus,
+        completed_step: PlanStep,
+        result: ToolResult,
+    ) -> str | None:
+        if result.tool != "stock.search_catalogue":
+            return None
+
+        requested_attributes = set(self._requested_attributes(request_message))
+        if not requested_attributes.intersection({"size", "colour", "stock", "pricing", "image", "specifications"}):
+            return None
+
+        follow_up_tool, follow_up_args = self._derive_follow_up_step(
+            result.data,
+            requested_attributes,
+            request_message=request_message,
+        )
+        if not follow_up_tool or not follow_up_args:
+            return None
+
+        if any(
+            step.tool == follow_up_tool and step.args == follow_up_args and step.status != "done"
+            for step in plan_status.steps
+        ):
+            return None
+
+        next_id = max((step.id for step in plan_status.steps), default=0) + 1
+        plan_status.steps.append(
+            PlanStep(
+                id=next_id,
+                name="recursive detail retrieval",
+                tool=follow_up_tool,
+                status="pending",
+                args=follow_up_args,
+                depends_on=[completed_step.id],
+                parallel_group=None,
+                hypotheses=[
+                    "The initial catalogue search resolved identifiers but not enough user-facing detail, so a follow-up retrieval hop is required."
+                ],
+                validation=None,
+            )
+        )
+        return (
+            f"Recursive follow-up step `{next_id}` was added for `{follow_up_tool}` "
+            "because the catalogue result was too thin to answer the requested attributes safely."
+        )
+
+    def _derive_follow_up_step(
+        self,
+        data: Any,
+        requested_attributes: set[str],
+        request_message: str | None = None,
+    ) -> tuple[str | None, dict[str, str] | None]:
+        if not isinstance(data, dict):
+            return None, None
+        items = data.get("items")
+        if not isinstance(items, list) or not items:
+            return None, None
+
+        item = self._best_follow_up_candidate(items, request_message)
+        if not isinstance(item, dict):
+            return None, None
+
+        product_id = self._compact_identifier(item.get("id"))
+        variants = item.get("variants")
+        variant = variants[0] if isinstance(variants, list) and len(variants) == 1 and isinstance(variants[0], dict) else None
+        sku = self._compact_identifier(variant.get("sku")) if isinstance(variant, dict) else None
+        variant_id = self._compact_identifier(variant.get("id")) if isinstance(variant, dict) else None
+        needs_variant_evidence = bool(requested_attributes.intersection({"size", "colour", "pricing", "image", "specifications"}))
+
+        if needs_variant_evidence:
+            lookup = self._compose_variant_lookup(sku=sku, product_id=product_id, variant_id=variant_id)
+            if lookup is not None:
+                return "stock.extract_variant_evidence", lookup
+
+        if sku:
+            return "stock.get_product", {"sku": sku}
+        if product_id:
+            return "stock.get_product", {"id": product_id}
+        return None, None
+
+    def _best_follow_up_candidate(self, items: list[Any], request_message: str | None) -> dict[str, Any] | None:
+        dict_items = [item for item in items if isinstance(item, dict)]
+        if not dict_items:
+            return None
+        if len(dict_items) == 1 or not request_message:
+            return dict_items[0]
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for item in dict_items:
+            parts = [str(item.get("name") or "")]
+            variants = item.get("variants")
+            if isinstance(variants, list):
+                parts.extend(str(variant.get("name") or "") for variant in variants if isinstance(variant, dict))
+            candidate_text = " ".join(part for part in parts if part)
+            scored.append((lexical_overlap(request_message, candidate_text), item))
+
+        scored.sort(key=lambda entry: entry[0], reverse=True)
+        top_score = scored[0][0]
+        second_score = scored[1][0] if len(scored) > 1 else 0.0
+        if top_score <= 0.0:
+            return None
+        if len(scored) > 1 and top_score < 0.55 and top_score - second_score < 0.15:
+            return None
+        return scored[0][1]
+
     def _resolve_or_insert_plan_step(
         self,
         plan_status: PlanStatus,
@@ -711,6 +927,8 @@ class AgentEngine:
             tool=tool_name,
             status="pending",
             args=args,
+            depends_on=[],
+            parallel_group=None,
             hypotheses=["Tool was required by runtime retrieval before the plan listed it explicitly."],
             validation=None,
         )
@@ -721,6 +939,10 @@ class AgentEngine:
         return bool(plan_status.steps) and all(step.status == "done" for step in plan_status.steps)
 
     def _next_open_step(self, plan_status: PlanStatus) -> PlanStep | None:
+        completed = {step.id for step in plan_status.steps if step.status == "done"}
+        for step in plan_status.steps:
+            if step.status != "done" and all(dep in completed for dep in step.depends_on):
+                return step
         for step in plan_status.steps:
             if step.status != "done":
                 return step
@@ -746,16 +968,19 @@ class AgentEngine:
         )
 
     def _direct_step_content(self, step: PlanStep) -> str:
-        return (
-            "<thought>\n"
-            f"goal: Execute planned retrieval step {step.id}\n"
-            "entity_guess: unknown\n"
-            "strategy: exact lookup\n"
-            f"tool: {step.tool}\n"
-            f"args_draft: {step.args}\n"
-            "risk: none\n"
-            "</thought>"
-        )
+        return ThoughtBlock(
+            goal=f"Execute planned retrieval step {step.id}",
+            entity_guess="unknown",
+            strategy="exact lookup",
+            tool=step.tool,
+            args_draft=step.args,
+            risk="none",
+        ).to_xml()
+
+    def _clarification_question_for_step(self, step: PlanStep) -> str:
+        if step.tool in {"stock.extract_variant_evidence", "stock.get_variant_evidence"}:
+            return "Please share the exact variant SKU (or product ID plus variant ID) so I can continue safely."
+        return "Please share the exact product SKU or product ID so I can continue safely."
 
     def _resolve_planned_step_args(
         self,
@@ -763,9 +988,19 @@ class AgentEngine:
         session_state: SessionState,
     ) -> tuple[dict[str, Any] | None, str | None]:
         args = dict(step.args or {})
-        if step.tool != "stock.get_product":
-            return args, None
+        if step.tool == "stock.get_product":
+            return self._resolve_product_lookup_args(step_id=step.id, args=args, session_state=session_state)
+        if step.tool in {"stock.extract_variant_evidence", "stock.get_variant_evidence"}:
+            return self._resolve_variant_lookup_args(step_id=step.id, args=args, session_state=session_state)
+        return args, None
 
+    def _resolve_product_lookup_args(
+        self,
+        *,
+        step_id: int,
+        args: dict[str, Any],
+        session_state: SessionState,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         compact_id = self._compact_identifier(args.get("id"))
         compact_sku = self._compact_identifier(args.get("sku"))
         if compact_id or compact_sku:
@@ -779,7 +1014,7 @@ class AgentEngine:
             return (
                 None,
                 (
-                    f"Planned step `{step.id}` could not run because `stock.get_product` "
+                    f"Planned step `{step_id}` could not run because `stock.get_product` "
                     "requires an `id` or `sku`, and no reusable identifier was present in session evidence."
                 ),
             )
@@ -789,10 +1024,144 @@ class AgentEngine:
         return (
             normalized,
             (
-                f"Runtime recovered missing lookup args for planned step `{step.id}` "
+                f"Runtime recovered missing lookup args for planned step `{step_id}` "
                 f"from session evidence ({', '.join(recovered.keys())})."
             ),
         )
+
+    def _resolve_variant_lookup_args(
+        self,
+        *,
+        step_id: int,
+        args: dict[str, Any],
+        session_state: SessionState,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        compact_id = self._compact_identifier(args.get("id"))
+        compact_sku = self._compact_identifier(args.get("sku"))
+        compact_variant_id = self._compact_identifier(args.get("variantId"))
+
+        normalized = dict(args)
+        normalized["id"] = compact_id
+        normalized["sku"] = compact_sku
+        normalized["variantId"] = compact_variant_id
+
+        if compact_id or compact_sku:
+            return normalized, None
+
+        if compact_variant_id:
+            recovered = self._recover_product_identifier(session_state)
+            if recovered is None:
+                return (
+                    None,
+                    (
+                        f"Planned step `{step_id}` had only `variantId`, but "
+                        "`stock.extract_variant_evidence` also needs `sku` or `id` to resolve product details."
+                    ),
+                )
+            normalized.update(recovered)
+            return (
+                normalized,
+                (
+                    f"Runtime supplemented planned step `{step_id}` variant lookup args "
+                    f"from session evidence ({', '.join(recovered.keys())})."
+                ),
+            )
+
+        recovered = self._recover_variant_lookup_identifier(session_state)
+        if recovered is None:
+            return (
+                None,
+                (
+                    f"Planned step `{step_id}` could not run because "
+                    "`stock.extract_variant_evidence` requires `id`, `sku`, or `variantId`, "
+                    "and no reusable identifier was present in session evidence."
+                ),
+            )
+
+        normalized.update(recovered)
+        return (
+            normalized,
+            (
+                f"Runtime recovered missing lookup args for planned step `{step_id}` "
+                f"from session evidence ({', '.join(recovered.keys())})."
+            ),
+        )
+
+    def _recover_variant_lookup_identifier(self, session_state: SessionState) -> dict[str, str] | None:
+        for option in session_state.last_candidate_list:
+            recovered = self._recover_variant_identifier_from_candidate_option(option)
+            if recovered is not None:
+                return recovered
+
+        for entry in reversed(session_state.memo_cache.entries):
+            recovered = self._recover_variant_identifier_from_memo_entry(entry)
+            if recovered is not None:
+                return recovered
+
+        return self._recover_product_identifier(session_state)
+
+    def _recover_variant_identifier_from_candidate_option(self, option: CandidateOption) -> dict[str, str] | None:
+        sku = self._compact_identifier(option.sku)
+        product_id = self._compact_identifier(option.product_id)
+        variant_id = self._compact_identifier(option.variant_id)
+        return self._compose_variant_lookup(sku=sku, product_id=product_id, variant_id=variant_id)
+
+    def _recover_variant_identifier_from_memo_entry(self, entry: MemoEntry) -> dict[str, str] | None:
+        sku = self._compact_identifier(entry.args.get("sku"))
+        product_id = (
+            self._compact_identifier(entry.args.get("id"))
+            or self._compact_identifier(entry.args.get("product_id"))
+            or self._compact_identifier(entry.args.get("productId"))
+        )
+        variant_id = (
+            self._compact_identifier(entry.args.get("variantId"))
+            or self._compact_identifier(entry.args.get("variant_id"))
+        )
+        recovered = self._compose_variant_lookup(sku=sku, product_id=product_id, variant_id=variant_id)
+        if recovered is not None:
+            return recovered
+
+        for collection in [entry.evidence, entry.rows]:
+            for item in collection:
+                if not isinstance(item, dict):
+                    continue
+                recovered = self._compose_variant_lookup(
+                    sku=self._compact_identifier(item.get("sku")),
+                    product_id=(
+                        self._compact_identifier(item.get("product_id"))
+                        or self._compact_identifier(item.get("productId"))
+                        or self._compact_identifier(item.get("id"))
+                    ),
+                    variant_id=(
+                        self._compact_identifier(item.get("variant_id"))
+                        or self._compact_identifier(item.get("variantId"))
+                    ),
+                )
+                if recovered is not None:
+                    return recovered
+
+        return None
+
+    def _compose_variant_lookup(
+        self,
+        *,
+        sku: str | None,
+        product_id: str | None,
+        variant_id: str | None,
+    ) -> dict[str, str] | None:
+        if sku:
+            payload = {"sku": sku}
+            if variant_id:
+                payload["variantId"] = variant_id
+            return payload
+
+        if product_id:
+            payload = {"id": product_id}
+            if variant_id:
+                payload["variantId"] = variant_id
+            return payload
+
+        return None
 
     def _recover_product_identifier(self, session_state: SessionState) -> dict[str, str] | None:
         for identifier in session_state.recent_resolved_identifiers:
@@ -922,11 +1291,26 @@ class AgentEngine:
         allowed_tools = {tool.name for tool in self.tool_registry.list_tools()}
 
         sanitized_steps: list[PlanStep] = []
+        id_mapping: dict[int, int] = {}
+        next_id = 1
+        for step in parsed.steps:
+            if step.tool not in allowed_tools:
+                continue
+            id_mapping[step.id] = next_id
+            next_id += 1
+
         next_id = 1
         for step in parsed.steps:
             if step.tool not in allowed_tools:
                 continue
             status = step.status if step.status in {"planned", "pending", "in-progress", "done"} else "planned"
+            depends_on = sorted(
+                {
+                    id_mapping[dependency]
+                    for dependency in step.depends_on
+                    if dependency in id_mapping and id_mapping[dependency] < id_mapping[step.id]
+                }
+            )
             sanitized_steps.append(
                 PlanStep(
                     id=next_id,
@@ -934,6 +1318,8 @@ class AgentEngine:
                     tool=step.tool,
                     status=status,
                     args=step.args or {},
+                    depends_on=depends_on,
+                    parallel_group=step.parallel_group if isinstance(step.parallel_group, int) and step.parallel_group >= 0 else None,
                     hypotheses=step.hypotheses or [],
                     validation=step.validation,
                 )
@@ -967,6 +1353,8 @@ class AgentEngine:
                     tool=default_tool,
                     status="planned",
                     args={},
+                    depends_on=[],
+                    parallel_group=None,
                     hypotheses=["Fallback plan created because planner output was unavailable."],
                     validation=None,
                 )
@@ -1372,6 +1760,212 @@ class AgentEngine:
                 continue
             filtered.append(limitation)
         return filtered
+
+    def _build_debug_payload(
+        self,
+        *,
+        request: str,
+        plan_status: PlanStatus,
+        session_state: SessionState,
+        thoughts: list[str],
+        traces: list[ToolTrace],
+        resolved_items: list[NormalizedEvidence],
+        limitations: list[str],
+        parallel_batches: list[AgentDebugParallelBatch],
+    ) -> AgentDebugPayload:
+        requested_attributes = self._requested_attributes(request)
+        return AgentDebugPayload(
+            intent=AgentDebugIntent(
+                current_goal=plan_status.goal,
+                primary_entity_guess=self._primary_entity_guess(request, resolved_items),
+                requested_attributes=requested_attributes,
+                inferred_filters=self._inferred_filters(request, session_state),
+                scope_status=self._scope_status(request),
+            ),
+            plan=AgentDebugPlan(
+                goal=plan_status.goal,
+                status=plan_status.status,
+                ready_steps=self._ready_step_ids(plan_status),
+                blocked_steps=self._blocked_step_ids(plan_status),
+                dag=[
+                    AgentDebugPlanStep(
+                        id=step.id,
+                        name=step.name,
+                        tool=step.tool,
+                        status=step.status,
+                        depends_on=list(step.depends_on),
+                        parallel_group=step.parallel_group,
+                    )
+                    for step in plan_status.steps
+                ],
+                next_hop_rules=self._next_hop_rules(plan_status),
+            ),
+            retrieval=AgentDebugRetrieval(
+                thought_blocks=self._thought_blocks_from_debug(thoughts, traces),
+                trace_summary=[
+                    AgentDebugTraceSummary(
+                        tool=trace.tool,
+                        status=trace.status,
+                        result_count=trace.result_count,
+                        cache_status=trace.cache_status,
+                    )
+                    for trace in traces
+                ],
+                parallel_batches=parallel_batches,
+            ),
+            grounding=AgentDebugGrounding(
+                resolved_identifiers=list(session_state.recent_resolved_identifiers[:6]),
+                evidence_count=len(resolved_items),
+                unresolved_attributes=self._unresolved_attributes(requested_attributes, resolved_items),
+                user_impact_limitations=self._composer_limitations(limitations),
+            ),
+        )
+
+    def _requested_attributes(self, request: str) -> list[str]:
+        lowered = request.lower()
+        attribute_terms = {
+            "size": ("size", "sizes", "dimension", "dimensions", "length", "width", "height"),
+            "colour": (
+                "colour",
+                "color",
+                "finish",
+                "white",
+                "black",
+                "grey",
+                "gray",
+                "charcoal",
+                "oak",
+                "bleached",
+                "red",
+                "blue",
+                "green",
+            ),
+            "stock": ("stock", "availability", "available", "hire", "hirable"),
+            "pricing": ("price", "pricing", "rate", "rates", "cost"),
+            "image": ("image", "photo", "picture"),
+            "specifications": ("spec", "specs", "specification", "specifications", "details"),
+        }
+        requested: list[str] = []
+        for attribute, terms in attribute_terms.items():
+            if any(term in lowered for term in terms):
+                requested.append(attribute)
+        return requested
+
+    def _primary_entity_guess(self, request: str, resolved_items: list[NormalizedEvidence]) -> str:
+        if any(item.variant_id or item.variant_name for item in resolved_items):
+            return "variant"
+        if any(item.product_id or item.product_name for item in resolved_items):
+            return "product"
+        lowered = request.lower()
+        if "department" in lowered:
+            return "department"
+        if "category" in lowered:
+            return "category"
+        if "weather" in lowered:
+            return "weather"
+        if "news" in lowered or "headline" in lowered:
+            return "news"
+        if "currency" in lowered or "exchange" in lowered:
+            return "currency"
+        return "variant" if "sku" in lowered or "colour" in lowered or "color" in lowered else "product"
+
+    def _inferred_filters(self, request: str, session_state: SessionState) -> dict[str, Any]:
+        filters = dict(session_state.last_filters)
+        sku_match = re.search(r"\b[a-z0-9]+(?:-[a-z0-9]+){1,}\b", request, re.IGNORECASE)
+        if sku_match:
+            filters.setdefault("sku", sku_match.group(0))
+        elif request.strip():
+            filters.setdefault("search", request.strip())
+        return filters
+
+    def _scope_status(self, request: str) -> str:
+        lowered = request.lower()
+        if any(term in lowered for term in ("booking", "quote", "reservation", "event line item")):
+            return "not_implemented_in_current_tool_contract"
+        return "stock_supported"
+
+    def _ready_step_ids(self, plan_status: PlanStatus) -> list[int]:
+        completed = {step.id for step in plan_status.steps if step.status == "done"}
+        return [
+            step.id
+            for step in plan_status.steps
+            if step.status != "done" and all(dependency in completed for dependency in step.depends_on)
+        ]
+
+    def _blocked_step_ids(self, plan_status: PlanStatus) -> list[int]:
+        ready = set(self._ready_step_ids(plan_status))
+        return [step.id for step in plan_status.steps if step.status != "done" and step.id not in ready]
+
+    def _next_hop_rules(self, plan_status: PlanStatus) -> list[str]:
+        rules = [
+            "Use stock.search_catalogue to resolve candidate products before exact detail lookups.",
+            "If catalogue search returns identifiers without enough user-facing detail, follow with stock.get_product or stock.extract_variant_evidence.",
+            "Do not call stock.extract_variant_evidence with variantId alone; supplement it with sku or id.",
+        ]
+        pending_recursive = [
+            f"Pending recursive follow-up: step {step.id} -> {step.tool}"
+            for step in plan_status.steps
+            if step.status != "done" and step.name == "recursive detail retrieval"
+        ]
+        return rules + pending_recursive
+
+    def _thought_blocks_from_debug(self, thoughts: list[str], traces: list[ToolTrace]) -> list[str]:
+        blocks: list[str] = []
+        seen: set[str] = set()
+        sources = list(thoughts) + [trace.thought for trace in traces if trace.thought]
+        for source in sources:
+            for block in THOUGHT_BLOCK_PATTERN.findall(source):
+                compact = block.strip()
+                if compact and compact not in seen:
+                    seen.add(compact)
+                    blocks.append(compact)
+        return blocks
+
+    def _unresolved_attributes(
+        self,
+        requested_attributes: list[str],
+        resolved_items: list[NormalizedEvidence],
+    ) -> list[str]:
+        unresolved: list[str] = []
+        for attribute in requested_attributes:
+            if not self._attribute_is_grounded(attribute, resolved_items):
+                unresolved.append(attribute)
+        return unresolved
+
+    def _attribute_is_grounded(self, attribute: str, resolved_items: list[NormalizedEvidence]) -> bool:
+        if not resolved_items:
+            return False
+        for item in resolved_items:
+            if attribute == "size" and any(
+                value is not None
+                for value in [item.dimensions.length, item.dimensions.width, item.dimensions.height]
+            ):
+                return True
+            if attribute == "colour" and (
+                item.variation_options
+                or (item.variant_name and item.variant_name.strip())
+                or (item.product_name and item.product_name.strip())
+            ):
+                return True
+            if attribute == "stock" and any(
+                value is not None
+                for value in [item.stock.totalStock, item.stock.vicStock, item.stock.nswStock, item.stock.qldStock]
+            ):
+                return True
+            if attribute == "pricing" and any(
+                value is not None
+                for value in [item.pricing.generalRate, item.pricing.expoRate, item.pricing.cost]
+            ):
+                return True
+            if attribute == "image" and (item.media.imageFileName or item.media.imageUrl):
+                return True
+            if attribute == "specifications" and (
+                item.salesNote
+                or item.components
+                or any(value is not None for value in [item.dimensions.length, item.dimensions.width, item.dimensions.height])
+            ):
+                return True
+        return False
 
     def _utc_now_iso(self) -> str:
         return datetime.now(tz=UTC).isoformat()

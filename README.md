@@ -3,7 +3,7 @@
 HTH Stock Intelligence now exposes two separate integration surfaces:
 
 - a real MCP server over `stdio` for Claude, Cursor, Claude Code, and similar coding apps
-- a companion FastAPI app under `/api/v1/*` for local diagnostics, query demos, and the mock UI
+- a companion FastAPI app under `/api/v1/*` for local diagnostics, query demos, the mock UI, and structured debug payloads
 
 The MCP server reuses the existing tool registry and service container. It does not duplicate business logic or expose a fake REST shim under `/mcp`.
 
@@ -41,6 +41,8 @@ The FastAPI app remains available for local testing and demo workflows:
 - `GET /api/v1/ui`
 
 These routes are custom REST endpoints, not MCP.
+
+`/api/v1/query` now presents the **Harmonise Orchestrator** stock-first runtime: the user-facing `answer` stays plain-language, while `thoughts` and the separate `debug` payload expose planner, retrieval, and grounding audit data when `includeThoughts=true`.
 
 ## Session and cache persistence
 
@@ -277,5 +279,5 @@ The tests now cover:
 - `app/mcp_adapter.py`: MCP tool schema/result adapter over the shared registry
 - `app/tool/registry.py`: validated business tool registry
 - `app/main.py`: REST-only FastAPI app
-- `app/inventory/source.py`: Harmonise client with local-vs-remote transport switching
+- `app/tool/stock/source.py`: Harmonise client with local-vs-remote transport switching
 - `harmonise/main.py`: local Harmonise simulator app

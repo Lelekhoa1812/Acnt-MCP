@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import anyio
 import httpx
 
 from app.config import Settings, UpstreamServiceError
@@ -124,24 +125,99 @@ class HarmoniseInventorySource:
         await self._client.aclose()
 
     async def _get(self, path: str, params: dict[str, Any]) -> Any:
-        # Root Cause vs Logic: transport timeouts from the cloud Harmonise API
-        # were bubbling up as raw httpx errors, which bypassed our structured
-        # MCP/API error envelope. Normalize them into UpstreamServiceError.
-        try:
-            response = await self._client.get(path, params=params)
-        except httpx.ReadTimeout as exc:
-            raise UpstreamServiceError(
-                status_code=504,
-                detail=f"Harmonise request timed out for path '{path}'.",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise UpstreamServiceError(
-                status_code=502,
-                detail=f"Harmonise request failed for path '{path}': {exc}",
-            ) from exc
+        response = await self._request_with_retry(path=path, params=params)
         if response.status_code >= 400:
             raise UpstreamServiceError(status_code=response.status_code, detail=response.text)
         return response.json()
+
+    async def _request_with_retry(self, path: str, params: dict[str, Any]) -> httpx.Response:
+        # Root Cause vs Logic: cloud Harmonise list/detail calls can run for a long
+        # time under load, and strict timeout+attempt caps were truncating inventory
+        # retrieval before rows were fully hydrated. When timeout is disabled in
+        # settings, timeout retries now remain unbounded with capped backoff.
+        max_attempts = max(1, self.settings.harmonise_max_attempts)
+        unbounded_timeout_retries = self.settings.harmonise_timeout_seconds is None
+        attempt = 1
+        while True:
+            try:
+                response = await self._client.get(path, params=params)
+            except httpx.ReadTimeout as exc:
+                if unbounded_timeout_retries or attempt < max_attempts:
+                    await self._sleep_before_retry(
+                        path=path,
+                        attempt=attempt,
+                        max_attempts=None if unbounded_timeout_retries else max_attempts,
+                        reason="read_timeout",
+                    )
+                    attempt += 1
+                    continue
+                raise UpstreamServiceError(
+                    status_code=504,
+                    detail=f"Harmonise request timed out for path '{path}' after {max_attempts} attempts.",
+                ) from exc
+            except httpx.HTTPError as exc:
+                if attempt < max_attempts and self._should_retry_transport_error(exc):
+                    await self._sleep_before_retry(
+                        path=path,
+                        attempt=attempt,
+                        max_attempts=max_attempts,
+                        reason=exc.__class__.__name__,
+                    )
+                    attempt += 1
+                    continue
+                raise UpstreamServiceError(
+                    status_code=502,
+                    detail=f"Harmonise request failed for path '{path}': {exc}",
+                ) from exc
+
+            if response.status_code in {502, 503, 504} and attempt < max_attempts:
+                await self._sleep_before_retry(
+                    path=path,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    reason=f"status_{response.status_code}",
+                )
+                attempt += 1
+                continue
+
+            return response
+
+        # Defensive fallback (the loop should always return or raise above).
+        raise UpstreamServiceError(
+            status_code=502,
+            detail=f"Harmonise request failed for path '{path}' after retry attempts were exhausted.",
+        )
+
+    def _should_retry_transport_error(self, exc: httpx.HTTPError) -> bool:
+        return isinstance(exc, httpx.TransportError)
+
+    def _retry_backoff_seconds(self, attempt: int) -> float:
+        base_seconds = self.settings.harmonise_retry_backoff_seconds
+        if base_seconds <= 0:
+            return 0.0
+        cap_seconds = max(base_seconds, self.settings.harmonise_retry_backoff_cap_seconds)
+        return min(base_seconds * (2 ** max(0, attempt - 1)), cap_seconds)
+
+    async def _sleep_before_retry(
+        self,
+        *,
+        path: str,
+        attempt: int,
+        max_attempts: int | None,
+        reason: str,
+    ) -> None:
+        delay_seconds = self._retry_backoff_seconds(attempt)
+        max_attempts_label = "inf" if max_attempts is None else str(max_attempts)
+        self.logger.warning(
+            "Retrying Harmonise request path=%s reason=%s attempt=%s/%s delay=%.2fs",
+            path,
+            reason,
+            attempt + 1,
+            max_attempts_label,
+            delay_seconds,
+        )
+        if delay_seconds > 0:
+            await anyio.sleep(delay_seconds)
 
     async def _get_product_by_id(self, product_id: str, page: int, page_size: int) -> tuple[dict[str, Any], list[str]]:
         notes: list[str] = ["cloud_contract_id_lookup"]
@@ -187,12 +263,17 @@ class HarmoniseInventorySource:
         if not variants:
             return product
 
+        expected_skus = self._unique_variant_skus(variants)
+        if not expected_skus:
+            return product
+
         hydrated_variants: dict[str, dict[str, Any]] = {}
         detail_product: dict[str, Any] | None = None
-        for variant in variants:
-            sku = variant.get("sku")
-            if not sku:
-                continue
+        # Root Cause vs Logic: cloud hydration previously called `/api/v1/products/{sku}`
+        # for every variant even when the first response already contained full
+        # product-level variant details, which amplified remote latency and timeouts.
+        # We now short-circuit once all expected SKUs have hydrated detail payloads.
+        for sku in expected_skus:
             payload = await self._get(f"/api/v1/products/{sku}", params={"page": 1, "pageSize": 1})
             paged = self._as_paged_payload(payload, page=1, page_size=1)
             items = paged.get("items", []) or []
@@ -205,6 +286,12 @@ class HarmoniseInventorySource:
                 detail_sku = detail_variant.get("sku")
                 if detail_sku:
                     hydrated_variants[detail_sku] = detail_variant
+
+            if self._has_complete_variant_hydration(
+                expected_skus=expected_skus,
+                hydrated_variants=hydrated_variants,
+            ):
+                break
 
         if not hydrated_variants:
             return product
@@ -238,6 +325,34 @@ class HarmoniseInventorySource:
 
         merged_product["variants"] = merged_variants
         return merged_product
+
+    def _unique_variant_skus(self, variants: list[dict[str, Any]]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for variant in variants:
+            sku = variant.get("sku")
+            if not isinstance(sku, str):
+                continue
+            compact = sku.strip()
+            if not compact or compact in seen:
+                continue
+            seen.add(compact)
+            ordered.append(compact)
+        return ordered
+
+    def _has_complete_variant_hydration(
+        self,
+        *,
+        expected_skus: list[str],
+        hydrated_variants: dict[str, dict[str, Any]],
+    ) -> bool:
+        for sku in expected_skus:
+            variant = hydrated_variants.get(sku)
+            if not isinstance(variant, dict):
+                return False
+            if variant.get("details") is None:
+                return False
+        return True
 
     def _remember_catalogue_items(self, items: list[dict[str, Any]]) -> None:
         for item in items:

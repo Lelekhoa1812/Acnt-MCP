@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.prompt.context import render_session_context
-from app.prompt.registry import render_formatter, render_system
+from app.prompt.registry import render_formatter, render_planner, render_system
 from app.schemas import ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, SessionState, ToolDefinition
 
 
@@ -11,10 +11,14 @@ def test_render_system_includes_scope_and_variant_policy_guards() -> None:
         session=SessionState(session_id="policy-test"),
         tools=[],
     )
+    assert "You are the Harmonise Orchestrator" in prompt
+    assert "Treat every request as recursive discovery" in prompt
+    assert "Construct tool arguments from the current schema" in prompt
     assert "Keep answers scoped to the requested attributes" in prompt
     assert "If the user targets a specific variant directly, answer that variant only." in prompt
     assert "Prefer product and variant names over SKU" in prompt
     assert "Final answer wording must align with the original user request intent" in prompt
+    assert "Do not reveal hidden chain-of-thought" in prompt
 
 
 def test_formatter_contract_requires_intent_aligned_scope() -> None:
@@ -28,6 +32,31 @@ def test_formatter_contract_requires_intent_aligned_scope() -> None:
     assert "answer only that variant" in formatter_prompt
     assert "deduplicate repeated values" in formatter_prompt
     assert "aligned to the user's original intent" in formatter_prompt
+    assert "not yet implemented in the current tool contract" in formatter_prompt
+
+
+def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
+    planner_prompt = render_planner(
+        request="Compare two floor variants and show stock.",
+        session=SessionState(session_id="planner-policy"),
+        tools=[
+            ToolDefinition(
+                name="stock.search_catalogue",
+                description="Search the catalogue.",
+                input_schema={"type": "object", "properties": {"page": {}, "pageSize": {}, "search": {}}},
+            ),
+            ToolDefinition(
+                name="stock.get_product",
+                description="Get product detail.",
+                input_schema={"type": "object", "properties": {"sku": {}, "id": {}}},
+            ),
+        ],
+    )
+
+    assert "- depends_on: array of earlier step ids" in planner_prompt
+    assert "- parallel_group: integer or null" in planner_prompt
+    assert "follow-up retrieval step" in planner_prompt
+    assert "not yet implemented in the current tool contract" in planner_prompt
 
 
 def test_render_system_uses_compact_memory_and_tool_roster() -> None:
@@ -116,3 +145,37 @@ def test_render_session_context_chunks_tables_without_breaking_headers() -> None
     assert summary.count("| Product | Variant | SKU | Size | Stock |") == 2
     assert "| Floor 0 | Variant 0 | sku-0 | 1 x 1 m | 0 in stock |" in summary
     assert "| Floor 7 | Variant 7 | sku-7 | 1 x 1 m | 7 in stock |" in summary
+
+
+def test_render_system_routes_furniture_department_and_category_mapping() -> None:
+    prompt = render_system(
+        request="Show me chairs and lounges in stock.",
+        session=SessionState(session_id="furniture-routing"),
+        tools=[],
+    )
+
+    assert "departmentId=3" in prompt
+    assert "b7d70000-eacf-fc4c-c59a-08de7f19d85e" in prompt
+    assert "b7d70000-eacf-fc4c-359b-08de7f19d91e" in prompt
+
+
+def test_render_system_handles_mixed_furniture_and_unsupported_departments() -> None:
+    prompt = render_system(
+        request="Show me stools and electronics inventory.",
+        session=SessionState(session_id="mixed-department"),
+        tools=[],
+    )
+
+    assert "unsupported departments (electronics)" in prompt
+    assert "only Furniture stock is currently available" in prompt or "unsupported departments are currently unavailable" in prompt
+
+
+def test_render_system_plugin_only_query_avoids_furniture_mapping_rules() -> None:
+    prompt = render_system(
+        request="What's the weather forecast for Melbourne tomorrow?",
+        session=SessionState(session_id="plugin-only"),
+        tools=[],
+    )
+
+    assert "WEATHER Example:" in prompt
+    assert "categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e" not in prompt

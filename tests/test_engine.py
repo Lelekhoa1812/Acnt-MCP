@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
+import anyio
 import pytest
 
 from app.config import Settings, UpstreamServiceError, build_container
-from app.schemas import AgentQueryRequest, ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, ToolTrace
+from app.schemas import AgentQueryRequest, ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, ToolResult, ToolTrace
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
 
@@ -175,6 +176,7 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
         await container.close()
 
     assert result.status == "answered"
+    assert result.debug is None
     assert len(payloads) >= 4
 
     query_payload = next(
@@ -615,6 +617,124 @@ async def test_agent_engine_executes_next_planned_step_when_model_skips_tool_cal
 
 
 @pytest.mark.anyio
+async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_planned_step() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Resolve chair evidence",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "catalogue pass",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "done",
+                                            "args": {"page": 1, "pageSize": 5, "search": "chair"},
+                                            "hypotheses": ["Prior step already captured chair identifiers."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 2,
+                                            "name": "candidate selection",
+                                            "tool": "resolver.disambiguate_candidates",
+                                            "status": "done",
+                                            "args": {"query": "alto chair", "limit": 5},
+                                            "hypotheses": ["Prior step narrowed candidates."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 3,
+                                            "name": "extract evidence",
+                                            "tool": "stock.extract_variant_evidence",
+                                            "status": "planned",
+                                            "args": {},
+                                            "hypotheses": ["Variant evidence should be extracted for the selected chair."],
+                                            "validation": None,
+                                        },
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            if payload.get("response_format"):
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "status": "answered",
+                                        "answer": "Recovered chair evidence successfully.",
+                                        "limitations": [],
+                                        "clarification": None,
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": "Retrieval needs one more step before I can answer reliably."}}]}
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 1,
+                                    "actual_rows": 1,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.93,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {"choices": [{"message": {"content": "Recovered chair evidence successfully."}}]}
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-variant-step-recovery")
+        session_state.recent_resolved_identifiers = ["fl-ca-ca-10m"]
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="Can you show the selected chair details?",
+                sessionId="engine-variant-step-recovery",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert any(trace.tool == "stock.extract_variant_evidence" for trace in result.tool_trace)
+    assert any("runtime executed planned step `3` directly" in item for item in result.limitations)
+    assert any("Runtime recovered missing lookup args for planned step `3`" in item for item in result.limitations)
+    assert not any("Invalid arguments for 'stock.extract_variant_evidence'" in item for item in result.limitations)
+
+
+@pytest.mark.anyio
 async def test_agent_engine_does_not_leak_stock_get_product_schema_error_for_incomplete_planned_args() -> None:
     container = await build_container(build_engine_settings())
 
@@ -698,3 +818,314 @@ async def test_agent_engine_does_not_leak_stock_get_product_schema_error_for_inc
     assert not result.tool_trace
     assert any("requires an `id` or `sku`" in item for item in result.limitations)
     assert not any("Either 'id' or 'sku' must be provided" in item for item in result.limitations)
+
+
+@pytest.mark.anyio
+async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stable_trace_order() -> None:
+    container = await build_container(build_engine_settings())
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Resolve two independent retrievals",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "catalogue search",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Search the catalogue."],
+                                            "validation": None,
+                                        },
+                                        {
+                                            "id": 2,
+                                            "name": "product detail lookup",
+                                            "tool": "stock.get_product",
+                                            "status": "planned",
+                                            "args": {"sku": "fl-da-dan"},
+                                            "depends_on": [],
+                                            "parallel_group": 1,
+                                            "hypotheses": ["Fetch exact product detail."],
+                                            "validation": None,
+                                        },
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 1,
+                                    "actual_rows": 1,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.9,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {"choices": [{"message": {"content": "Completed both retrievals."}}]}
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": "Completed both retrievals.",
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<thought>\n"
+                                "goal: resolve stock evidence\n"
+                                "entity_guess: product\n"
+                                "strategy: exact lookup\n"
+                                "tool: stock.search_catalogue\n"
+                                "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"dance floor\"}\n"
+                                "risk: none\n"
+                                "</thought>"
+                            ),
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "stock.search_catalogue",
+                                        "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"dance floor\"}",
+                                    },
+                                },
+                                {
+                                    "id": "call_2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "stock.get_product",
+                                        "arguments": "{\"sku\":\"fl-da-dan\"}",
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        if tool_name == "stock.search_catalogue":
+            await anyio.sleep(0.05)
+            return ToolResult(
+                tool=tool_name,
+                data={"items": [{"id": "prod-1", "name": "Dance Floor", "variants": [{"id": "var-1", "sku": "fl-da-dan"}]}]},
+                trace=ToolTrace(
+                    thought=thought,
+                    tool=tool_name,
+                    args=raw_args,
+                    status="ok",
+                    result_count=1,
+                ),
+            )
+        if tool_name == "stock.get_product":
+            await anyio.sleep(0.01)
+            return ToolResult(
+                tool=tool_name,
+                data={"items": [{"id": "prod-1", "name": "Dance Floor", "variants": [{"id": "var-1", "sku": "fl-da-dan"}]}]},
+                trace=ToolTrace(
+                    thought=thought,
+                    tool=tool_name,
+                    args=raw_args,
+                    status="ok",
+                    result_count=1,
+                ),
+            )
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-parallel")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="Resolve dance floor stock and the exact product detail.",
+                sessionId="engine-parallel",
+                includeThoughts=True,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert [trace.tool for trace in result.tool_trace] == ["stock.search_catalogue", "stock.get_product"]
+    assert result.debug is not None
+    assert result.debug.retrieval.parallel_batches[0].execution_mode == "parallel"
+    assert result.debug.retrieval.parallel_batches[0].tools == ["stock.search_catalogue", "stock.get_product"]
+
+
+@pytest.mark.anyio
+async def test_agent_engine_adds_recursive_follow_up_step_when_catalogue_result_is_thin() -> None:
+    container = await build_container(build_engine_settings())
+    query_calls = {"count": 0}
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Resolve white gloss dance floor size",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "catalogue search",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
+                                            "depends_on": [],
+                                            "parallel_group": None,
+                                            "hypotheses": ["Resolve the floor from catalogue results first."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 1,
+                                    "actual_rows": 1,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.94,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {"choices": [{"message": {"content": "The white gloss dance floor size is grounded in the retrieved detail."}}]}
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": "The white gloss dance floor size is grounded in the retrieved detail.",
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            query_calls["count"] += 1
+            if query_calls["count"] == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    "<thought>\n"
+                                    "goal: resolve floor candidate\n"
+                                    "entity_guess: variant\n"
+                                    "strategy: catalogue search\n"
+                                    "tool: stock.search_catalogue\n"
+                                    "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"white gloss dance floor\"}\n"
+                                    "risk: ambiguity\n"
+                                    "</thought>"
+                                ),
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "stock.search_catalogue",
+                                            "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"white gloss dance floor\"}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": "I need one more retrieval hop before I can answer safely."}}]}
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-recursive-follow-up")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="What size is the white gloss dance floor?",
+                sessionId="engine-recursive-follow-up",
+                includeThoughts=True,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
+    assert any(trace.tool == "stock.extract_variant_evidence" for trace in result.tool_trace)
+    assert len(result.plan_status.steps) >= 2
+    assert result.plan_status.steps[1].depends_on == [1]
+    assert any("Recursive follow-up step `2` was added" in item for item in result.limitations)
+    assert result.debug is not None

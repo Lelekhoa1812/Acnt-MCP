@@ -1176,16 +1176,41 @@
     };
   }
 
+  function buildRuntimeDebug(payload) {
+    if (payload?.debug) {
+      return payload.debug;
+    }
+    return {
+      retrieval: {
+        trace_summary: Array.isArray(payload?.tool_trace) ? payload.tool_trace : [],
+        thought_blocks: Array.isArray(payload?.thoughts) ? payload.thoughts : [],
+        parallel_batches: [],
+      },
+      grounding: {
+        user_impact_limitations: payload?.limitations || [],
+      },
+    };
+  }
+
   function buildModelMetadata(payload, sessionId) {
+    const runtimeDebug = buildRuntimeDebug(payload);
+    const traceSummary = Array.isArray(runtimeDebug?.retrieval?.trace_summary) ? runtimeDebug.retrieval.trace_summary : [];
+    const thoughtBlocks = Array.isArray(runtimeDebug?.retrieval?.thought_blocks)
+      ? runtimeDebug.retrieval.thought_blocks
+      : [];
+    const limitations = Array.isArray(runtimeDebug?.grounding?.user_impact_limitations)
+      ? runtimeDebug.grounding.user_impact_limitations
+      : payload?.limitations || [];
     return {
       status: payload?.status || "unknown",
       sessionId,
-      toolCalls: Array.isArray(payload?.tool_trace) ? payload.tool_trace.length : 0,
-      thoughtBlocks: Array.isArray(payload?.thoughts) ? payload.thoughts.length : 0,
-      limitations: payload?.limitations || [],
+      toolCalls: traceSummary.length,
+      thoughtBlocks: thoughtBlocks.length,
+      limitations,
       service: state.runtimeSpec?.server_name || config.serviceName || "HTH MCP",
       serviceVersion: state.runtimeSpec?.server_version || config.serviceVersion || "unknown",
       model: payload?.model || "not_exposed_by_backend",
+      debugMode: payload?.debug ? "structured" : "legacy",
     };
   }
 
@@ -2365,6 +2390,7 @@
         timestamp: new Date().toISOString(),
         event: "Model Response",
         rawApiRequest: requestPayload,
+        debugPayload: buildRuntimeDebug(payload),
         tokenUsage,
         latencyMs,
         modelMetadata,
@@ -2490,6 +2516,7 @@
         timestamp: new Date().toISOString(),
         event: "Recovered Response",
         rawApiRequest: pending.requestPayload,
+        debugPayload: buildRuntimeDebug(payload),
         tokenUsage,
         latencyMs,
         modelMetadata,

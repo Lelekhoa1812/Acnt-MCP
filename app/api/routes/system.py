@@ -35,15 +35,16 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
             "rest": {
                 "transport": "http",
                 "base_path": container.settings.api_prefix,
-                "notes": "Custom diagnostic and query endpoints for local testing and the mock UI.",
+                "notes": "Custom diagnostic and query endpoints for local testing, the mock UI, and the stock-first debug payload.",
             },
             "mcp": {
                 "transport": "stdio",
-                "entrypoint": "python -m app.mcp.server",
+                "entrypoint": "python3 -m app.mcp.server",
                 "notes": "Protocol-compliant MCP tool server for Claude/Cursor-style integrations.",
             },
         },
         "phase": "phase1",
+        "persona": "Harmonise Orchestrator",
         "scope": [
             "inventory lookup",
             "product and variant resolution",
@@ -53,12 +54,13 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
             "clarification of ambiguous product requests",
             "grounded Q&A and lightweight planning based on inventory evidence",
             "external plugin exploration for weather, news, and currency",
+            "separate audit/debug payloads for planner and retrieval traces",
         ],
         "out_of_scope": [
-            "booking logic",
-            "quote logic",
-            "reservation workflows",
-            "event line item workflows",
+            "booking workflows not yet implemented in the current tool contract",
+            "quote workflows not yet implemented in the current tool contract",
+            "reservation workflows not yet implemented in the current tool contract",
+            "event line item workflows not yet implemented in the current tool contract",
         ],
         "startup_notes": container.settings.startup_notes(),
     }

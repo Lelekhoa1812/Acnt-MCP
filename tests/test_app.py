@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -8,7 +9,18 @@ from app.agent.engine import AgentEngine, AgentRun
 from app.tool.currency.service import CurrencyProviderError
 from app.config import Settings, UpstreamServiceError
 from app.main import create_app
-from app.schemas import MemoCache, PlanStatus, PlanStep, ToolTrace
+from app.schemas import (
+    AgentDebugGrounding,
+    AgentDebugIntent,
+    AgentDebugPayload,
+    AgentDebugPlan,
+    AgentDebugPlanStep,
+    AgentDebugRetrieval,
+    MemoCache,
+    PlanStatus,
+    PlanStep,
+    ToolTrace,
+)
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
 
@@ -348,6 +360,116 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     assert ui_response.status_code == 200
     assert "HTH Claude" in ui_response.text
     assert "/api/v1/ui/assets/app.js" in ui_response.text
+
+
+def test_query_endpoint_returns_structured_debug_payload(monkeypatch) -> None:
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved Laminate Timber Floor from the local Harmonise simulator.",
+            thoughts=["<thought>goal: resolve sku</thought>"],
+            debug=AgentDebugPayload(
+                intent=AgentDebugIntent(
+                    current_goal="Resolve Laminate Timber Floor",
+                    primary_entity_guess="variant",
+                    requested_attributes=["size", "stock"],
+                    inferred_filters={"sku": "fl-la-la-lam-1-ble"},
+                    scope_status="stock_supported",
+                ),
+                plan=AgentDebugPlan(
+                    goal="Resolve Laminate Timber Floor",
+                    status="complete",
+                    ready_steps=[],
+                    blocked_steps=[],
+                    dag=[
+                        AgentDebugPlanStep(
+                            id=1,
+                            name="fetch product",
+                            tool="stock.get_product",
+                            status="done",
+                            depends_on=[],
+                            parallel_group=None,
+                        )
+                    ],
+                    next_hop_rules=["Follow catalogue matches with exact product detail retrieval."],
+                ),
+                retrieval=AgentDebugRetrieval(
+                    thought_blocks=["<thought>goal: resolve sku</thought>"],
+                ),
+                grounding=AgentDebugGrounding(
+                    resolved_identifiers=["fl-la-la-lam-1-ble"],
+                    evidence_count=1,
+                    unresolved_attributes=[],
+                    user_impact_limitations=[],
+                ),
+            ),
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "Check fl-la-la-lam-1-ble", "includeThoughts": True},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["debug"]["intent"]["primary_entity_guess"] == "variant"
+    assert payload["debug"]["plan"]["dag"][0]["tool"] == "stock.get_product"
+    assert payload["debug"]["grounding"]["evidence_count"] == 1
+
+
+def test_query_endpoint_hides_debug_payload_when_include_thoughts_is_false(monkeypatch) -> None:
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=["<thought>goal: resolve sku</thought>"],
+            debug=AgentDebugPayload(
+                intent=AgentDebugIntent(current_goal="Resolve request"),
+                plan=AgentDebugPlan(goal="Resolve request", status="complete"),
+                retrieval=AgentDebugRetrieval(thought_blocks=["<thought>goal: resolve sku</thought>"]),
+                grounding=AgentDebugGrounding(evidence_count=0),
+            ),
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "Check fl-la-la-lam-1-ble", "includeThoughts": False},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["thoughts"] == []
+    assert payload["debug"] is None
+
+
+def test_system_spec_reports_harmonise_orchestrator_scope() -> None:
+    with build_client() as client:
+        response = client.get("/api/v1/system/spec")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["persona"] == "Harmonise Orchestrator"
+    assert "separate audit/debug payloads for planner and retrieval traces" in payload["scope"]
+    assert "not yet implemented in the current tool contract" in payload["out_of_scope"][0]
+
+
+def test_mock_ui_asset_prefers_structured_debug_payload_when_present() -> None:
+    asset = Path("/Users/liamle/Downloads/hth-mcp/ui/mock/assets/app.js").read_text()
+
+    assert "payload?.debug" in asset
+    assert "buildRuntimeDebug(payload)" in asset
 
 
 def test_query_endpoint_replays_local_chat_history_across_turns(monkeypatch) -> None:

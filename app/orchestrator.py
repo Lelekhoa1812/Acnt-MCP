@@ -64,6 +64,7 @@ class OrchestratorService:
             status=run.status,
             answer=run.answer,
             thoughts=run.thoughts if request.includeThoughts else [],
+            debug=run.debug if request.includeThoughts else None,
             tool_trace=run.tool_trace,
             clarification=run.clarification,
             resolved_items=run.resolved_items,

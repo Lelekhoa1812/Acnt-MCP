@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     )
 
     server_name: str = Field("hth-stock-intelligence", alias="HTH_SERVER_NAME")
-    server_version: str = Field("1.0.0", alias="HTH_SERVER_VERSION")
+    server_version: str = Field("1.0.5", alias="HTH_SERVER_VERSION")
     transport: str = Field("http", alias="HTH_TRANSPORT")
     port: int = Field(3000, alias="HTH_PORT")
     api_prefix: str = Field("/api/v1", alias="HTH_API_PREFIX")
@@ -30,7 +30,10 @@ class Settings(BaseSettings):
     cloud_harmonise_api: str | None = Field(None, alias="CLOUD_HARMONISE_API")
     cloud_harmonise_image: str | None = Field(None, alias="CLOUD_HARMONISE_IMAGE")
     harmonise_headers: str = Field("{}", alias="HTH_HARMONISE_HEADERS")
-    harmonise_timeout_ms: int = Field(10000, alias="HTH_HARMONISE_TIMEOUT_MS")
+    harmonise_timeout_ms: int = Field(0, ge=0, alias="HTH_HARMONISE_TIMEOUT_MS")
+    harmonise_retry_attempts: int = Field(2, ge=0, alias="HTH_HARMONISE_RETRY_ATTEMPTS")
+    harmonise_retry_backoff_ms: int = Field(400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_MS")
+    harmonise_retry_backoff_cap_ms: int = Field(2400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_CAP_MS")
     redis_url: str = Field("redis://localhost:6379", alias="HTH_REDIS_URL")
     cache_ttl_seconds: int = Field(300, alias="HTH_CACHE_TTL_SECONDS")
     session_ttl_seconds: int = Field(1800, alias="HTH_SESSION_TTL_SECONDS")
@@ -64,8 +67,25 @@ class Settings(BaseSettings):
     news_api_key: str | None = Field(None, alias="NEWS_API")
 
     @property
-    def harmonise_timeout_seconds(self) -> float:
+    def harmonise_timeout_seconds(self) -> float | None:
+        # Motivation vs Logic: large cloud catalogue scans can legitimately take
+        # much longer than a fixed client timeout, so `0` disables the HTTP read
+        # timeout entirely and lets inventory retrieval run until upstream returns.
+        if self.harmonise_timeout_ms == 0:
+            return None
         return self.harmonise_timeout_ms / 1000
+
+    @property
+    def harmonise_retry_backoff_seconds(self) -> float:
+        return self.harmonise_retry_backoff_ms / 1000
+
+    @property
+    def harmonise_retry_backoff_cap_seconds(self) -> float:
+        return self.harmonise_retry_backoff_cap_ms / 1000
+
+    @property
+    def harmonise_max_attempts(self) -> int:
+        return self.harmonise_retry_attempts + 1
 
     @property
     def foundry_timeout_seconds(self) -> float:

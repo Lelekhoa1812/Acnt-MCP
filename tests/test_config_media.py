@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.config import Settings
-from app.inventory.media import build_harmonise_image_url
+from app.tool.stock.media import build_harmonise_image_url
 
 
 def test_settings_switches_harmonise_base_url_by_mode() -> None:
@@ -53,3 +53,11 @@ def test_build_harmonise_image_url_handles_path_shapes() -> None:
     )
     assert build_harmonise_image_url("https://cdn.example.com", None) is None
     assert build_harmonise_image_url(None, "/stock/product-images/item_thumb.png") is None
+
+
+def test_settings_supports_unbounded_harmonise_timeout() -> None:
+    settings = Settings(harmonise_timeout_ms=0)
+    assert settings.harmonise_timeout_seconds is None
+
+    bounded_settings = Settings(harmonise_timeout_ms=2500)
+    assert bounded_settings.harmonise_timeout_seconds == 2.5
