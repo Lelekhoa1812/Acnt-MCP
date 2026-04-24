@@ -1,4 +1,4 @@
-# HTH Stock Intelligence
+# HTH Stock Intelligence (v1.0.5)
 
 HTH Stock Intelligence is a tool-driven inventory layer for the Harmonise catalogue. Users can ask about stock, variants, availability, families, weather, news, and currency in natural language; the runtime routes those questions through validated tools and returns grounded answers with provenance.
 
