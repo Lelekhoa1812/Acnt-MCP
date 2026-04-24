@@ -34,4 +34,19 @@ async def query_agent(payload: AgentQueryRequest, container = Depends(get_contai
         source_guess,
         fallback_guess,
     )
+    answer_preview = " ".join(result.answer.split())[:200]
+    plan_status_label = result.plan_status.status if result.plan_status else "unknown"
+    plan_steps = len(result.plan_status.steps) if result.plan_status else 0
+    limitations_summary = ";".join(result.limitations) if result.limitations else "none"
+    # Motivation vs Logic: summarise each response so we can track which status came back and why without recording the full payload.
+    logger.info(
+        "ui_query_response session_id=%s status=%s plan_status=%s plan_steps=%s clarification=%s answer_preview=%s limitations=%s",
+        result.session_state.session_id,
+        result.status,
+        plan_status_label,
+        plan_steps,
+        bool(result.clarification),
+        answer_preview,
+        limitations_summary,
+    )
     return result.model_dump(mode="json")

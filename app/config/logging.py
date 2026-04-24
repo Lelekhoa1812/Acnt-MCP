@@ -28,4 +28,12 @@ def configure_logging(level: str) -> None:
         }
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Motivation vs Logic: httpcore is embedded inside httpx and defaults to DEBUG,
+    # which flooded the console with every handshake/request detail during normal use.
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpcore.connection").setLevel(logging.WARNING)
+    logging.getLogger("httpcore.http11").setLevel(logging.WARNING)
+    # Motivation vs Logic: Uvicorn's access/error loggers repeat requests and overshadow our API-level context.
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
     logging.getLogger("redis").setLevel(logging.WARNING)
