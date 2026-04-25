@@ -56,7 +56,18 @@ def test_topic_scope_detects_continuation_for_anaphora_follow_up() -> None:
     )
     scope = derive_memory_scope("What about its stock?", session)
     assert scope.transition == "continuation"
-    assert "anaphora" in scope.bridge_signals
+    assert scope.allow_background_reference is False
+
+
+def test_topic_scope_prefers_topic_shift_when_anaphora_mentions_new_entity() -> None:
+    session = SessionState(
+        session_id="scope-anaphora-shift",
+        active_subject=ActiveSubjectSnapshot(label="Spencer Chair", product_names=["Spencer Chair"]),
+    )
+    scope = derive_memory_scope("How about that Alto chair?", session)
+    assert scope.transition == "topic_shift"
+    assert scope.target_entity is not None
+    assert "alto" in scope.target_entity.lower()
 
 
 def test_topic_scope_allows_background_for_comparison_requests() -> None:
@@ -64,10 +75,10 @@ def test_topic_scope_allows_background_for_comparison_requests() -> None:
         session_id="scope-compare",
         active_subject=ActiveSubjectSnapshot(label="Spencer Chair", product_names=["Spencer Chair"]),
     )
-    scope = derive_memory_scope("Compare that with Baxter chair", session)
+    scope = derive_memory_scope("Compare Spencer chair with Baxter chair", session)
     assert scope.transition == "continuation"
     assert scope.allow_background_reference is True
-    assert "comparative" in scope.bridge_signals
+    assert "multi_subject" in scope.bridge_signals
 
 
 def test_apply_virtual_pruning_resets_entity_memory_and_archives_subject() -> None:

@@ -740,7 +740,7 @@ def test_query_endpoint_uses_fallback_name_when_llm_naming_fails(monkeypatch) ->
     assert calls["naming"] == 1
 
 
-def test_query_endpoint_retries_naming_after_fallback(monkeypatch) -> None:
+def test_query_endpoint_does_not_retry_naming_after_fallback(monkeypatch) -> None:
     calls = {"naming": 0}
 
     async def fake_run(self, request, session_state):  # noqa: ANN001
@@ -796,15 +796,15 @@ def test_query_endpoint_retries_naming_after_fallback(monkeypatch) -> None:
 
     assert second.status_code == 200
     second_payload = second.json()
-    assert second_payload["session_state"]["session_name"] == "Expo Floor Plan"
-    assert second_payload["session_state"]["session_name_source"] == "llm"
+    assert second_payload["session_state"]["session_name"] == "Need a laminate quote"
+    assert second_payload["session_state"]["session_name_source"] == "fallback"
 
     assert third.status_code == 200
     third_payload = third.json()
-    assert third_payload["session_state"]["session_name"] == "Expo Floor Plan"
-    assert third_payload["session_state"]["session_name_source"] == "llm"
+    assert third_payload["session_state"]["session_name"] == "Need a laminate quote"
+    assert third_payload["session_state"]["session_name_source"] == "fallback"
 
-    assert calls["naming"] == 2
+    assert calls["naming"] == 1
 
 
 def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) -> None:

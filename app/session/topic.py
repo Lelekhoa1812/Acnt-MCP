@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Iterable
 
 from app.schemas import ActiveSubjectSnapshot, SessionMemoryScope, SessionState
 from app.text.utils import lexical_overlap, normalize_text, significant_tokens
-
-_ADDITIVE_BRIDGES = {"also", "plus", "another", "additionally", "alongside", "including"}
-_COMPARATIVE_BRIDGES = {"compare", "compared", "versus", "vs", "difference", "better", "worse", "than"}
-_ANAPHORA_BRIDGES = {"it", "its", "them", "that", "those", "this", "same", "previous", "one", "ones"}
 
 
 @dataclass(frozen=True)
@@ -23,10 +20,10 @@ def derive_memory_scope(message: str, session_state: SessionState) -> SessionMem
         return SessionMemoryScope(transition="standalone")
 
     target_entity = _extract_target_entity(compact, session_state)
-    bridge_signals = _bridge_signals(compact)
-    allow_background_reference = any(signal in {"additive", "comparative"} for signal in bridge_signals)
-
     active = session_state.active_subject
+    bridge_signals: list[str] = []
+    allow_background_reference = False
+
     if active is None or (not active.product_names and not active.identifiers and not active.label):
         return SessionMemoryScope(
             transition="standalone",
@@ -40,9 +37,47 @@ def derive_memory_scope(message: str, session_state: SessionState) -> SessionMem
     ).strip()
     overlap_with_active = lexical_overlap(compact, active_focus) if active_focus else 0.0
     message_tokens = significant_tokens(compact)
-    short_follow_up = len(message_tokens) <= 3 and bool(message_tokens)
-    has_anaphora_bridge = "anaphora" in bridge_signals
-    explicit_continuation = overlap_with_active >= 0.45 or has_anaphora_bridge or short_follow_up
+    short_follow_up = len(message_tokens) <= 2 and bool(message_tokens)
+    secondary_target = _extract_secondary_target_entity(compact, active)
+    distinct_target = bool(
+        target_entity
+        and _looks_like_specific_entity_label(target_entity)
+        and _is_distinct_target(target_entity, active)
+        and _is_confident_new_subject(target_entity, compact, active)
+    )
+    if (
+        secondary_target
+        and _looks_like_specific_entity_label(secondary_target)
+        and _is_distinct_target(secondary_target, active)
+        and _is_confident_new_subject(secondary_target, compact, active)
+    ):
+        target_entity = secondary_target
+        distinct_target = True
+    mentions_active_subject = _mentions_active_subject(compact, active)
+    bridge_signals, allow_background_reference = _infer_bridge_signals(
+        distinct_target=distinct_target,
+        mentions_active_subject=mentions_active_subject,
+        short_follow_up=short_follow_up,
+        overlap_with_active=overlap_with_active,
+    )
+
+    # Root Cause vs Logic: anaphora used to force continuation before checking
+    # whether the turn explicitly introduced a different subject (e.g. "that
+    # Alto chair"), which caused stale identifier reuse from the prior product.
+    # We now prioritize explicit distinct targets unless the user is asking for
+    # additive/comparative carry-over.
+    if distinct_target and not allow_background_reference and not mentions_active_subject:
+        return SessionMemoryScope(
+            transition="topic_shift",
+            target_entity=target_entity,
+            allow_background_reference=False,
+            bridge_signals=bridge_signals,
+        )
+
+    explicit_continuation = (
+        overlap_with_active >= 0.45
+        or (short_follow_up and not distinct_target)
+    )
 
     if explicit_continuation or allow_background_reference:
         return SessionMemoryScope(
@@ -52,7 +87,7 @@ def derive_memory_scope(message: str, session_state: SessionState) -> SessionMem
             bridge_signals=bridge_signals,
         )
 
-    if target_entity and _is_distinct_target(target_entity, active):
+    if distinct_target:
         return SessionMemoryScope(
             transition="topic_shift",
             target_entity=target_entity,
@@ -163,16 +198,25 @@ def _subject_candidates(session_state: SessionState) -> list[SubjectCandidate]:
     return candidates
 
 
-def _bridge_signals(message: str) -> list[str]:
-    tokens = set(significant_tokens(message))
+def _infer_bridge_signals(
+    *,
+    distinct_target: bool,
+    mentions_active_subject: bool,
+    short_follow_up: bool,
+    overlap_with_active: float,
+) -> tuple[list[str], bool]:
     bridges: list[str] = []
-    if tokens & _ADDITIVE_BRIDGES:
-        bridges.append("additive")
-    if tokens & _COMPARATIVE_BRIDGES:
-        bridges.append("comparative")
-    if tokens & _ANAPHORA_BRIDGES:
-        bridges.append("anaphora")
-    return bridges
+    allow_background_reference = False
+
+    # Motivation vs Logic: avoid brittle keyword allow-lists and infer carry-over
+    # using subject structure; semantic comparison wording is handled by planner prompts.
+    if distinct_target and mentions_active_subject:
+        bridges.append("multi_subject")
+        allow_background_reference = True
+    elif not distinct_target and (short_follow_up or overlap_with_active >= 0.45):
+        bridges.append("implicit_reference")
+
+    return bridges, allow_background_reference
 
 
 def _is_distinct_target(target_entity: str, active_subject: ActiveSubjectSnapshot) -> bool:
@@ -187,6 +231,60 @@ def _is_distinct_target(target_entity: str, active_subject: ActiveSubjectSnapsho
     if not active_labels:
         return True
     return all(label and target not in label and label not in target for label in active_labels)
+
+
+def _mentions_active_subject(message: str, active_subject: ActiveSubjectSnapshot) -> bool:
+    normalized_message = normalize_text(message)
+    if not normalized_message:
+        return False
+    for value in [active_subject.label or "", *(active_subject.product_names or [])]:
+        normalized_value = normalize_text(value)
+        if normalized_value and normalized_value in normalized_message:
+            return True
+    return False
+
+
+def _looks_like_specific_entity_label(value: str) -> bool:
+    # Avoid treating attribute-only follow-ups (e.g. "its stock") as a new
+    # subject; explicit pivots should usually contain at least two meaningful
+    # tokens such as product family + category/name.
+    meaningful_tokens = significant_tokens(value)
+    return len(meaningful_tokens) >= 2
+
+
+def _looks_like_named_entity_mention(message: str) -> bool:
+    for match in re.finditer(r"\b[A-Z][a-z0-9]+\b", message):
+        if match.start() > 0:
+            return True
+    return False
+
+
+def _is_confident_new_subject(target_entity: str, message: str, active_subject: ActiveSubjectSnapshot) -> bool:
+    if _looks_like_named_entity_mention(message):
+        return True
+    active_focus = " ".join([active_subject.label or "", *(active_subject.product_names or [])]).strip()
+    if not active_focus:
+        return False
+    return lexical_overlap(target_entity, active_focus) >= 0.25
+
+
+def _extract_secondary_target_entity(message: str, active_subject: ActiveSubjectSnapshot) -> str | None:
+    normalized_message = normalize_text(message)
+    if not normalized_message:
+        return None
+    active_labels = [
+        normalize_text(value)
+        for value in [active_subject.label or "", *(active_subject.product_names or [])]
+        if value
+    ]
+    for active_label in sorted(active_labels, key=len, reverse=True):
+        if not active_label or active_label not in normalized_message:
+            continue
+        remainder = normalized_message.replace(active_label, " ", 1).strip()
+        tokens = significant_tokens(remainder)
+        if len(tokens) >= 2:
+            return " ".join(tokens[:4])
+    return None
 
 
 def _dedupe_limit(values: Iterable[str], *, limit: int) -> list[str]:

@@ -50,6 +50,7 @@ class OrchestratorService:
         session_state, _ = await self.session_store.get_state(request.sessionId)
         if request.preferences:
             session_state.preferences.update(request.preferences)
+        should_assign_session_name = self._should_assign_session_name(session_state)
 
         memory_scope = derive_memory_scope(request.message, session_state)
         apply_virtual_pruning(session_state, memory_scope)
@@ -73,7 +74,8 @@ class OrchestratorService:
         # include resolved evidence/candidates in the LLM prompt instead of relying
         # on the initial prompt alone, which keeps us from falling back to the first
         # four words for every session.
-        await self._ensure_session_name(session_state, request.message)
+        if should_assign_session_name:
+            await self._ensure_session_name(session_state, request.message)
         await self.session_store.save_state(session_state)
         if self.settings.local_chat_memory_enabled:
             await self.session_store.save_local_chat_turn(
@@ -191,6 +193,33 @@ class OrchestratorService:
             seen.add(value)
             deduped.append(value)
         return deduped
+
+    def _should_assign_session_name(self, session_state: SessionState) -> bool:
+        # Root Cause vs Logic: session naming used to rerun on later turns when the
+        # first-title source was `fallback`, which let follow-up prompts overwrite a
+        # session that was already established. We now gate naming to untouched
+        # sessions only, using pre-query state before this request mutates memory.
+        if session_state.session_name or session_state.name_assigned or session_state.session_name_source:
+            return False
+        if session_state.conversation_history:
+            return False
+        if session_state.active_subject or session_state.background_subjects:
+            return False
+        if session_state.recent_product_names or session_state.recent_resolved_identifiers:
+            return False
+        if session_state.last_candidate_list or session_state.last_filters:
+            return False
+        if session_state.plan_todo or session_state.current_plan is not None:
+            return False
+        if session_state.memo_cache.entries or session_state.memo_cache.aggregates:
+            return False
+        if (
+            session_state.plan_metadata.sorted_priorities
+            or session_state.plan_metadata.confidence_scores
+            or session_state.plan_metadata.validation_findings
+        ):
+            return False
+        return True
 
     async def _ensure_session_name(self, session_state: SessionState, message: str) -> None:
         compact = message.strip()
