@@ -2466,21 +2466,40 @@ class AgentEngine:
     async def _post_chat_completion(self, payload: dict[str, Any], endpoint_name: str) -> dict[str, Any]:
         if self._client is None:
             raise UpstreamServiceError(503, "Azure AI Foundry is not configured.")
-        # Root Cause vs Logic: Foundry read/network timeouts were escaping as raw
-        # httpx exceptions and FastAPI returned 500. We normalize transport faults
-        # into UpstreamServiceError so the API responds with stable 5xx semantics.
-        try:
-            response = await self._client.post("/chat/completions", json=payload)
-        except httpx.ReadTimeout as exc:
+        # Motivation vs Logic: Azure read timeouts tend to be transient, so we
+        # retry the request with exponential backoff before surfacing a 5xx error.
+        response: httpx.Response | None = None
+        for attempt in range(1, self.settings.foundry_max_attempts + 1):
+            try:
+                response = await self._client.post("/chat/completions", json=payload)
+                break
+            except httpx.ReadTimeout as exc:
+                if attempt >= self.settings.foundry_max_attempts:
+                    raise UpstreamServiceError(
+                        504,
+                        f"Azure AI Foundry timed out while handling `{endpoint_name}`.",
+                    ) from exc
+                delay = self._foundry_retry_delay_seconds(attempt)
+                # Root Cause vs Logic: we expose the retry so operators know we
+                # are waiting through transient network hiccups instead of failing.
+                self.logger.warning(
+                    "Azure AI Foundry timed out while handling `%s`; retry %s/%s in %.1fs.",
+                    endpoint_name,
+                    attempt,
+                    self.settings.foundry_max_attempts,
+                    delay,
+                )
+                await anyio.sleep(delay)
+            except httpx.HTTPError as exc:
+                raise UpstreamServiceError(
+                    502,
+                    f"Azure AI Foundry request failed while handling `{endpoint_name}`: {exc}",
+                ) from exc
+        if response is None:
             raise UpstreamServiceError(
                 504,
                 f"Azure AI Foundry timed out while handling `{endpoint_name}`.",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise UpstreamServiceError(
-                502,
-                f"Azure AI Foundry request failed while handling `{endpoint_name}`: {exc}",
-            ) from exc
+            )
 
         if response.status_code >= 400:
             raise UpstreamServiceError(response.status_code, response.text)
@@ -2491,6 +2510,10 @@ class AgentEngine:
                 502,
                 f"Azure AI Foundry returned non-JSON while handling `{endpoint_name}`.",
             ) from exc
+
+    def _foundry_retry_delay_seconds(self, attempt: int) -> float:
+        delay = self.settings.foundry_retry_backoff_seconds * (2 ** (attempt - 1))
+        return min(delay, self.settings.foundry_retry_backoff_cap_seconds)
 
     def _capture(
         self,

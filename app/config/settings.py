@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     foundry_model: str = Field("gpt-5.4-mini", alias="AZURE_AI_FOUNDRY_MODEL")
     foundry_slm_model: str | None = Field(None, alias="AZURE_AI_FOUNDRY_SLM")
     foundry_timeout_ms: int = Field(60000, alias="AZURE_AI_FOUNDRY_TIMEOUT_MS")
+    # Motivation vs Logic: read timeouts from Azure are usually transient, so we
+    # retry a few times before surfacing a 5xx to callers.
+    foundry_retry_attempts: int = Field(2, ge=0, alias="AZURE_AI_FOUNDRY_RETRY_ATTEMPTS")
+    foundry_retry_backoff_ms: int = Field(600, ge=0, alias="AZURE_AI_FOUNDRY_RETRY_BACKOFF_MS")
+    foundry_retry_backoff_cap_ms: int = Field(4000, ge=0, alias="AZURE_AI_FOUNDRY_RETRY_BACKOFF_CAP_MS")
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
     open_weather_api_key: str | None = Field(None, alias="OPEN_WEATHER_API")
     news_api_key: str | None = Field(None, alias="NEWS_API")
@@ -140,6 +145,18 @@ class Settings(BaseSettings):
     @property
     def foundry_timeout_seconds(self) -> float:
         return self.foundry_timeout_ms / 1000
+
+    @property
+    def foundry_retry_backoff_seconds(self) -> float:
+        return self.foundry_retry_backoff_ms / 1000
+
+    @property
+    def foundry_retry_backoff_cap_seconds(self) -> float:
+        return self.foundry_retry_backoff_cap_ms / 1000
+
+    @property
+    def foundry_max_attempts(self) -> int:
+        return self.foundry_retry_attempts + 1
 
     @property
     def project_root(self) -> Path:
