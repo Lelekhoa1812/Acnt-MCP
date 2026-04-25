@@ -254,7 +254,8 @@ class AgentEngine:
             prepared_calls: list[dict[str, Any]] = []
             assistant_thought = (assistant.get("content") or "").strip()
             for tool_call in tool_calls:
-                tool_name = tool_call["function"]["name"]
+                declared_tool = str(tool_call["function"].get("name") or "")
+                tool_name = declared_tool
                 raw_arguments = tool_call["function"].get("arguments") or "{}"
                 try:
                     parsed_args = json.loads(raw_arguments)
@@ -268,7 +269,13 @@ class AgentEngine:
                 if rewrite_note is not None:
                     limitations.append(rewrite_note)
 
-                plan_step, inserted = self._resolve_or_insert_plan_step(plan_status, tool_name, normalized_args)
+                binding_source = declared_tool if declared_tool != tool_name else None
+                plan_step, inserted = self._resolve_or_insert_plan_step(
+                    plan_status,
+                    tool_name,
+                    normalized_args,
+                    binding_source_tool=binding_source,
+                )
                 plan_step.status = "in-progress"
                 prepared_calls.append(
                     {
@@ -1717,12 +1724,49 @@ class AgentEngine:
         )
 
 
+    def _pending_variant_evidence_step_for_get_product_rewrite(
+        self,
+        plan_status: PlanStatus,
+        get_product_args: dict[str, Any],
+    ) -> PlanStep | None:
+        # Root Cause vs Logic: `_rewrite_variant_family_tool_call` turns
+        # product-id-only `stock.extract_variant_evidence` into `stock.get_product`.
+        # Without binding, we matched/inserted a get_product step while the
+        # original EVE plan row stayed not-done, bloating the DAG and often
+        # burning `agent_max_steps` on no-op "next step 2" cycles.
+        compact_id = self._compact_identifier(get_product_args.get("id"))
+        if not compact_id:
+            return None
+        for step in plan_status.steps:
+            if step.status == "done":
+                continue
+            if step.tool not in {"stock.extract_variant_evidence", "stock.get_variant_evidence"}:
+                continue
+            sid = self._compact_identifier((step.args or {}).get("id"))
+            if sid and sid == compact_id:
+                return step
+        return None
+
     def _resolve_or_insert_plan_step(
         self,
         plan_status: PlanStatus,
         tool_name: str,
         args: dict[str, Any],
+        *,
+        binding_source_tool: str | None = None,
     ) -> tuple[PlanStep, bool]:
+        # Root Cause vs Logic: bind rewritten family detail retrieval back to
+        # the planner's variant-evidence row so that step can complete.
+        if (
+            tool_name == "stock.get_product"
+            and binding_source_tool in {"stock.extract_variant_evidence", "stock.get_variant_evidence"}
+        ):
+            bound = self._pending_variant_evidence_step_for_get_product_rewrite(plan_status, args)
+            if bound is not None:
+                merged = {**(bound.args or {}), **args}
+                bound.args = merged
+                return bound, False
+
         # Root Cause vs Logic: binding by tool name alone merged distinct
         # multi-item calls into one pending step and overwrote earlier args.
         # We now bind by exact args first, then only reuse empty placeholders.

@@ -775,6 +775,18 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
             }
         if endpoint_name == "/api/v1/query/composer":
             return {"choices": [{"message": {"content": "Recovered chair evidence successfully."}}]}
+        if endpoint_name == "/api/v1/query/replan":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"should_replan": False, "reason": "test stub", "steps": []}
+                            )
+                        }
+                    }
+                ]
+            }
         raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
 
     container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
@@ -798,6 +810,45 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
     assert any("runtime executed planned step `3` directly" in item for item in result.limitations)
     assert any("Runtime recovered missing lookup args for planned step `3`" in item for item in result.limitations)
     assert not any("Invalid arguments for 'stock.extract_variant_evidence'" in item for item in result.limitations)
+
+
+@pytest.mark.anyio
+async def test_resolve_or_insert_binds_get_product_rewrite_to_pending_variant_evidence_step() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        plan = PlanStatus(
+            goal="test",
+            intent_classes=["stock"],
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="search",
+                    tool="stock.search_catalogue",
+                    status="done",
+                    args={"search": "Spencer", "page": 1, "pageSize": 5},
+                ),
+                PlanStep(
+                    id=2,
+                    name="variant evidence",
+                    tool="stock.extract_variant_evidence",
+                    status="pending",
+                    args={"id": "sp-p1"},
+                ),
+            ],
+        )
+        gp_args = {"id": "sp-p1", "page": 1, "pageSize": 20}
+        step, inserted = container.agent_engine._resolve_or_insert_plan_step(
+            plan,
+            "stock.get_product",
+            gp_args,
+            binding_source_tool="stock.extract_variant_evidence",
+        )
+        assert inserted is False
+        assert step.id == 2
+        assert step.args["id"] == "sp-p1"
+        assert step.args.get("pageSize") == 20
+    finally:
+        await container.close()
 
 
 @pytest.mark.anyio
