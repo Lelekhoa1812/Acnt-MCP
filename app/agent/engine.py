@@ -702,7 +702,11 @@ class AgentEngine:
     async def plan_query(self, request: str, session_state: SessionState) -> tuple[PlanStatus, list[str]]:
         limitations: list[str] = []
 
-        if session_state.current_plan and session_state.current_plan.status == "in-progress":
+        if (
+            session_state.current_plan
+            and session_state.current_plan.status == "in-progress"
+            and self._allow_memory_reuse(session_state)
+        ):
             resumed = session_state.current_plan.model_copy(deep=True)
             if not resumed.memo.entries and session_state.memo_cache.entries:
                 resumed.memo = session_state.memo_cache.model_copy(deep=True)
@@ -765,6 +769,7 @@ class AgentEngine:
                 tool_args=tool_args,
                 result=result,
                 memo_cache=session_state.memo_cache,
+                session_state=session_state,
             )
         else:
             # Root Cause vs Logic: direct `/tools/call` requests were reusing the
@@ -820,6 +825,7 @@ class AgentEngine:
 
         normalized_rows = validator.normalized_rows or self._fallback_rows(result.data)
         normalized_evidence = validator.normalized_evidence or self._fallback_evidence(result.data)
+        subject_provenance = self._subject_provenance(normalized_rows, normalized_evidence, tool_args)
 
         memo_entry = MemoEntry(
             step_id=step.id,
@@ -834,6 +840,7 @@ class AgentEngine:
                 "cache_status": result.trace.cache_status if result.trace else None,
                 "source_data": result.trace.source_data if result.trace else None,
                 "captured_at": self._utc_now_iso(),
+                **subject_provenance,
             },
         )
 
@@ -990,6 +997,7 @@ class AgentEngine:
         tool_args: dict[str, Any],
         result: ToolResult,
         memo_cache,
+        session_state: SessionState,
     ) -> ValidatorEnvelope:
         if self._client is None:
             return self._fallback_validator_envelope(result)
@@ -1023,6 +1031,8 @@ class AgentEngine:
                                 tool_trace=trace_payload,
                                 memo_cache=memo_cache,
                                 context_mode=context_mode,
+                                active_subject=session_state.active_subject,
+                                memory_scope=session_state.memory_scope,
                             ),
                         },
                     ],
@@ -1994,6 +2004,8 @@ class AgentEngine:
         )
 
     def _recover_variant_lookup_identifier(self, session_state: SessionState) -> dict[str, str] | None:
+        if not self._allow_memory_reuse(session_state):
+            return None
         for option in session_state.last_candidate_list:
             recovered = self._recover_variant_identifier_from_candidate_option(option)
             if recovered is not None:
@@ -2070,6 +2082,8 @@ class AgentEngine:
         return None
 
     def _recover_product_identifier(self, session_state: SessionState) -> dict[str, str] | None:
+        if not self._allow_memory_reuse(session_state):
+            return None
         for identifier in session_state.recent_resolved_identifiers:
             compact = self._compact_identifier(identifier)
             if not compact:
@@ -2110,6 +2124,32 @@ class AgentEngine:
                     if candidate:
                         return {target: candidate}
         return None
+
+    def _subject_provenance(
+        self,
+        normalized_rows: list[dict[str, Any]],
+        normalized_evidence: list[dict[str, Any]],
+        tool_args: dict[str, Any],
+    ) -> dict[str, Any]:
+        identifiers: list[str] = []
+        names: list[str] = []
+        for source in [tool_args, *normalized_rows, *normalized_evidence]:
+            if not isinstance(source, dict):
+                continue
+            for key in ("id", "product_id", "productId", "variant_id", "variantId", "sku"):
+                value = self._compact_identifier(source.get(key))
+                if value and value not in identifiers:
+                    identifiers.append(value)
+            for key in ("product", "variant", "product_name", "variant_name", "name", "label"):
+                value = source.get(key)
+                if isinstance(value, str):
+                    compact = value.strip()
+                    if compact and compact not in names:
+                        names.append(compact)
+        return {
+            "subject_identifiers": identifiers[:8],
+            "subject_names": names[:8],
+        }
 
     def _compact_identifier(self, value: Any) -> str | None:
         if not isinstance(value, str):
@@ -2317,6 +2357,8 @@ class AgentEngine:
                                 memo_cache=session_state.memo_cache,
                                 limitations=self._composer_limitations(limitations),
                                 context_mode=context_mode,
+                                active_subject=session_state.active_subject,
+                                memory_scope=session_state.memory_scope,
                             ),
                         },
                     ],
@@ -2750,6 +2792,10 @@ class AgentEngine:
         deduped = [item for item in values if item != new_value]
         return ([new_value] + deduped)[:limit]
 
+    def _allow_memory_reuse(self, session_state: SessionState) -> bool:
+        scope = session_state.memory_scope
+        return scope.transition != "topic_shift" or scope.allow_background_reference
+
     def _dedupe(self, values: list[str]) -> list[str]:
         deduped: list[str] = []
         seen: set[str] = set()
@@ -2933,6 +2979,8 @@ class AgentEngine:
                                 session_state.memo_cache,
                                 request_message,
                                 mode="compact",
+                                active_subject=session_state.active_subject,
+                                memory_scope=session_state.memory_scope,
                             ),
                             "traces": [trace.model_dump(mode="json") for trace in traces[-12:]],
                             "limitations": self._dedupe(limitations)[-12:],

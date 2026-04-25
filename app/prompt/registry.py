@@ -10,7 +10,15 @@ from app.prompt.news import NEWS_EXAMPLES
 from app.prompt.stock import StockPromptPolicy, build_stock_prompt_policy
 from app.prompt.weather import WEATHER_EXAMPLES
 from app.text.utils import normalize_text
-from app.schemas import MemoCache, PlanStatus, PlanStep, SessionState, ToolDefinition
+from app.schemas import (
+    ActiveSubjectSnapshot,
+    MemoCache,
+    PlanStatus,
+    PlanStep,
+    SessionMemoryScope,
+    SessionState,
+    ToolDefinition,
+)
 
 # Motivation vs Logic: prompt policy is now the single configurable control
 # surface for reasoning, clarification, answer style, and tool behavior so the
@@ -475,6 +483,7 @@ Rules:
 - For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
 - Keep the DAG latency-aware: prefer bounded, answer-ready tools over long chains of overlapping stock detail calls.
 - Never mark the plan complete while requested attributes are still missing and additional retrieval paths remain; append replan steps instead.
+- If the session summary reports `memory_scope: topic_shift`, treat earlier entities as background only and plan from the new target entity; do not reuse unrelated identifiers.
 - If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock.get_product` or `stock.inventory_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
 - Do not invent booking or quote tools; those workflows are not yet implemented in the current tool contract.
 - Do not invent tools.
@@ -503,6 +512,8 @@ def render_validator(
     tool_trace: dict[str, object],
     memo_cache: MemoCache,
     context_mode: str = "normal",
+    active_subject: ActiveSubjectSnapshot | None = None,
+    memory_scope: SessionMemoryScope | None = None,
 ) -> str:
     payload = {
         "plan_context": render_plan_context(
@@ -519,6 +530,8 @@ def render_validator(
                 if value
             ),
             mode=context_mode,
+            active_subject=active_subject,
+            memory_scope=memory_scope,
         ),
         "step": step.model_dump(mode="json"),
         "tool_name": tool_name,
@@ -557,10 +570,19 @@ def render_composer(
     memo_cache: MemoCache,
     limitations: list[str],
     context_mode: str = "normal",
+    active_subject: ActiveSubjectSnapshot | None = None,
+    memory_scope: SessionMemoryScope | None = None,
 ) -> str:
     payload = {
         "request": request,
-        "plan_context": render_plan_context(plan, memo_cache, request, mode=context_mode),
+        "plan_context": render_plan_context(
+            plan,
+            memo_cache,
+            request,
+            mode=context_mode,
+            active_subject=active_subject,
+            memory_scope=memory_scope,
+        ),
         "limitations": limitations,
     }
     return f"""
@@ -571,6 +593,7 @@ Requirements:
 - Do not mention plan steps, TODO status, memo/cache mechanics, validation counters, tool names, argument details, Redis/cache-hit statuses, or internal failed attempts.
 - Do not mention debug payload sections or thought-block mechanics.
 - If evidence is incomplete, describe only the user-facing impact in plain language.
+- Keep the response scoped to the active subject in plan_context; mention other products only when the request explicitly compares or adds them.
 - When colour or finish is encoded only in a variant’s name, use that name in the answer; do not add a separate colour label or field.
 - Do not invent facts.
 - Do not call tools.

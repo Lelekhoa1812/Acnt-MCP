@@ -3,8 +3,17 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from app.schemas import ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, SessionState
-from app.text.utils import lexical_overlap, significant_tokens
+from app.schemas import (
+    ActiveSubjectSnapshot,
+    ConversationTurn,
+    MemoCache,
+    MemoEntry,
+    PlanStatus,
+    PlanStep,
+    SessionMemoryScope,
+    SessionState,
+)
+from app.text.utils import lexical_overlap, normalize_text, significant_tokens
 
 # Motivation vs Logic: prompt rendering now scores and chunks session memory so
 # the model sees only the relevant slice instead of a raw session dump.
@@ -32,12 +41,24 @@ MODE_SETTINGS: dict[ContextMode, dict[str, int]] = {
 
 def summarize_session_state(session: SessionState, request: str, mode: ContextMode = "normal") -> dict[str, Any]:
     settings = MODE_SETTINGS[mode]
+    scoped_memo_entries = _scoped_memo_entries(
+        session.memo_cache.entries,
+        active_subject=session.active_subject,
+        memory_scope=session.memory_scope,
+    )
+    scoped_history = _scoped_history(
+        session.conversation_history,
+        active_subject=session.active_subject,
+        memory_scope=session.memory_scope,
+    )
     summary: dict[str, Any] = {
         "session": {
             "session_id": session.session_id,
             "session_name": session.session_name,
             "session_name_source": session.session_name_source,
             "name_assigned": session.name_assigned,
+            "memory_scope": session.memory_scope.transition,
+            "target_entity": session.memory_scope.target_entity,
         },
         "working_memory": _summarize_working_memory(session),
     }
@@ -54,11 +75,15 @@ def summarize_session_state(session: SessionState, request: str, mode: ContextMo
     if plan_summary is not None:
         summary["plan"] = plan_summary
 
-    memo_summary = _summarize_memo_cache(session.memo_cache, request, mode)
+    memo_summary = _summarize_memo_cache(
+        MemoCache(entries=scoped_memo_entries, aggregates=session.memo_cache.aggregates),
+        request,
+        mode,
+    )
     if memo_summary is not None:
         summary["memo"] = memo_summary
 
-    history_summary = _summarize_history(session.conversation_history, request, settings)
+    history_summary = _summarize_history(scoped_history, request, settings)
     if history_summary:
         summary["conversation"] = history_summary
 
@@ -70,7 +95,19 @@ def render_session_context(session: SessionState, request: str, mode: ContextMod
     return _render_session_summary(summary)
 
 
-def summarize_plan_context(plan: PlanStatus, memo_cache: MemoCache, request: str, mode: ContextMode = "normal") -> dict[str, Any]:
+def summarize_plan_context(
+    plan: PlanStatus,
+    memo_cache: MemoCache,
+    request: str,
+    mode: ContextMode = "normal",
+    active_subject: ActiveSubjectSnapshot | None = None,
+    memory_scope: SessionMemoryScope | None = None,
+) -> dict[str, Any]:
+    scoped_entries = _scoped_memo_entries(
+        memo_cache.entries,
+        active_subject=active_subject,
+        memory_scope=memory_scope,
+    )
     summary = {
         "plan": _summarize_plan(
             plan=plan,
@@ -82,14 +119,32 @@ def summarize_plan_context(plan: PlanStatus, memo_cache: MemoCache, request: str
             mode=mode,
         ),
     }
-    memo_summary = _summarize_memo_cache(memo_cache, request, mode)
+    memo_summary = _summarize_memo_cache(
+        MemoCache(entries=scoped_entries, aggregates=memo_cache.aggregates),
+        request,
+        mode,
+    )
     if memo_summary is not None:
         summary["memo"] = memo_summary
     return summary
 
 
-def render_plan_context(plan: PlanStatus, memo_cache: MemoCache, request: str, mode: ContextMode = "normal") -> str:
-    summary = summarize_plan_context(plan, memo_cache, request, mode)
+def render_plan_context(
+    plan: PlanStatus,
+    memo_cache: MemoCache,
+    request: str,
+    mode: ContextMode = "normal",
+    active_subject: ActiveSubjectSnapshot | None = None,
+    memory_scope: SessionMemoryScope | None = None,
+) -> str:
+    summary = summarize_plan_context(
+        plan,
+        memo_cache,
+        request,
+        mode,
+        active_subject=active_subject,
+        memory_scope=memory_scope,
+    )
     return _render_plan_summary(summary)
 
 
@@ -336,6 +391,10 @@ def _render_session_summary(summary: dict[str, Any]) -> str:
             session_lines.append(f"- session_name: {session.get('session_name')} ({name_source})")
         if session.get("name_assigned") is not None:
             session_lines.append(f"- name_assigned: {session.get('name_assigned')}")
+        if session.get("memory_scope"):
+            session_lines.append(f"- memory_scope: {session.get('memory_scope')}")
+        if session.get("target_entity"):
+            session_lines.append(f"- target_entity: {session.get('target_entity')}")
         sections.append("\n".join(session_lines))
 
     working_memory = summary.get("working_memory") or {}
@@ -613,3 +672,70 @@ def _render_compact_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
     return str(value)
+
+
+def _scoped_memo_entries(
+    entries: list[MemoEntry],
+    *,
+    active_subject: ActiveSubjectSnapshot | None,
+    memory_scope: SessionMemoryScope | None,
+) -> list[MemoEntry]:
+    if not entries:
+        return []
+    if not _should_scope_to_active_subject(active_subject, memory_scope):
+        return entries
+    subject_terms = _subject_terms(active_subject)
+    if not subject_terms:
+        return entries
+    scoped = [entry for entry in entries if _entry_matches_subject(entry, subject_terms)]
+    return scoped if scoped else entries[-2:]
+
+
+def _scoped_history(
+    turns: list[ConversationTurn],
+    *,
+    active_subject: ActiveSubjectSnapshot | None,
+    memory_scope: SessionMemoryScope | None,
+) -> list[ConversationTurn]:
+    if not turns:
+        return []
+    if not _should_scope_to_active_subject(active_subject, memory_scope):
+        return turns
+    subject_terms = _subject_terms(active_subject)
+    if not subject_terms:
+        return turns
+    scoped = [turn for turn in turns if any(term in normalize_text(turn.content) for term in subject_terms)]
+    return scoped if scoped else turns[-2:]
+
+
+def _should_scope_to_active_subject(
+    active_subject: ActiveSubjectSnapshot | None,
+    memory_scope: SessionMemoryScope | None,
+) -> bool:
+    if active_subject is None or memory_scope is None:
+        return False
+    return memory_scope.transition == "topic_shift" and not memory_scope.allow_background_reference
+
+
+def _subject_terms(active_subject: ActiveSubjectSnapshot | None) -> set[str]:
+    if active_subject is None:
+        return set()
+    terms: set[str] = set()
+    for value in [active_subject.label or "", *(active_subject.product_names or []), *(active_subject.identifiers or [])]:
+        compact = normalize_text(value)
+        if compact:
+            terms.add(compact)
+    return terms
+
+
+def _entry_matches_subject(entry: MemoEntry, subject_terms: set[str]) -> bool:
+    haystacks: list[str] = []
+    if entry.args:
+        haystacks.append(normalize_text(json.dumps(entry.args, ensure_ascii=False, default=str)))
+    if entry.provenance:
+        haystacks.append(normalize_text(json.dumps(entry.provenance, ensure_ascii=False, default=str)))
+    for collection in (entry.rows, entry.evidence):
+        for item in collection:
+            if isinstance(item, dict):
+                haystacks.append(normalize_text(json.dumps(item, ensure_ascii=False, default=str)))
+    return any(term and term in haystack for haystack in haystacks for term in subject_terms)

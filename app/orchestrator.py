@@ -16,6 +16,7 @@ from app.schemas import (
     ToolResult,
 )
 from app.session.store import SessionStore
+from app.session.topic_scope import apply_virtual_pruning, derive_memory_scope, refresh_active_subject
 from app.tool.registry import ToolRegistry
 
 
@@ -50,7 +51,23 @@ class OrchestratorService:
         if request.preferences:
             session_state.preferences.update(request.preferences)
 
+        memory_scope = derive_memory_scope(request.message, session_state)
+        apply_virtual_pruning(session_state, memory_scope)
+        self.logger.info(
+            "memory_scope_decision session_id=%s transition=%s target=%s allow_background=%s bridges=%s",
+            session_state.session_id,
+            memory_scope.transition,
+            memory_scope.target_entity or "<none>",
+            memory_scope.allow_background_reference,
+            ",".join(memory_scope.bridge_signals) or "<none>",
+        )
+
         run = await self.agent_engine.run(request=request, session_state=session_state)
+        refresh_active_subject(
+            session_state,
+            request_message=request.message,
+            target_entity=memory_scope.target_entity,
+        )
 
         # Motivation vs Logic: naming now runs after the agent completes so we can
         # include resolved evidence/candidates in the LLM prompt instead of relying

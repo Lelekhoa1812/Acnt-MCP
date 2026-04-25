@@ -281,10 +281,26 @@ class ConversationTurn(BaseModel):
     content: str
 
 
+class ActiveSubjectSnapshot(BaseModel):
+    label: str | None = None
+    product_names: list[str] = Field(default_factory=list)
+    identifiers: list[str] = Field(default_factory=list)
+    source: Literal["request", "evidence", "session"] = "session"
+
+
+class SessionMemoryScope(BaseModel):
+    transition: Literal["continuation", "topic_shift", "standalone"] = "standalone"
+    target_entity: str | None = None
+    allow_background_reference: bool = False
+    bridge_signals: list[str] = Field(default_factory=list)
+
+
 class SessionState(BaseModel):
     session_id: str
     session_name: str | None = None
     session_name_source: Literal["fallback", "llm"] | None = None
+    active_subject: ActiveSubjectSnapshot | None = None
+    background_subjects: list[ActiveSubjectSnapshot] = Field(default_factory=list)
     recent_product_names: list[str] = Field(default_factory=list)
     recent_resolved_identifiers: list[str] = Field(default_factory=list)
     last_candidate_list: list[CandidateOption] = Field(default_factory=list)
@@ -296,6 +312,7 @@ class SessionState(BaseModel):
     current_plan: PlanStatus | None = None
     name_assigned: bool = False
     conversation_history: list[ConversationTurn] = Field(default_factory=list, exclude=True)
+    memory_scope: SessionMemoryScope = Field(default_factory=SessionMemoryScope, exclude=True)
 
 
 class ThoughtBlock(BaseModel):
