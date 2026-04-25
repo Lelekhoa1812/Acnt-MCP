@@ -16,7 +16,7 @@ from app.schemas import (
     ToolResult,
 )
 from app.session.store import SessionStore
-from app.session.topic_scope import apply_virtual_pruning, derive_memory_scope, refresh_active_subject
+from app.session.topic import apply_virtual_pruning, derive_memory_scope, refresh_active_subject
 from app.tool.registry import ToolRegistry
 
 

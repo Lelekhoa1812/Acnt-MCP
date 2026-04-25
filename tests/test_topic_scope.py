@@ -12,7 +12,7 @@ from app.schemas import (
     SessionMemoryScope,
     SessionState,
 )
-from app.session.topic_scope import apply_virtual_pruning, derive_memory_scope
+from app.session.topic import apply_virtual_pruning, derive_memory_scope
 from app.prompt.context import render_session_context
 
 
