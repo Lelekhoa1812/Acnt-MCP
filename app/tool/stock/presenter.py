@@ -25,32 +25,47 @@ def render_inventory_snapshot_markdown(
     # Motivation vs Logic: when the model fails to produce a final answer after
     # successful retrieval, this fallback renderer still provides a polished,
     # user-facing grouped table instead of raw technical payload fragments.
+    include_other_specs = _has_known_specs(rows)
+    columns: list[tuple[str, str, str | None]] = [
+        ("Product", "product", None),
+        ("Variant", "variant", "unknown"),
+        ("SKU", "sku", "unknown"),
+        ("Colour / Finish Evidence", "colour", "unknown"),
+        ("Size", "size", "unknown"),
+        ("Availability", "availability", "unknown"),
+    ]
+    if include_other_specs:
+        columns.insert(-1, ("Other Specs", "other_specs", "unknown"))
+
+    header = "| " + " | ".join(column[0] for column in columns) + " |"
+    divider = "| " + " | ".join("---" for _ in columns) + " |"
     lines = [
         "Here is a grouped inventory view so variants are easier to compare under each product.",
         "Colour / finish is inferred from product and variant naming; if no colour is explicit, it is shown as `unknown`.",
         "",
-        "| Product | Variant | SKU | Colour / Finish Evidence | Size | Other Specs | Availability |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        header,
+        divider,
     ]
 
     for grouped_rows in _group_rows_by_product(rows):
         for variant_index, row in enumerate(grouped_rows):
-            product_value = row.get("product") if variant_index == 0 else ""
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        _cell(product_value, "unknown" if variant_index == 0 else ""),
-                        _cell(row.get("variant"), "unknown"),
-                        _cell(row.get("sku"), "unknown"),
-                        _cell(_colour_finish_display(row), "unknown"),
-                        _cell(row.get("size"), "unknown"),
-                        _cell("; ".join(row.get("knownSpecs", [])), "unknown"),
-                        _cell(row.get("stock"), "unknown"),
-                    ]
+            row_values: dict[str, str | None] = {
+                "product": row.get("product") if variant_index == 0 else "",
+                "variant": row.get("variant"),
+                "sku": row.get("sku"),
+                "colour": _colour_finish_display(row),
+                "size": row.get("size"),
+                "other_specs": _known_specs_display(row),
+                "availability": row.get("stock"),
+            }
+            row_cells = [
+                _cell(
+                    row_values[column_key],
+                    "unknown" if column_key == "product" and variant_index == 0 else (fallback or ""),
                 )
-                + " |"
-            )
+                for _, column_key, fallback in columns
+            ]
+            lines.append("| " + " | ".join(row_cells) + " |")
 
     coverage_lines = _coverage_lines(coverage or {})
     if coverage_lines:
@@ -71,6 +86,21 @@ def _group_rows_by_product(rows: list[dict[str, Any]]) -> list[list[dict[str, An
             grouped_rows.append(group)
         group.append(row)
     return grouped_rows
+
+
+def _known_specs_display(row: dict[str, Any]) -> str | None:
+    specs = row.get("knownSpecs")
+    if isinstance(specs, list):
+        cleaned = [str(item).strip() for item in specs if str(item).strip()]
+        return "; ".join(cleaned) if cleaned else None
+    if isinstance(specs, str):
+        normalized = specs.strip()
+        return normalized or None
+    return None
+
+
+def _has_known_specs(rows: list[dict[str, Any]]) -> bool:
+    return any(_known_specs_display(row) for row in rows)
 
 
 def _coverage_lines(coverage: dict[str, Any]) -> list[str]:
