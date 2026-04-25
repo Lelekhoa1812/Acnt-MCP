@@ -16,6 +16,13 @@ class FurnitureCategoryRoute:
     description: str
 
 
+@dataclass(frozen=True)
+class FurnitureDepartmentCapability:
+    name: str
+    department_id: int
+    description: str
+
+
 FURNITURE_CATEGORY_ROUTES: tuple[FurnitureCategoryRoute, ...] = (
     FurnitureCategoryRoute(
         name="Furniture - Seating",
@@ -91,6 +98,15 @@ FURNITURE_CATEGORY_ROUTES: tuple[FurnitureCategoryRoute, ...] = (
 )
 
 
+FURNITURE_DEPARTMENT_CAPABILITIES: tuple[FurnitureDepartmentCapability, ...] = (
+    FurnitureDepartmentCapability(
+        name="Furniture",
+        department_id=FURNITURE_DEPARTMENT_ID,
+        description="The only stock department currently supported by this assistant.",
+    ),
+)
+
+
 def _describe_route_name(name: str) -> tuple[str, ...]:
     normalized = name.replace("-", " ").replace(",", "").lower()
     tokens = []
@@ -112,6 +128,61 @@ def _build_furniture_intent_terms() -> tuple[str, ...]:
 
 
 FURNITURE_INTENT_TERMS: tuple[str, ...] = _build_furniture_intent_terms()
+
+
+def furniture_capability_summary() -> dict[str, object]:
+    return {
+        "supported_department_count": len(FURNITURE_DEPARTMENT_CAPABILITIES),
+        "supported_departments": [
+            {
+                "name": department.name,
+                "department_id": department.department_id,
+                "description": department.description,
+            }
+            for department in FURNITURE_DEPARTMENT_CAPABILITIES
+        ],
+        "mapped_furniture_category_count": len(FURNITURE_CATEGORY_ROUTES),
+        "mapped_furniture_categories": [
+            {
+                "name": route.name,
+                "category_id": route.category_id,
+                "description": route.description,
+            }
+            for route in FURNITURE_CATEGORY_ROUTES
+        ],
+    }
+
+
+def render_furniture_capability_answer(*, include_categories: bool = False) -> str:
+    summary = furniture_capability_summary()
+    answer = (
+        "Currently, I support 1 stock department: Furniture (`departmentId=3`). "
+        f"Within Furniture, I have {summary['mapped_furniture_category_count']} mapped category routes."
+    )
+    if not include_categories:
+        return answer
+
+    category_lines = [
+        f"- {route.name} (`categoryId={route.category_id}`)"
+        for route in FURNITURE_CATEGORY_ROUTES
+    ]
+    return f"{answer}\n\nMapped Furniture categories:\n" + "\n".join(category_lines)
+
+
+def furniture_capability_rules() -> list[str]:
+    summary = furniture_capability_summary()
+    compact_reference = json.dumps(summary, ensure_ascii=True, indent=2)
+    return [
+        f"FURNITURE_CAPABILITY_SUMMARY reference:\n{compact_reference}",
+        (
+            "For pure capability, taxonomy, supported-department, supported-category, or count questions, "
+            "answer directly from FURNITURE_CAPABILITY_SUMMARY without calling stock tools."
+        ),
+        (
+            "`stock.inventory_snapshot` is for live product/variant inventory evidence only; do not use it for "
+            "department/category capability counts."
+        ),
+    ]
 
 
 def furniture_department_rules() -> list[str]:

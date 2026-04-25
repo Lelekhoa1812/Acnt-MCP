@@ -57,6 +57,11 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
 
     assert "- depends_on: array of earlier step ids" in planner_prompt
     assert "- parallel_group: integer or null" in planner_prompt
+    assert "may be empty only for static capability answers" in planner_prompt
+    assert "intent_classes: [\"capability\"]" in planner_prompt
+    assert "FURNITURE_CAPABILITY_SUMMARY" not in planner_prompt
+    assert "supported_department_count" in planner_prompt
+    assert "mapped_furniture_category_count" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
     assert "avoid planning both `stock.inventory_snapshot` and `stock.compare_variants`" in planner_prompt
     assert "latency-aware" in planner_prompt
@@ -159,6 +164,8 @@ def test_render_system_routes_furniture_department_and_category_mapping() -> Non
     )
 
     assert "departmentId=3" in prompt
+    assert "FURNITURE_CAPABILITY_SUMMARY" in prompt
+    assert "mapped_furniture_category_count" in prompt
     assert "b7d70000-eacf-fc4c-c59a-08de7f19d85e" in prompt
     assert "b7d70000-eacf-fc4c-359b-08de7f19d91e" in prompt
 
@@ -179,6 +186,7 @@ def test_render_system_plugin_only_query_avoids_furniture_mapping_rules() -> Non
         request="What's the weather forecast for Melbourne tomorrow?",
         session=SessionState(session_id="plugin-only"),
         tools=[],
+        intent_classes=["weather"],
     )
 
     assert "WEATHER Example:" in prompt

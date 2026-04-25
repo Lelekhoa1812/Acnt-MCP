@@ -8,8 +8,8 @@ from app.prompt.currency import CURRENCY_EXAMPLES
 from app.prompt.context import render_plan_context, render_session_context
 from app.prompt.news import NEWS_EXAMPLES
 from app.prompt.stock import StockPromptPolicy, build_stock_prompt_policy
+from app.prompt.stock.furniture import furniture_capability_summary
 from app.prompt.weather import WEATHER_EXAMPLES
-from app.text.utils import normalize_text
 from app.schemas import (
     ActiveSubjectSnapshot,
     MemoCache,
@@ -39,81 +39,6 @@ OUT_OF_SCOPE = [
     "event line items",
 ]
 
-PLUGIN_INTENT_TERMS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "weather",
-        (
-            "air quality",
-            "aqi",
-            "barometer",
-            "barometric",
-            "clouds",
-            "condition",
-            "dew point",
-            "feels like",
-            "forecast",
-            "hail",
-            "humidity",
-            "overcast",
-            "pollen",
-            "precip",
-            "precipitation",
-            "pressure",
-            "rain",
-            "snow",
-            "storm",
-            "sunrise",
-            "sunset",
-            "temperature",
-            "uv index",
-            "visibility",
-            "weather",
-            "wind",
-            "windchill",
-        ),
-    ),
-    (
-        "currency",
-        (
-            "amd", "aud", "azn", "bdt", "bgn", "brl", "btc", "byn", "bzd",
-            "cad", "chf", "clp", "conversion", "convert", "cop", "crc",
-            "crypto", "cup", "cve", "czk", "dkk", "eth", "eur", "exchange",
-            "forex", "fx", "gbp", "gel", "hkd", "hrk", "huf", "inr",
-            "isk", "jpy", "kgs", "krw", "kzt", "lkr", "market rate",
-            "mmk", "money", "mxn", "myr", "nok", "nzd", "parity", "php",
-            "pln", "rate", "ron", "rub", "sek", "sgd", "sol", "thb",
-            "usd", "usdt", "valuation", "vnd", "zar",
-        ),
-    ),
-    (
-        "news",
-        (
-            "article",
-            "articles",
-            "breaking",
-            "briefing",
-            "bulletin",
-            "coverage",
-            "current events",
-            "headline",
-            "headlines",
-            "journalism",
-            "latest",
-            "media",
-            "news",
-            "outlet",
-            "outlets",
-            "press",
-            "report",
-            "source",
-            "sources",
-            "trending",
-            "update",
-            "world events",
-        ),
-    ),
-)
-
 PLUGIN_EXAMPLES = {
     "weather": WEATHER_EXAMPLES,
     "currency": CURRENCY_EXAMPLES,
@@ -124,15 +49,15 @@ SYSTEM_BEHAVIOR_RULES = [
     "Run planner -> retrieval -> validator -> composer in order.",
     "Handle each request as recursive discovery: decompose intent, retrieve evidence, follow identifiers, then answer.",
     "Emit Plan Status JSON before the first retrieval tool call.",
-    "Retrieve first, validate second, answer last.",
+    "Retrieve first, validate second, answer last for live external facts; answer static capability facts directly from supplied policy metadata.",
     "Use exact identifiers before broad search.",
     "Build tool args from schema + retrieved evidence; do not hard-code unsupported filters.",
-    "Use tools instead of guessing.",
+    "Use tools instead of guessing for live inventory, product, weather, news, and currency facts; do not call tools for static capability metadata already present in policy.",
     "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate all variants (names, options, stock, evidence).",
     "For ambiguity, follow resolver payload: use explicit options for selectable sets; use total match count + short hints for large sets.",
     "Do not call `resolver.disambiguate_candidates` after product confirmation; use `stock.get_product`, `stock.extract_variant_evidence`, or `stock.inventory_snapshot` for variant details.",
     "For products with >5 variants, prefer `stock.inventory_snapshot` over `stock.compare_variants` unless side-by-side compare is required.",
-    "Harmonise stock tools are source of truth for inventory.",
+    "Harmonise stock tools are source of truth for live inventory; stock prompt policy is source of truth for supported department/category capability metadata.",
     "Weather/news/currency tools are auxiliary; keep vendor limits explicit.",
     "If asked about bookings, quotes, reservations, or event line items, say this workflow is not implemented in the current tool contract.",
     "For news: use `news.headlines` for live/regional coverage, `news.search` for broader research, and `news.sources` for outlets; ground claims in `topSources`, `topKeywords`, `publishedRange`, and `totalResults`.",
@@ -275,14 +200,6 @@ def build_registry_prompt_policy(
     return PromptRegistryPolicy(route=route, behavior_rules=behavior_rules, examples=examples)
 
 
-def _detect_plugin_intents(request: str) -> tuple[str, ...]:
-    normalized = normalize_text(request)
-    tokens = set(normalized.split())
-    return tuple(
-        name for name, terms in PLUGIN_INTENT_TERMS if _contains_any(normalized, tokens, terms)
-    )
-
-
 def _resolve_plugin_intents(
     request: str,
     *,
@@ -301,7 +218,7 @@ def _resolve_plugin_intents(
         if resolved:
             return tuple(resolved)
 
-    return _detect_plugin_intents(request)
+    return ()
 
 
 def _build_plugin_routing_rules(route: PromptRegistryRoute) -> list[str]:
@@ -352,23 +269,10 @@ def _should_include_stock_policy(
         normalized = {str(value).strip().lower() for value in intent_classes if str(value).strip()}
         if normalized and normalized.issubset({"weather", "news", "currency"}):
             return False
-    # Motivation vs Logic: stock-policy inclusion should be driven by planner
-    # intent classification and live routing context, not hard-coded term lists.
+    # Motivation vs Logic: stock policy should stay visible by default, but pure
+    # plugin requests need a smaller prompt so unrelated furniture examples do
+    # not compete with weather/news/currency routing.
     return True
-
-
-def _contains_any(normalized: str, tokens: set[str], terms: tuple[str, ...]) -> bool:
-    for term in terms:
-        if _contains_term(normalized, tokens, term):
-            return True
-    return False
-
-
-def _contains_term(normalized: str, tokens: set[str], term: str) -> bool:
-    term_tokens = term.split()
-    if len(term_tokens) == 1:
-        return term_tokens[0] in tokens
-    return f" {term} " in f" {normalized} "
 
 
 def _tool_block(tools: list[ToolDefinition], context_mode: str = "normal") -> str:
@@ -445,17 +349,18 @@ def render_planner(
     tools: list[ToolDefinition],
     context_mode: str = "normal",
 ) -> str:
+    capability_context = json.dumps(furniture_capability_summary(), indent=2, ensure_ascii=False)
     return f"""
 You are the planner phase for a tool-driven orchestration runtime.
 
 Return STRICT JSON (no markdown) with exactly these top-level keys:
 - goal: string
 - intent_classes: array of strings
-- steps: array of step objects
+- steps: array of step objects; may be empty only for static capability answers grounded in Capability context
 - memo: object
 - status: string
 
-Each step object must include:
+Each non-empty step object must include:
 - id: integer (start at 1)
 - name: string
 - tool: one available tool name from the list below
@@ -467,8 +372,10 @@ Each step object must include:
 - validation: null
 
 Rules:
-- Always include at least one step.
-- Before building steps, classify the user request into intent domains and emit `intent_classes` using only: stock, weather, news, currency, mixed.
+- Before building steps, classify the user request into intent domains and emit `intent_classes` using one or more of: capability, stock, inventory_search, product_detail, comparison, follow_up, weather, news, currency, mixed, out_of_scope.
+- If the request asks only about supported departments, supported categories, taxonomy counts, tool capability, or current stock scope, use the Capability context below, emit `intent_classes: ["capability"]`, set `steps: []`, and set `status: complete`.
+- Do not plan `stock.inventory_snapshot`, `stock.search_catalogue`, `stock.get_product`, `stock.get_departments`, or `stock.get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
+- For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
 - Build deterministic, executable DAG steps only.
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
@@ -488,8 +395,11 @@ Rules:
 - Do not invent booking or quote tools; those workflows are not yet implemented in the current tool contract.
 - Do not invent tools.
 - Do not output extra keys.
-- Set status to in-progress.
+- Set status to `complete` only when `steps` is empty for a static capability answer; otherwise set status to `in-progress`.
 - Runtime does not inject keyword-based tool routing; your plan must fully drive tool selection and arguments.
+
+Capability context:
+{capability_context}
 
 Current user request:
 {request}

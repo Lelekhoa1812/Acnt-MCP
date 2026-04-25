@@ -278,13 +278,20 @@ class ToolRegistry:
             # product endpoints only, so metadata tools are local-dev only.
             self._register(
                 "stock.get_departments",
-                "Retrieve department metadata and optional sub-departments for inventory narrowing.",
+                (
+                    "Retrieve raw local Harmonise department metadata and optional sub-departments for inventory "
+                    "narrowing. Do not use for supported-scope counts; stock prompt policy defines the assistant's "
+                    "canonical supported departments."
+                ),
                 StockGetDepartmentsArgs,
                 get_departments,
             )
             self._register(
                 "stock.get_categories",
-                "Retrieve paged category metadata from Harmonise.",
+                (
+                    "Retrieve raw local Harmonise category metadata pages. Do not use for supported-scope counts; "
+                    "stock prompt policy defines the assistant's canonical supported furniture category routes."
+                ),
                 StockGetCategoriesArgs,
                 get_categories,
             )

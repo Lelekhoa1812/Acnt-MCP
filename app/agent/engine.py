@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import InventoryNotFoundError, ParameterMappingError, Settings, UpstreamServiceError
 from app.tool.stock.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_composer, render_formatter, render_planner, render_system, render_validator
+from app.prompt.stock.furniture import render_furniture_capability_answer
 from app.prompt.context import render_plan_context
 from app.schemas import (
     AgentDebugGrounding,
@@ -129,6 +130,25 @@ class AgentEngine:
 
         plan_snapshot = json.dumps(plan_status.model_dump(mode="json"), ensure_ascii=False)
         thoughts.append(plan_snapshot)
+
+        static_capability_answer = self._static_capability_answer(plan_status)
+        if static_capability_answer is not None:
+            # Root Cause vs Logic: taxonomy/capability questions were forced into
+            # live stock retrieval. The planner now explicitly classifies static
+            # capability answers, so the runtime trusts that LLM-routed plan
+            # shape instead of inspecting the raw request text.
+            plan_status.status = "complete"
+            self._persist_plan_state(session_state, plan_status)
+            return AgentRun(
+                status="answered",
+                answer=static_capability_answer,
+                limitations=self._dedupe(planning_limitations),
+                thoughts=thoughts,
+                debug=None,
+                tool_trace=[],
+                resolved_items=[],
+                plan_status=plan_status,
+            )
 
         messages = self._build_runtime_messages(
             request=request.message,
@@ -2287,6 +2307,16 @@ class AgentEngine:
             )
             next_id += 1
 
+        intent_classes = [str(value).strip().lower() for value in parsed.intent_classes if str(value).strip()]
+        if not sanitized_steps and "capability" in intent_classes:
+            return PlanStatus(
+                goal=parsed.goal or request,
+                intent_classes=intent_classes,
+                steps=[],
+                memo=session_state.memo_cache.model_copy(deep=True),
+                status="complete",
+            )
+
         if not sanitized_steps:
             return self._fallback_plan(request, session_state)
 
@@ -2297,7 +2327,7 @@ class AgentEngine:
 
         plan = PlanStatus(
             goal=parsed.goal or request,
-            intent_classes=list(parsed.intent_classes),
+            intent_classes=intent_classes,
             steps=sanitized_steps,
             memo=memo,
             status="in-progress",
@@ -2681,6 +2711,12 @@ class AgentEngine:
     def _can_use_stock_snapshot_fast_path(self, plan_status: PlanStatus) -> bool:
         requested_domains = self._requested_domains(plan_status)
         return requested_domains == {"stock"}
+
+    def _static_capability_answer(self, plan_status: PlanStatus) -> str | None:
+        intent_classes = {intent.strip().lower() for intent in plan_status.intent_classes if intent.strip()}
+        if "capability" not in intent_classes or plan_status.steps:
+            return None
+        return render_furniture_capability_answer(include_categories=True)
 
     def _memo_stock_rows(self, memo_cache: Any) -> list[dict[str, Any]]:
         entries = getattr(memo_cache, "entries", None)

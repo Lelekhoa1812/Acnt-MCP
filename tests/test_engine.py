@@ -28,6 +28,295 @@ def build_engine_settings() -> Settings:
 
 
 @pytest.mark.anyio
+async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() -> None:
+    container = await build_container(build_engine_settings())
+    endpoint_calls: list[str] = []
+    tool_calls: list[str] = []
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        endpoint_calls.append(endpoint_name)
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Answer supported stock taxonomy count",
+                                    "intent_classes": ["capability"],
+                                    "steps": [],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "complete",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        tool_calls.append(tool_name)
+        raise AssertionError(f"Unexpected tool call: {tool_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-capability-count")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="How many department and category do we have?",
+                sessionId="engine-capability-count",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert endpoint_calls == ["/api/v1/query/planner"]
+    assert tool_calls == []
+    assert result.status == "answered"
+    assert result.tool_trace == []
+    assert "1 stock department" in result.answer
+    assert "Furniture" in result.answer
+    assert "14 mapped category routes" in result.answer
+    assert result.plan_status is not None
+    assert result.plan_status.status == "complete"
+
+
+@pytest.mark.anyio
+async def test_agent_engine_does_not_keyword_short_circuit_stock_plan() -> None:
+    container = await build_container(build_engine_settings())
+    tool_calls: list[str] = []
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Misplanned taxonomy count",
+                                    "intent_classes": ["stock"],
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "inventory snapshot",
+                                            "tool": "stock.inventory_snapshot",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 100, "search": "", "departmentId": 3},
+                                            "depends_on": [],
+                                            "parallel_group": None,
+                                            "hypotheses": ["Planner incorrectly chose live inventory retrieval."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {"choices": [{"message": {"content": ""}}]}
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 0,
+                                    "actual_rows": 0,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.9,
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/replan":
+            return {"choices": [{"message": {"content": json.dumps({"should_replan": False, "reason": "", "steps": []})}}]}
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        tool_calls.append(tool_name)
+        return ToolResult(
+            tool=tool_name,
+            data={
+                "rows": [],
+                "evidence": [],
+                "coverage": {
+                    "requestedPage": 1,
+                    "requestedPageSize": 100,
+                    "matchedProducts": 0,
+                    "matchedPages": 1,
+                    "enrichedProducts": 0,
+                    "enrichedVariants": 0,
+                    "isPartial": False,
+                    "limitations": [],
+                },
+            },
+            trace=ToolTrace(
+                thought=thought,
+                tool=tool_name,
+                args=raw_args,
+                status="ok",
+                result_count=0,
+            ),
+        )
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-capability-block-snapshot")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="how many department and category do we have",
+                sessionId="engine-capability-block-snapshot",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert tool_calls == ["stock.inventory_snapshot"]
+    assert any(trace.tool == "stock.inventory_snapshot" for trace in result.tool_trace)
+    assert result.status == "answered"
+
+
+@pytest.mark.anyio
+async def test_agent_engine_keeps_live_stock_questions_on_tool_path() -> None:
+    container = await build_container(build_engine_settings())
+    tool_calls: list[str] = []
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "Resolve live chair stock",
+                                    "intent_classes": ["stock", "product_detail"],
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "chair catalogue search",
+                                            "tool": "stock.search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 5, "search": "chair", "departmentId": 3},
+                                            "depends_on": [],
+                                            "parallel_group": None,
+                                            "hypotheses": ["Live stock requests need catalogue evidence."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            if payload.get("response_format"):
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "status": "answered",
+                                        "answer": "Live chair stock was retrieved.",
+                                        "limitations": [],
+                                        "clarification": None,
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            return {"choices": [{"message": {"content": ""}}]}
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 1,
+                                    "actual_rows": 1,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.9,
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/search-split":
+            return {"choices": [{"message": {"content": json.dumps({"items": ["chair"]})}}]}
+        if endpoint_name == "/api/v1/query/replan":
+            return {"choices": [{"message": {"content": json.dumps({"should_replan": False, "reason": "", "steps": []})}}]}
+        if endpoint_name == "/api/v1/query/composer":
+            return {"choices": [{"message": {"content": "Live chair stock was retrieved."}}]}
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
+        tool_calls.append(tool_name)
+        return ToolResult(
+            tool=tool_name,
+            data={"items": [], "page": 1, "pageSize": 5, "totalCount": 0, "totalPages": 0},
+            trace=ToolTrace(
+                thought=thought,
+                tool=tool_name,
+                args=raw_args,
+                status="ok",
+                result_count=0,
+            ),
+        )
+
+    container.tool_registry.call_tool = fake_call_tool  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-live-stock-tool-path")
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="How many chairs are in stock?",
+                sessionId="engine-live-stock-tool-path",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert tool_calls == ["stock.search_catalogue"]
+    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
+    assert "Live chair stock was retrieved." in result.answer
+
+
+@pytest.mark.anyio
 async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_turn() -> None:
     container = await build_container(build_engine_settings())
     payloads: list[tuple[str, dict[str, object]]] = []

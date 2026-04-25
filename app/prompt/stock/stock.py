@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from app.prompt.stock.furniture import (
     FURNITURE_DEPARTMENT_ID,
     FURNITURE_EXAMPLES,
+    furniture_capability_rules,
     furniture_category_rules,
     furniture_department_rules,
 )
@@ -41,6 +42,11 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "decide whether stock tooling is warranted before invoking any tools."
         ),
         (
+            "Route stock requests through the cheapest sufficient evidence lane: static capability policy "
+            "for supported department/category metadata, session memo for already-retrieved facts, "
+            "lightweight metadata tools when available, then live catalogue/detail tools for product evidence."
+        ),
+        (
             "Prefer the smallest stock-tool chain that can answer the request; once a product-family tool "
             "already returns variant sizes, options, pricing, and stock, do not plan redundant stock lookups."
         ),
@@ -53,6 +59,7 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             f"setting `departmentId={route.department_id}` and explaining any other departments the "
             "user mentions as unsupported."
         ),
+        *furniture_capability_rules(),
         *furniture_department_rules(),
         *furniture_category_rules(),
     ]
