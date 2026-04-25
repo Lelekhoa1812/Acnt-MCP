@@ -852,6 +852,66 @@ async def test_resolve_or_insert_binds_get_product_rewrite_to_pending_variant_ev
 
 
 @pytest.mark.anyio
+async def test_resolve_or_insert_reuses_done_step_for_identical_runtime_call() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        plan = PlanStatus(
+            goal="test duplicate runtime call dedupe",
+            intent_classes=["stock"],
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="catalogue search",
+                    tool="stock.search_catalogue",
+                    status="done",
+                    args={"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
+                )
+            ],
+        )
+        step, inserted = container.agent_engine._resolve_or_insert_plan_step(
+            plan,
+            "stock.search_catalogue",
+            {"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
+        )
+        assert inserted is False
+        assert step.id == 1
+        assert step.status == "done"
+        assert len(plan.steps) == 1
+    finally:
+        await container.close()
+
+
+@pytest.mark.anyio
+async def test_resolve_or_insert_reuses_semantically_equivalent_catalogue_search_step() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        plan = PlanStatus(
+            goal="test semantic catalogue dedupe",
+            intent_classes=["stock"],
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="catalogue search",
+                    tool="stock.search_catalogue",
+                    status="done",
+                    args={"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
+                )
+            ],
+        )
+        step, inserted = container.agent_engine._resolve_or_insert_plan_step(
+            plan,
+            "stock.search_catalogue",
+            {"search": "chair Spencer", "page": 1, "pageSize": 10, "departmentId": 3},
+        )
+        assert inserted is False
+        assert step.id == 1
+        assert step.status == "done"
+        assert len(plan.steps) == 1
+    finally:
+        await container.close()
+
+
+@pytest.mark.anyio
 async def test_agent_engine_does_not_leak_stock_get_product_schema_error_for_incomplete_planned_args() -> None:
     container = await build_container(build_engine_settings())
 

@@ -276,7 +276,8 @@ class AgentEngine:
                     normalized_args,
                     binding_source_tool=binding_source,
                 )
-                plan_step.status = "in-progress"
+                if plan_step.status != "done":
+                    plan_step.status = "in-progress"
                 prepared_calls.append(
                     {
                         "tool_call": tool_call,
@@ -1278,6 +1279,37 @@ class AgentEngine:
     ) -> str | None:
         tool_name = str(item["tool_name"])
         normalized_args = item["normalized_args"]
+        if tool_name == "stock.search_catalogue":
+            search_signature = self._catalogue_search_signature(normalized_args)
+            if search_signature is not None:
+                for trace in traces:
+                    if trace.tool != tool_name:
+                        continue
+                    prior_signature = self._catalogue_search_signature(trace.args)
+                    if prior_signature != search_signature:
+                        continue
+                    if trace.status == "ok":
+                        return (
+                            "Skipped `stock.search_catalogue` because this semantic search was already "
+                            "resolved earlier in this run."
+                        )
+                    if trace.status == "error":
+                        return (
+                            "Skipped `stock.search_catalogue` because an equivalent semantic search already "
+                            "failed earlier in this run."
+                        )
+
+        # Root Cause vs Logic: identical successful tool calls were allowed to
+        # run repeatedly in a single query turn, which created long retrieval
+        # churn on follow-up prompts. Skip exact-success repeats to keep the
+        # loop progressing toward composition.
+        for trace in traces:
+            if trace.status != "ok" or trace.tool != tool_name or trace.args != normalized_args:
+                continue
+            return (
+                f"Skipped `{tool_name}` because the same arguments already succeeded earlier in this run; "
+                "the runtime will not repeat an identical retrieval pattern."
+            )
         for trace in traces:
             if trace.status != "error" or trace.tool != tool_name or trace.args != normalized_args:
                 continue
@@ -1697,7 +1729,7 @@ class AgentEngine:
             "pageSize": self.settings.agent_get_product_page_size,
         }
         if any(
-            step.tool == follow_up_tool and step.args == follow_up_args and step.status != "done"
+            step.tool == follow_up_tool and step.args == follow_up_args
             for step in plan_status.steps
         ):
             return None
@@ -1770,6 +1802,22 @@ class AgentEngine:
         # Root Cause vs Logic: binding by tool name alone merged distinct
         # multi-item calls into one pending step and overwrote earlier args.
         # We now bind by exact args first, then only reuse empty placeholders.
+        if tool_name == "stock.search_catalogue":
+            incoming_signature = self._catalogue_search_signature(args)
+            if incoming_signature is not None:
+                for step in plan_status.steps:
+                    if step.tool != tool_name:
+                        continue
+                    if self._catalogue_search_signature(step.args) != incoming_signature:
+                        continue
+                    return step, False
+
+        # Root Cause vs Logic: completed steps with identical args were not
+        # reused, so runtime could reinsert the same retrieval as a new step
+        # and loop. Reuse done steps first to keep plan execution monotonic.
+        for step in plan_status.steps:
+            if step.tool == tool_name and step.status == "done" and step.args == args:
+                return step, False
         for step in plan_status.steps:
             if step.tool == tool_name and step.status != "done" and step.args == args:
                 return step, False
@@ -2068,6 +2116,21 @@ class AgentEngine:
             return None
         compact = value.strip()
         return compact or None
+
+    def _catalogue_search_signature(self, args: Any) -> tuple[str, int | None, str | None] | None:
+        if not isinstance(args, dict):
+            return None
+        raw_search = args.get("search")
+        if not isinstance(raw_search, str):
+            return None
+        tokens = sorted(token for token in re.split(r"[^a-z0-9]+", raw_search.lower()) if token)
+        if not tokens:
+            return None
+        department_id = args.get("departmentId")
+        normalized_department = department_id if isinstance(department_id, int) else None
+        category_id = args.get("categoryId")
+        normalized_category = str(category_id).strip().lower() if isinstance(category_id, str) and category_id.strip() else None
+        return (" ".join(tokens), normalized_department, normalized_category)
 
     def _looks_like_uuid(self, value: str) -> bool:
         return bool(UUID_PATTERN.match(value))
@@ -2895,7 +2958,7 @@ class AgentEngine:
                 continue
             if tool_name not in available_tools:
                 continue
-            if any(step.tool == tool_name and step.args == args and step.status != "done" for step in plan_status.steps):
+            if any(step.tool == tool_name and step.args == args for step in plan_status.steps):
                 continue
 
             next_id = max((step.id for step in plan_status.steps), default=0) + 1
