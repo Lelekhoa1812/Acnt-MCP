@@ -6,6 +6,7 @@ from typing import Any
 
 from app.agent import AgentEngine
 from app.config import Settings, UpstreamServiceError
+from app.text.stopwords import STOPWORDS
 from app.schemas import (
     AgentQueryRequest,
     AgentQueryResponse,
@@ -179,7 +180,7 @@ class OrchestratorService:
         if not compact:
             return
 
-        fallback_name = self._fallback_name(compact)
+        fallback_name = self._fallback_name(session_state, compact)
         if session_state.session_name and session_state.session_name_source != "fallback":
             return
 
@@ -306,21 +307,35 @@ class OrchestratorService:
             },
         ]
 
-        response = await self.agent_engine.complete_with_model(
-            model=model,
-            messages=payload,
-            max_completion_tokens=40,
-        )
+        response = await self._complete_session_name(model=model, messages=payload)
         choice = (response.get("choices") or [{}])[0]
-        raw_content = self._coerce_completion_content(
-            (choice.get("message") or {}).get("content", "")
-        )
+        raw_content = self._coerce_completion_content((choice.get("message") or {}).get("content", ""))
         normalized = self._normalize_name(raw_content)
+        finish_reason = choice.get("finish_reason")
+        if not normalized and finish_reason == "length":
+            response = await self._complete_session_name(model=model, messages=payload, max_completion_tokens=80)
+            choice = (response.get("choices") or [{}])[0]
+            raw_content = self._coerce_completion_content((choice.get("message") or {}).get("content", ""))
+            normalized = self._normalize_name(raw_content)
+            finish_reason = choice.get("finish_reason")
         return SessionNameCandidate(
             name=normalized,
             raw_content=raw_content,
-            finish_reason=choice.get("finish_reason"),
-            rejection_reason=self._classify_name_rejection(raw_content, normalized),
+            finish_reason=finish_reason,
+            rejection_reason=self._classify_name_rejection(raw_content, normalized, finish_reason),
+        )
+
+    async def _complete_session_name(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_completion_tokens: int = 40,
+    ) -> dict[str, Any]:
+        return await self.agent_engine.complete_with_model(
+            model=model,
+            messages=messages,
+            max_completion_tokens=max_completion_tokens,
         )
 
     def _coerce_completion_content(self, content: Any) -> str:
@@ -348,9 +363,11 @@ class OrchestratorService:
             return " ".join(part.strip() for part in parts if part and part.strip()).strip()
         return ""
 
-    def _classify_name_rejection(self, raw: str, normalized: str | None) -> str | None:
+    def _classify_name_rejection(self, raw: str, normalized: str | None, finish_reason: str | None = None) -> str | None:
         if normalized:
             return None
+        if finish_reason == "length":
+            return "truncated llm output"
         if not raw.strip():
             return "empty llm output"
         if len([token for token in raw.split() if token]) < 2:
@@ -368,8 +385,70 @@ class OrchestratorService:
         selection = tokens[:4]
         return " ".join(selection)
 
-    def _fallback_name(self, message: str) -> str | None:
-        tokens = [token for token in message.split() if token]
+    def _fallback_name(self, session_state: SessionState, message: str) -> str | None:
+        # Root Cause vs Logic: the previous fallback always copied the first
+        # four words of the request, which produced unusable titles for common
+        # lead-ins like "let me know..." even when we already had better product
+        # context. We now prefer grounded session evidence, then strip known
+        # conversational prefixes before falling back to the request opener.
+        sources = [
+            *session_state.recent_product_names,
+            *(option.label for option in session_state.last_candidate_list if option.label),
+            message,
+        ]
+        for source in sources:
+            candidate = self._extract_title_from_source(source)
+            if candidate:
+                return candidate
+        return None
+
+    def _extract_title_from_source(self, source: str) -> str | None:
+        source = source.strip()
+        if not source:
+            return None
+        cleaned = self._strip_session_name_prefix(source)
+        if cleaned != source:
+            tokens = [
+                token
+                for token in cleaned.split()
+                if token and token.lower() not in STOPWORDS and token.lower() not in self._session_name_fillers
+            ]
+            if tokens:
+                return " ".join(tokens[:4])
+
+        tokens = [token for token in source.split() if token]
         if not tokens:
             return None
         return " ".join(tokens[:4])
+
+    def _strip_session_name_prefix(self, message: str) -> str:
+        lowered = message.lower().strip()
+        prefixes = (
+            "please let me know ",
+            "let me know ",
+            "can you ",
+            "could you ",
+            "would you ",
+            "tell me ",
+            "show me ",
+        )
+        for prefix in prefixes:
+            if lowered.startswith(prefix):
+                return message[len(prefix) :].strip()
+        return message
+
+    @property
+    def _session_name_fillers(self) -> set[str]:
+        return {
+            "all",
+            "about",
+            "detail",
+            "details",
+            "let",
+            "know",
+            "me",
+            "please",
+            "show",
+            "tell",
+            "you",
+        }

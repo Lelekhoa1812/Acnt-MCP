@@ -900,6 +900,96 @@ def test_query_endpoint_logs_too_short_session_name_output(monkeypatch, capsys) 
     assert "raw_title=Inventory" in captured.err
 
 
+def test_query_endpoint_retries_truncated_session_name_output(monkeypatch) -> None:
+    calls = {"naming": 0, "tokens": []}
+
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        calls["naming"] += 1
+        calls["tokens"].append(max_completion_tokens)
+        if calls["naming"] == 1:
+            return {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "Expo Floor Plan"}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+        foundry_endpoint="https://example.openai.azure.com",
+        foundry_api_key="test-key",
+    )
+
+    session_id = f"naming-truncated-output-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "Need a laminate quote", "sessionId": session_id},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_state"]["session_name"] == "Expo Floor Plan"
+    assert payload["session_state"]["session_name_source"] == "llm"
+    assert calls["naming"] == 2
+    assert calls["tokens"] == [40, 80]
+
+
+def test_query_endpoint_uses_smart_fallback_for_lead_in_message(monkeypatch) -> None:
+    async def fake_run(self, request, session_state):  # noqa: ANN001
+        return AgentRun(
+            status="answered",
+            answer="Resolved request.",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+        )
+
+    async def fake_complete_with_model(self, model, messages, max_completion_tokens=40):  # noqa: ANN001
+        return {"choices": [{"finish_reason": "length", "message": {"content": ""}}]}
+
+    monkeypatch.setattr(AgentEngine, "run", fake_run)
+    monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
+
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+        foundry_endpoint="https://example.openai.azure.com",
+        foundry_api_key="test-key",
+    )
+
+    session_id = f"naming-smart-fallback-{uuid4()}"
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/query",
+            json={"message": "Let me know the raw title", "sessionId": session_id},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_state"]["session_name"] == "raw title"
+    assert payload["session_state"]["session_name_source"] == "fallback"
+
+
 def test_query_endpoint_accepts_structured_session_name_content(monkeypatch) -> None:
     async def fake_run(self, request, session_state):  # noqa: ANN001
         return AgentRun(
