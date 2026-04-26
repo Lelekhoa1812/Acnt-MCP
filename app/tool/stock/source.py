@@ -7,7 +7,6 @@ import anyio
 import httpx
 
 from app.config import Settings, UpstreamServiceError
-from harmonise.main import create_app
 
 
 class HarmoniseInventorySource:
@@ -34,6 +33,15 @@ class HarmoniseInventorySource:
             "headers": self.settings.harmonise_client_headers,
         }
         if self.settings.local_harmonise:
+            # Motivation vs Logic: Docker builds deploying to remote cloud omit the
+            # @harmonise simulator, so only import it when the local mode is actually
+            # enabled; remote deployments skip this branch entirely.
+            try:
+                from harmonise.main import create_app
+            except ImportError as exc:
+                raise RuntimeError(
+                    "LOCAL_HARMONISE=true requires the @harmonise dependency; install it or disable local mode."
+                ) from exc
             client_args["transport"] = httpx.ASGITransport(app=create_app(self.settings))
             client_args["base_url"] = self.settings.local_harmonise_endpoint
         else:
