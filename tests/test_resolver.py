@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.resolver import RankedCandidate, ResolverService
-from app.schemas import CandidateOption
+from app.schemas import CandidateOption, ProductListItemDto, ProductVariantDto
 
 
 def _candidate(index: int) -> RankedCandidate:
@@ -55,3 +55,82 @@ def test_build_clarification_returns_refine_guidance_for_large_sets() -> None:
     assert payload.total_matches == 24
     assert payload.options == []
     assert payload.hints
+
+
+def _build_product_with_variant(
+    product_id: str,
+    product_name: str,
+    variant_id: str,
+    variant_name: str,
+    category_id: str,
+) -> ProductListItemDto:
+    return ProductListItemDto(
+        id=product_id,
+        name=product_name,
+        departmentId=1,
+        categoryId=category_id,
+        isActive=True,
+        variations=[],
+        variants=[
+            ProductVariantDto(
+                id=variant_id,
+                name=variant_name,
+                sku=f"{variant_id}-sku",
+            )
+        ],
+    )
+
+
+def test_rank_candidates_prefers_full_product_variant_phrase() -> None:
+    service = ResolverService(logger=logging.getLogger("test.resolver"))
+    product = _build_product_with_variant(
+        product_id="prod-stool",
+        product_name="Baxter Stool",
+        variant_id="var-artichoke",
+        variant_name="Artichoke",
+        category_id="stools",
+    )
+
+    candidates = service.rank_candidates("Baxter Stool Artichoke", [product])
+    assert candidates
+    assert candidates[0].option.matched_on == ["full_product_variant_phrase"]
+    assert candidates[0].option.label.startswith("Baxter Stool / Artichoke")
+
+
+def test_rank_candidates_uses_variant_descriptor_when_order_differs() -> None:
+    service = ResolverService(logger=logging.getLogger("test.resolver"))
+    product = _build_product_with_variant(
+        product_id="prod-stool",
+        product_name="Baxter Stool",
+        variant_id="var-artichoke",
+        variant_name="Artichoke",
+        category_id="stools",
+    )
+
+    candidates = service.rank_candidates("Artichoke Baxter", [product])
+    assert candidates
+    assert "core_product_variant" in candidates[0].option.matched_on
+    assert "variant_descriptor" in candidates[0].option.matched_on
+
+
+def test_rank_candidates_respects_type_filter() -> None:
+    service = ResolverService(logger=logging.getLogger("test.resolver"))
+    stool = _build_product_with_variant(
+        product_id="prod-stool",
+        product_name="Baxter Stool",
+        variant_id="var-artichoke",
+        variant_name="Artichoke",
+        category_id="stools",
+    )
+    chair = _build_product_with_variant(
+        product_id="prod-chair",
+        product_name="Baxter Dining Chair",
+        variant_id="var-walnut",
+        variant_name="Walnut",
+        category_id="chairs",
+    )
+
+    candidates = service.rank_candidates("Artichoke Baxter Stool", [stool, chair])
+    assert candidates
+    assert candidates[0].product.id == "prod-stool"
+    assert all(candidate.product.id == "prod-stool" for candidate in candidates)
