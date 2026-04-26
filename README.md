@@ -111,7 +111,7 @@ Start from `.env.example`. Key values:
 ### 3. Run the REST companion app
 
 ```bash
-uvicorn app.main:app --reload --port 3000
+uvicorn app.main:app --reload --port 80
 ```
 
 ### 4. Run the stdio MCP server
@@ -132,7 +132,7 @@ The provided `Dockerfile` builds the REST companion app.
 
 ```bash
 docker build -t hth-stock-intelligence .
-docker run --rm -p 3000:3000 --env-file .env hth-stock-intelligence
+docker run --rm -p 80:80 --env-file .env hth-stock-intelligence
 ```
 
 Use `python3 -m app.mcp.server` as the container entrypoint to run the stdio MCP server instead of the REST app.
@@ -142,19 +142,19 @@ Use `python3 -m app.mcp.server` as the container entrypoint to run the stdio MCP
 ### Health
 
 ```bash
-curl http://localhost:3000/api/v1/health
+curl http://localhost:80/api/v1/health
 ```
 
 ### Tool catalog
 
 ```bash
-curl http://localhost:3000/api/v1/tools
+curl http://localhost:80/api/v1/tools
 ```
 
 ### Direct tool call
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/tools/call   -H "Content-Type: application/json"   -d '{
+curl -X POST http://localhost:80/api/v1/tools/call   -H "Content-Type: application/json"   -d '{
     "tool": "stock.search_catalogue",
     "args": {
       "page": 1,

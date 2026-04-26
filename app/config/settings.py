@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     server_name: str = Field("hth-stock-intelligence", alias="HTH_SERVER_NAME")
     server_version: str = Field("1.0.5", alias="HTH_SERVER_VERSION")
     transport: str = Field("http", alias="HTH_TRANSPORT")
-    port: int = Field(3000, alias="HTH_PORT")
+    # Motivation vs Logic: default to port 80 so the service aligns with standard HTTP ingress expectations.
+    port: int = Field(80, alias="HTH_PORT")
     api_prefix: str = Field("/api/v1", alias="HTH_API_PREFIX")
     log_level: str = Field("debug", alias="HTH_LOG_LEVEL")
     data_source: str = Field("harmonise", alias="HTH_DATA_SOURCE")
