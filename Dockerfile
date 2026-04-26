@@ -13,7 +13,9 @@ ENV HTH_PORT=3000 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# Motivation vs Logic: rely on `.dockerignore` and copy just the runtime packages so docs/mock/test helpers stay out of the image.
+COPY app ./app
+COPY ui ./ui
 
 EXPOSE 3000
 
