@@ -290,9 +290,7 @@ class Settings(BaseSettings):
         # even when the server is already protected by a bearer token. Treat the
         # bridge as enabled whenever a token exists so browser clients can redeem
         # it without requiring a second deployment toggle.
-        if not self.mcp_bearer_token:
-            return False
-        return True
+        return bool(self.mcp_bearer_token)
 
 
 @lru_cache

@@ -157,6 +157,52 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
     assert token.json()["token_type"] == "Bearer"
 
 
+def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        public_base_url="https://hth.example.test",
+        mcp_bearer_token="test-mcp-token",
+        mcp_oauth_enabled=False,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        root = client.get("/")
+        registered = client.post("/oauth/register", json={"client_name": "pytest"})
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": query["code"][0],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+
+    assert root.json()["mcp_oauth_enabled"] is True
+    assert registered.status_code == 201
+    assert authorized.status_code == 302
+    assert token.status_code == 200
+    assert token.json()["access_token"] == "test-mcp-token"
+
+
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     with build_client() as client:
         response = client.get("/api/v1/tools")
@@ -1164,5 +1210,5 @@ def test_http_app_does_not_expose_fake_mcp_routes() -> None:
             },
         )
 
-    assert get_response.status_code == 404
-    assert post_response.status_code == 404
+    assert get_response.status_code == 401
+    assert post_response.status_code == 401
