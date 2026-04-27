@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import re
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -9,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.agent.engine import AgentEngine, AgentRun
 from app.tool.currency.service import CurrencyProviderError
-from app.config import Settings, UpstreamServiceError
+from app.config import ParameterMappingError, Settings, UpstreamServiceError
 from app.main import create_app
 from app.schemas import (
     AgentDebugGrounding,
@@ -366,6 +369,41 @@ def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
     assert payload["tool"] == "stock.inventory_snapshot"
     assert payload["data"]["coverage"]["matchedProducts"] >= 1
     assert payload["data"]["rows"]
+
+
+def test_snapshot_duplicate_signature_skips() -> None:
+    settings = Settings(foundry_endpoint=None, foundry_api_key=None)
+    engine = AgentEngine(settings=settings, tool_registry=MagicMock(), logger=logging.getLogger("test"))
+    args = {"categoryId": "coffee", "page": 1, "pageSize": 20}
+    signature = engine._inventory_snapshot_signature(args)
+    assert signature is not None
+    item = {
+        "tool_name": "stock.inventory_snapshot",
+        "normalized_args": args,
+        "snapshot_signature": signature,
+        "inserted": True,
+    }
+    reason = engine._skip_prepared_call_reason(
+        item=item,
+        traces=[],
+        inventory_snapshot=None,
+        snapshot_signatures={signature},
+    )
+    assert "already covered" in reason
+
+
+def test_query_route_returns_structured_error() -> None:
+    async_error = ParameterMappingError("invalid metadata")
+    orchestrator = AsyncMock(side_effect=async_error)
+
+    with build_client() as client:
+        client.app.state.container.orchestrator_service.handle_query = orchestrator
+        response = client.post("/api/v1/query", json={"message": "status"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "error"
+    assert payload["limitations"] and "invalid metadata" in payload["limitations"][0]
 
 
 def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls() -> None:

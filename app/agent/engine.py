@@ -120,6 +120,7 @@ class AgentEngine:
         }
         run_started_at = perf_counter()
         replan_rounds_used = 0
+        inventory_snapshot_signatures: set[str] = set()
 
         planner_started_at = perf_counter()
         plan_status, planning_limitations = await self.plan_query(request.message, session_state)
@@ -299,6 +300,7 @@ class AgentEngine:
                         "normalized_args": normalized_args,
                         "plan_step": plan_step,
                         "inserted": inserted,
+                        "snapshot_signature": self._inventory_snapshot_signature(normalized_args),
                     }
                 )
 
@@ -349,10 +351,12 @@ class AgentEngine:
                             {"skip_reason": skip_reason}
                         )
                         continue
+                    snapshot_signature = item.get("snapshot_signature")
                     skip_reason = self._skip_prepared_call_reason(
                         item=item,
                         traces=traces,
                         inventory_snapshot=inventory_snapshot,
+                        snapshot_signatures=inventory_snapshot_signatures,
                     )
                     if skip_reason is not None:
                         raw_outcomes.append({"skip_reason": skip_reason})
@@ -378,6 +382,9 @@ class AgentEngine:
                                 self._persist_plan_state(session_state, plan_status)
                     except Exception as exc:  # pragma: no cover - mirrored error flow
                         raw_outcomes.append(exc)
+                    finally:
+                        if snapshot_signature:
+                            inventory_snapshot_signatures.add(snapshot_signature)
 
             supported_tool_errors = (InventoryNotFoundError, ParameterMappingError, UpstreamServiceError, ValueError)
             tool_messages: list[dict[str, Any]] = []
@@ -1312,6 +1319,7 @@ class AgentEngine:
         item: dict[str, Any],
         traces: list[ToolTrace],
         inventory_snapshot: dict[str, Any] | None,
+        snapshot_signatures: set[str] | None = None,
     ) -> str | None:
         tool_name = str(item["tool_name"])
         normalized_args = item["normalized_args"]
@@ -1362,6 +1370,14 @@ class AgentEngine:
             )
             if snapshot_reason is not None:
                 return snapshot_reason
+        snapshot_signature = item.get("snapshot_signature")
+        if (
+            snapshot_signature
+            and snapshot_signatures
+            and snapshot_signature in snapshot_signatures
+            and item.get("inserted")
+        ):
+            return self._snapshot_duplicate_reason(snapshot_signature)
         return None
 
     def _snapshot_skip_reason(
@@ -1416,6 +1432,51 @@ class AgentEngine:
                 if identifier:
                     identifiers.add(identifier)
         return identifiers
+
+    def _inventory_snapshot_signature(self, args: dict[str, Any]) -> str | None:
+        category = args.get("categoryId")
+        search = (args.get("search") or "").strip().lower()
+        if not category and not search:
+            return None
+        page = self._normalize_positive_int(args.get("page"), 1)
+        page_size = self._normalize_positive_int(args.get("pageSize"), 20)
+        parts: list[str] = []
+        if category:
+            parts.append(f"category:{category}")
+        if search:
+            parts.append(f"search:{search}")
+        parts.append(f"page:{page}")
+        parts.append(f"pageSize:{page_size}")
+        return "|".join(parts)
+
+    def _snapshot_duplicate_reason(self, signature: str) -> str:
+        label = self._snapshot_signature_label(signature)
+        return (
+            f"Skipped `stock.inventory_snapshot` because the query already covered {label}."
+        )
+
+    @staticmethod
+    def _snapshot_signature_label(signature: str) -> str:
+        parts = []
+        for segment in signature.split("|"):
+            if ":" not in segment:
+                continue
+            key, value = segment.split(":", 1)
+            if key in {"category", "search"}:
+                parts.append(f"{key}={value}")
+        if parts:
+            return ", ".join(parts)
+        return signature
+
+    @staticmethod
+    def _normalize_positive_int(value: Any, default: int) -> int:
+        try:
+            numeric = int(value)
+        except (TypeError, ValueError):
+            return default
+        if numeric <= 0:
+            return default
+        return numeric
 
     def _append_recursive_follow_up(
         self,

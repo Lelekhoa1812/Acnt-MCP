@@ -84,13 +84,17 @@ class ToolRegistry:
     def list_tools(self) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
-            normalized_name = normalize_mcp_tool_name(spec.name)
-            # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we mirror the MCP transform here to keep the front-end list valid.
-            if not is_mcp_safe_tool_name(normalized_name):  # pragma: no cover - defensive invariant
-                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{normalized_name}'.")
+            public_name = self._tool_name_map.to_public(spec.name)
+            # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we
+            # reuse the MCP map to keep front-end names compliant while preserving
+            # the same mapping that `_tool_name_map` already tracks for reverse resolution.
+            if not is_mcp_safe_tool_name(public_name):  # pragma: no cover - defensive invariant
+                raise UnsupportedToolError(
+                    f"Configured tool '{spec.name}' produced unsafe MCP name '{public_name}'."
+                )
             tools.append(
                 ToolDefinition(
-                    name=normalized_name,
+                    name=public_name,
                     description=spec.description,
                     input_schema=spec.model.model_json_schema(),
                 )
@@ -100,15 +104,16 @@ class ToolRegistry:
     def tool_payloads(self) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         for spec in self._tools.values():
-            normalized_name = normalize_mcp_tool_name(spec.name)
-            # Root Cause vs Logic: keep the REST function payload signature aligned with the MCP-safe name so callers sharing these definitions stay compliant.
-            if not is_mcp_safe_tool_name(normalized_name):  # pragma: no cover - defensive invariant
-                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{normalized_name}'.")
+            public_name = self._tool_name_map.to_public(spec.name)
+            # Root Cause vs Logic: keep the REST function payload signature aligned with
+            # the MCP-safe name so callers sharing these definitions stay compliant.
+            if not is_mcp_safe_tool_name(public_name):  # pragma: no cover - defensive invariant
+                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{public_name}'.")
             payloads.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": normalized_name,
+                        "name": public_name,
                         "description": spec.description,
                         "parameters": spec.model.model_json_schema(),
                     },

@@ -4,7 +4,14 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from app.config import get_container
+from app.agent.engine import AgentRun
+from app.config import (
+    InventoryNotFoundError,
+    ParameterMappingError,
+    UnsupportedToolError,
+    UpstreamServiceError,
+    get_container,
+)
 from app.schemas import AgentQueryRequest
 
 
@@ -19,7 +26,20 @@ async def query_agent(payload: AgentQueryRequest, container = Depends(get_contai
         payload.sessionId or "new",
         " ".join(payload.message.split())[:120],
     )
-    result = await container.orchestrator_service.handle_query(payload)
+    try:
+        result = await container.orchestrator_service.handle_query(payload)
+    except (InventoryNotFoundError, ParameterMappingError, UnsupportedToolError, UpstreamServiceError) as exc:
+        logger.warning("ui_query_failure session_id=%s error=%s", payload.sessionId or "new", exc)
+        fallback = AgentRun(
+            status="error",
+            answer="The request failed due to a backend issue.",
+            limitations=[str(exc)],
+            thoughts=[],
+            tool_trace=[],
+            resolved_items=[],
+            plan_status=None,
+        )
+        return fallback.model_dump(mode="json")
     # Root Cause vs Logic: frontend-only logs made title debugging opaque from
     # server terminals; mirror the resolved title source in API logs so sidebar
     # naming issues can be traced request-by-request.
