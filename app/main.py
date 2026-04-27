@@ -285,7 +285,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_path": resolved_settings.mcp_path,
             "mcp_entrypoint": "uvicorn app.main:app (StreamableHTTPSessionManager at /mcp)",
             "mcp_auth_required": bool(resolved_settings.mcp_bearer_token),
-            "mcp_oauth_enabled": resolved_settings.mcp_oauth_enabled,
+            "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
             "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,
         }
@@ -303,7 +303,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/oauth/register")
     async def oauth_register(request: Request) -> JSONResponse:
-        if not resolved_settings.mcp_oauth_enabled:
+        if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
@@ -329,7 +329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/oauth/authorize")
     async def oauth_authorize(request: Request) -> Response:
-        if not resolved_settings.mcp_oauth_enabled or not resolved_settings.mcp_bearer_token:
+        if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
         params = request.query_params
@@ -361,7 +361,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/oauth/token")
     async def oauth_token(request: Request) -> JSONResponse:
-        if not resolved_settings.mcp_oauth_enabled or not resolved_settings.mcp_bearer_token:
+        if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
         body = (await request.body()).decode()

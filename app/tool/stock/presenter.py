@@ -30,7 +30,7 @@ def render_inventory_snapshot_markdown(
         ("Product", "product", None),
         ("Variant", "variant", "unknown"),
         ("SKU", "sku", "unknown"),
-        ("Colour / Finish Evidence", "colour", "unknown"),
+        ("Colour", "colour", "unknown"),
         ("Size", "size", "unknown"),
         ("Availability", "availability", "unknown"),
     ]
@@ -40,8 +40,7 @@ def render_inventory_snapshot_markdown(
     header = "| " + " | ".join(column[0] for column in columns) + " |"
     divider = "| " + " | ".join("---" for _ in columns) + " |"
     lines = [
-        "Here is a grouped inventory view so variants are easier to compare under each product.",
-        "Colour / finish is inferred from product and variant naming; if no colour is explicit, it is shown as `unknown`.",
+        "Here is the inventory view of the products and variants.",
         "",
         header,
         divider,

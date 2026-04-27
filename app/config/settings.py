@@ -264,6 +264,10 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_MCP_BEARER_TOKEN is not configured; the public `/mcp` transport will accept unauthenticated requests."
             )
+        elif not self.mcp_oauth_enabled:
+            notes.append(
+                "HTH_MCP_OAUTH_ENABLED=false, but a bearer token is present; the browser OAuth bridge remains available automatically so Claude.ai can complete the remote MCP handshake."
+            )
         return notes
 
     @staticmethod
@@ -279,6 +283,16 @@ class Settings(BaseSettings):
     @property
     def parsed_mcp_allowed_origins(self) -> list[str]:
         return self._split_csv(self.mcp_allowed_origins)
+
+    @property
+    def mcp_browser_oauth_enabled(self) -> bool:
+        # Root Cause vs Logic: Claude.ai remote connectors need the OAuth bridge
+        # even when the server is already protected by a bearer token. Treat the
+        # bridge as enabled whenever a token exists so browser clients can redeem
+        # it without requiring a second deployment toggle.
+        if not self.mcp_bearer_token:
+            return False
+        return True
 
 
 @lru_cache
