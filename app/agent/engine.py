@@ -1750,8 +1750,11 @@ class AgentEngine:
                     "content": (
                         "Split a stock catalogue search phrase into one-item-at-a-time product search terms. "
                         "Return strict JSON with key `items` as an ordered array of search strings. "
-                        "Keep each term self-contained and include the product noun when needed. "
-                        "If the input already targets one item, return it unchanged as a single-item array."
+                        "Keep each term self-contained for first-pass search. "
+                        "If a single product phrase contains a distinctive model/proper-name token plus generic "
+                        "descriptors, include the original phrase first and then a shorter fallback term made only "
+                        "from the distinctive product/model token(s). "
+                        "If the input already targets one item and has no useful shorter fallback, return it unchanged."
                     ),
                 },
                 {
@@ -3110,6 +3113,9 @@ class AgentEngine:
                         "You are a strict JSON replan controller. "
                         "Reason from the request, current plan context, memoized evidence, and limitations. "
                         "Do not use hard-coded keyword routing. "
+                        "When a stock_search_catalogue call with a multi-word product phrase returns zero rows, "
+                        "retry with a shorter distinctive product/model term inferred from the user's phrase or "
+                        "prior evidence (example: if `charlie chair` returns no rows, try `charlie`). "
                         "If requested evidence is still missing but retrievable, return additional tool steps."
                     ),
                 },

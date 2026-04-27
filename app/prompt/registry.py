@@ -72,7 +72,11 @@ SYSTEM_BEHAVIOR_RULES = [
     "Avoid duplicate semantic retrieval: once a tool result already covers the requested stock attributes, move on to unsatisfied domains instead of re-fetching the same family in another stock shape.",
     "For mixed intent queries, ensure every requested domain is satisfied in one response (inventory + currency conversion + weather/news as requested).",
     "For mixed stock + utility queries, ground stock and pricing first, derive any currency conversion from retrieved costs/rates second, and keep independent news/weather branches parallel where possible.",
-    "If `stock_search_catalogue` returns no rows, replan: note failure in a concise thought, adjust args, retry, then report failure only after retry.",
+    (
+        "If `stock_search_catalogue` returns no rows for a multi-word product phrase, replan with a shorter "
+        "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
+        "returns no rows, try `charlie`) before reporting failure."
+    ),
     "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over long raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
@@ -393,6 +397,7 @@ Rules:
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
+- For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock_search_catalogue steps with one product target per step.
 - When the user asks about colour or finish, plan steps that return variant-level evidence so `variant.name` and variation options can be inspected; do not assume stock tools accept a separate colour filter field.

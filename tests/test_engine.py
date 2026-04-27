@@ -29,6 +29,33 @@ def build_engine_settings() -> Settings:
 
 
 @pytest.mark.anyio
+async def test_search_split_prompt_requests_distinctive_fallback_without_hardcoded_keywords() -> None:
+    container = await build_container(build_engine_settings())
+    payloads: list[dict] = []
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        payloads.append(payload)
+        assert endpoint_name == "/api/v1/query/search-split"
+        return {"choices": [{"message": {"content": json.dumps({"items": ["Charlie chair", "Charlie"]})}}]}
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        terms = await container.agent_engine._split_search_terms_for_single_item_search(
+            request_message="let me know about our Charlie chair stock availability",
+            search_term="Charlie chair",
+        )
+    finally:
+        await container.close()
+
+    assert terms == ["Charlie chair", "Charlie"]
+    system_prompt = payloads[0]["messages"][0]["content"]
+    assert "distinctive product/model token" in system_prompt
+    assert "never use hard-coded" in system_prompt
+    assert "include the original phrase first" in system_prompt
+
+
+@pytest.mark.anyio
 async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() -> None:
     container = await build_container(build_engine_settings())
     endpoint_calls: list[str] = []

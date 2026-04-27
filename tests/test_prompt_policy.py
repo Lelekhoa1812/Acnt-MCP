@@ -63,6 +63,9 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "supported_department_count" in planner_prompt
     assert "mapped_furniture_category_count" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
+    assert "shorter search text" in planner_prompt
+    assert "distinctive product/model token" in planner_prompt
+    assert "never rely on hard-coded keyword lists" in planner_prompt
     assert "Do not classify named-category exploration as capability-only" in planner_prompt
     assert "avoid planning both `stock_inventory_snapshot` and `stock_compare_variants`" in planner_prompt
     assert "latency-aware" in planner_prompt
