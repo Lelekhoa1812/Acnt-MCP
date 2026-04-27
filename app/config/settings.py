@@ -184,19 +184,32 @@ class Settings(BaseSettings):
 
     @property
     def default_logo_url(self) -> str:
+        # Motivation vs Logic: remote Claude web connectors treat relative
+        # server metadata URLs as suspicious, so the default implementation URL
+        # should resolve to an absolute HTTPS origin when public_base_url is set.
+        if self.public_base_url:
+            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/ui/public/hth.jpeg"
         return f"{self.api_prefix}/ui/public/hth.jpeg"
 
     @property
     def resolved_server_logo_url(self) -> str:
-        return self.server_logo_url or self.default_logo_url
+        url = self.server_logo_url or self.default_logo_url
+        if self.public_base_url and url.startswith("/"):
+            return f"{self.public_base_url.rstrip('/')}{url}"
+        return url
 
     @property
     def default_website_url(self) -> str:
+        if self.public_base_url:
+            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/ui"
         return f"{self.api_prefix}/ui"
 
     @property
     def resolved_server_website_url(self) -> str:
-        return self.server_website_url or self.default_website_url
+        url = self.server_website_url or self.default_website_url
+        if self.public_base_url and url.startswith("/"):
+            return f"{self.public_base_url.rstrip('/')}{url}"
+        return url
 
     @property
     def has_foundry(self) -> bool:

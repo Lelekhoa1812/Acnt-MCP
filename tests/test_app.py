@@ -35,6 +35,9 @@ def build_client() -> TestClient:
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
+        public_base_url=None,
+        server_website_url=None,
+        server_logo_url=None,
         mock_catalog_path="./mock/product-catalog.json",
         mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
@@ -54,6 +57,9 @@ def build_cloud_client() -> TestClient:
         cloud_harmonise_api="test-api-key",
         cloud_harmonise_image="https://images.harmonise.test",
         log_level="debug",
+        public_base_url=None,
+        server_website_url=None,
+        server_logo_url=None,
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
@@ -66,6 +72,9 @@ def build_mcp_auth_client() -> TestClient:
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
         mock_catalog_path="./mock/product-catalog.json",
         mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
@@ -73,7 +82,6 @@ def build_mcp_auth_client() -> TestClient:
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
-        public_base_url="https://hth.example.test",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_enabled=True,
     )

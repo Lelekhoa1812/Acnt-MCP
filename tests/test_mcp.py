@@ -23,6 +23,9 @@ def build_mcp_settings() -> Settings:
     return Settings(
         local_harmonise=True,
         log_level="warning",
+        public_base_url=None,
+        server_website_url=None,
+        server_logo_url=None,
         mock_catalog_path="./mock/product-catalog.json",
         mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
@@ -40,9 +43,31 @@ def build_mcp_cloud_settings() -> Settings:
         cloud_harmonise_api="test-api-key",
         cloud_harmonise_image="https://images.harmonise.test",
         log_level="warning",
+        public_base_url=None,
+        server_website_url=None,
+        server_logo_url=None,
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
+    )
+
+
+def build_mcp_public_settings() -> Settings:
+    return Settings(
+        local_harmonise=True,
+        log_level="warning",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        mcp_bearer_token="test-mcp-token",
+        mcp_oauth_enabled=True,
     )
 
 
@@ -68,6 +93,17 @@ async def test_mcp_initialize_and_list_tools() -> None:
 
     currency_convert = next(tool for tool in tools.tools if tool.name == "currency.convert")
     assert "from" in currency_convert.inputSchema["properties"]
+
+
+@pytest.mark.anyio
+async def test_mcp_initialize_uses_absolute_metadata_urls_for_public_deployments() -> None:
+    server = build_mcp_server(build_mcp_public_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        initialize = await client.initialize()
+
+    assert initialize.serverInfo.websiteUrl == "https://hth.example.test/api/v1/ui"
+    assert initialize.serverInfo.icons[0].src == "https://hth.example.test/api/v1/ui/public/hth.jpeg"
 
 
 @pytest.mark.anyio
