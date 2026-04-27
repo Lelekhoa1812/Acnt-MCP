@@ -28,6 +28,11 @@ The current FastAPI app run `uvicorn app.main:app` exposes diagnostics plus `Str
 - Tools appear but calls fail: inspect Azure logs, check Redis connectivity, verify Harmonise data/keys, and confirm host/origin filters allow the request.
 - Empty or partial answers: make sure plugin API keys exist, Harmonise returns the expected fields, and catalog timeouts/retries are tuned.
 
+## Testing with MCP Inspector
+```bash
+ npx @modelcontextprotocol/inspector https://app-hth-mcp-dev-ause-01.azurewebsites.net/mcp
+```
+
 ## Connection steps
 1. In Claude.ai workspace/team settings, add a new remote MCP connector.
 2. Enter the public `https://<domain>/mcp` URL and complete the OAuth flow tied to `HTH_MCP_BEARER_TOKEN`.
