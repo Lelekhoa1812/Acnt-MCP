@@ -43,6 +43,7 @@ from app.schemas import (
 from app.prompt.context import render_session_context, summarize_session_state
 from app.session.store import SessionStore
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
+from app.mcp.tool_names import normalize_mcp_tool_name
 
 
 @dataclass
@@ -80,27 +81,35 @@ class ToolRegistry:
         self._register_currency()
 
     def list_tools(self) -> list[ToolDefinition]:
-        return [
-            ToolDefinition(
-                name=spec.name,
-                description=spec.description,
-                input_schema=spec.model.model_json_schema(),
+        tools: list[ToolDefinition] = []
+        for spec in self._tools.values():
+            normalized_name = normalize_mcp_tool_name(spec.name)
+            # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we mirror the MCP transform here to keep the front-end list valid.
+            tools.append(
+                ToolDefinition(
+                    name=normalized_name,
+                    description=spec.description,
+                    input_schema=spec.model.model_json_schema(),
+                )
             )
-            for spec in self._tools.values()
-        ]
+        return tools
 
     def tool_payloads(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "parameters": spec.model.model_json_schema(),
-                },
-            }
-            for spec in self._tools.values()
-        ]
+        payloads: list[dict[str, Any]] = []
+        for spec in self._tools.values():
+            normalized_name = normalize_mcp_tool_name(spec.name)
+            # Root Cause vs Logic: keep the REST function payload signature aligned with the MCP-safe name so callers sharing these definitions stay compliant.
+            payloads.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": normalized_name,
+                        "description": spec.description,
+                        "parameters": spec.model.model_json_schema(),
+                    },
+                }
+            )
+        return payloads
 
     async def call_tool(
         self,
