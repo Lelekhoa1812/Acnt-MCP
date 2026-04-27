@@ -43,7 +43,7 @@ from app.schemas import (
 from app.prompt.context import render_session_context, summarize_session_state
 from app.session.store import SessionStore
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
-from app.mcp.tool_names import normalize_mcp_tool_name
+from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name, normalize_mcp_tool_name
 
 
 @dataclass
@@ -79,12 +79,15 @@ class ToolRegistry:
         self._register_news()
         self._register_weather()
         self._register_currency()
+        self._tool_name_map = McpToolNameMap(list(self._tools))
 
     def list_tools(self) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
             normalized_name = normalize_mcp_tool_name(spec.name)
             # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we mirror the MCP transform here to keep the front-end list valid.
+            if not is_mcp_safe_tool_name(normalized_name):  # pragma: no cover - defensive invariant
+                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{normalized_name}'.")
             tools.append(
                 ToolDefinition(
                     name=normalized_name,
@@ -99,6 +102,8 @@ class ToolRegistry:
         for spec in self._tools.values():
             normalized_name = normalize_mcp_tool_name(spec.name)
             # Root Cause vs Logic: keep the REST function payload signature aligned with the MCP-safe name so callers sharing these definitions stay compliant.
+            if not is_mcp_safe_tool_name(normalized_name):  # pragma: no cover - defensive invariant
+                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{normalized_name}'.")
             payloads.append(
                 {
                     "type": "function",
@@ -118,6 +123,7 @@ class ToolRegistry:
         session_id: str | None = None,
         thought: str = "",
     ) -> ToolResult:
+        tool_name = self.resolve_tool_name(tool_name)
         self.logger.debug("tool_call tool=%s args=%s session_id=%s", tool_name, raw_args, session_id)
         spec = self._tools.get(tool_name)
         if spec is None:
@@ -127,6 +133,15 @@ class ToolRegistry:
         except ValidationError as exc:
             raise ParameterMappingError(self._format_validation_error(tool_name, exc)) from exc
         return await spec.handler(validated, session_id, thought)
+
+    def resolve_tool_name(self, tool_name: str) -> str:
+        # Root Cause vs Logic: `/query` must expose MCP-safe function names such as
+        # `stock_inventory_snapshot`, while the internal registry is keyed by
+        # dotted names. Resolve public names at the registry boundary so model,
+        # REST, and MCP callers execute the same tool implementation.
+        if tool_name in self._tools:
+            return tool_name
+        return self._tool_name_map.to_internal(tool_name)
 
     def _format_validation_error(self, tool_name: str, exc: ValidationError) -> str:
         parts: list[str] = []

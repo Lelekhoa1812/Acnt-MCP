@@ -49,10 +49,11 @@ SYSTEM_BEHAVIOR_RULES = [
     "Run planner -> retrieval -> validator -> composer in order.",
     "Handle each request as recursive discovery: decompose intent, retrieve evidence, follow identifiers, then answer.",
     "Emit Plan Status JSON before the first retrieval tool call.",
-    "Retrieve first, validate second, answer last for live external facts; answer static capability facts directly from supplied policy metadata.",
+    "Retrieve first, validate second, answer last for live external facts; compose static capability facts from supplied policy metadata.",
     "Use exact identifiers before broad search.",
     "Build tool args from schema + retrieved evidence; do not hard-code unsupported filters.",
     "Use tools instead of guessing for live inventory, product, weather, news, and currency facts; do not call tools for static capability metadata already present in policy.",
+    "When a user asks to learn more about a named category, route it as live category inventory exploration, not as a category-listing capability answer.",
     "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate all variants (names, options, stock, evidence).",
     "For ambiguity, follow resolver payload: use explicit options for selectable sets; use total match count + short hints for large sets.",
     "Do not call `resolver.disambiguate_candidates` after product confirmation; use `stock.get_product`, `stock.extract_variant_evidence`, or `stock.inventory_snapshot` for variant details.",
@@ -374,6 +375,7 @@ Each non-empty step object must include:
 Rules:
 - Before building steps, classify the user request into intent domains and emit `intent_classes` using one or more of: capability, stock, inventory_search, product_detail, comparison, follow_up, weather, news, currency, mixed, out_of_scope.
 - If the request asks only about supported departments, supported categories, taxonomy counts, tool capability, or current stock scope, use the Capability context below, emit `intent_classes: ["capability"]`, set `steps: []`, and set `status: complete`.
+- If the user names or implies one mapped category and asks to know more, explore, view options, see products/items, understand availability, or otherwise learn what is in that category, emit stock/inventory_search intent and plan live catalogue or inventory snapshot retrieval with the matched `categoryId`. Do not classify named-category exploration as capability-only.
 - Do not plan `stock.inventory_snapshot`, `stock.search_catalogue`, `stock.get_product`, `stock.get_departments`, or `stock.get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
 - For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
 - Build deterministic, executable DAG steps only.
@@ -495,10 +497,12 @@ def render_composer(
         ),
         "limitations": limitations,
     }
+    if "capability" in {intent.strip().lower() for intent in plan.intent_classes if intent.strip()}:
+        payload["capability_context"] = furniture_capability_summary()
     return f"""
 You are the composer phase.
 
-Write the final user-facing answer only, aligned to the user's request and grounded in memoized evidence.
+Write the final user-facing answer only, aligned to the user's request and grounded in memoized evidence or supplied capability context.
 Requirements:
 - Do not mention plan steps, TODO status, memo/cache mechanics, validation counters, tool names, argument details, Redis/cache-hit statuses, or internal failed attempts.
 - Do not mention debug payload sections or thought-block mechanics.
@@ -507,6 +511,7 @@ Requirements:
 - When colour or finish is encoded only in a variant’s name, use that name in the answer; do not add a separate colour label or field.
 - Do not invent facts.
 - Do not call tools.
+- For capability-only plans, answer from capability_context and keep the answer scoped to the requested capability fact instead of dumping every category route.
 
 Context:
 {json.dumps(payload, indent=2, ensure_ascii=False)}

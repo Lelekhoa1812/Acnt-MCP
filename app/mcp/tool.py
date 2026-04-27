@@ -29,6 +29,10 @@ def normalize_mcp_tool_name(name: str) -> str:
     return fallback[:64]
 
 
+def is_mcp_safe_tool_name(name: str) -> bool:
+    return bool(_MCP_TOOL_NAME_PATTERN.fullmatch(name))
+
+
 class McpToolNameMap:
     def __init__(self, internal_names: list[str]) -> None:
         self.internal_to_public: dict[str, str] = {}

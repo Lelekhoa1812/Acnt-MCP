@@ -220,6 +220,11 @@ def furniture_category_rules() -> list[str]:
             "If category confidence is uncertain, skip `categoryId` and prioritize name-driven "
             "`search` arguments to avoid false-negative exclusions."
         ),
+        (
+            "When the user asks to know more about one mapped category, treat it as live category "
+            "inventory exploration: use the matched `categoryId` with stock inventory/catalogue tools "
+            "so the answer describes actual products, variants, availability, and relevant details."
+        ),
     ]
 
 
@@ -235,4 +240,8 @@ Assistant: call stock.search_catalogue with departmentId=3 and categoryId=b7d700
 FURNITURE Example 3:
 User: Show me stools and electronics.
 Assistant: handle stools via furniture stock tools with departmentId=3 and categoryId=b7d70000-eacf-fc4c-0a24-08de7f19d8d2, and clearly state electronics is unavailable because only Furniture is supported right now.
+
+FURNITURE Example 4:
+User: Let me know more about the coffee table category.
+Assistant: classify this as live category inventory exploration, then call stock.inventory_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
 """.strip()

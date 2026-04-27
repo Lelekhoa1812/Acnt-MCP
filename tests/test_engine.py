@@ -32,10 +32,12 @@ def build_engine_settings() -> Settings:
 async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() -> None:
     container = await build_container(build_engine_settings())
     endpoint_calls: list[str] = []
+    payloads: list[dict] = []
     tool_calls: list[str] = []
 
     async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
         endpoint_calls.append(endpoint_name)
+        payloads.append(payload)
         if endpoint_name == "/api/v1/query/planner":
             return {
                 "choices": [
@@ -48,6 +50,39 @@ async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() ->
                                     "steps": [],
                                     "memo": {"entries": [], "aggregates": {}},
                                     "status": "complete",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "Currently, I support 1 stock department: Furniture. "
+                                "Within Furniture, there are 14 mapped category routes."
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": (
+                                        "Currently, I support 1 stock department: Furniture. "
+                                        "Within Furniture, there are 14 mapped category routes."
+                                    ),
+                                    "limitations": [],
+                                    "clarification": None,
                                 }
                             )
                         }
@@ -76,8 +111,9 @@ async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() ->
     finally:
         await container.close()
 
-    assert endpoint_calls == ["/api/v1/query/planner"]
+    assert endpoint_calls == ["/api/v1/query/planner", "/api/v1/query/composer", "/api/v1/query"]
     assert tool_calls == []
+    assert "capability_context" in payloads[1]["messages"][1]["content"]
     assert result.status == "answered"
     assert result.tool_trace == []
     assert "1 stock department" in result.answer

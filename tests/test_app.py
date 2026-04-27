@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -29,6 +30,7 @@ from app.schemas import (
 )
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
+MCP_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def build_client() -> TestClient:
@@ -276,14 +278,15 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
 
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
-    assert "stock.get_departments" in tool_names
-    assert "stock.get_categories" in tool_names
-    assert "stock.search_catalogue" in tool_names
-    assert "stock.inventory_snapshot" in tool_names
-    assert "resolver.disambiguate_candidates" in tool_names
-    assert "weather.current" in tool_names
-    assert "news.search" in tool_names
-    assert "currency.convert" in tool_names
+    assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
+    assert "stock_get_departments" in tool_names
+    assert "stock_get_categories" in tool_names
+    assert "stock_search_catalogue" in tool_names
+    assert "stock_inventory_snapshot" in tool_names
+    assert "resolver_disambiguate_candidates" in tool_names
+    assert "weather_current" in tool_names
+    assert "news_search" in tool_names
+    assert "currency_convert" in tool_names
 
 
 def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
@@ -292,10 +295,11 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
 
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
-    assert "stock.get_departments" not in tool_names
-    assert "stock.get_categories" not in tool_names
-    assert "stock.search_catalogue" in tool_names
-    assert "stock.get_product" in tool_names
+    assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
+    assert "stock_get_departments" not in tool_names
+    assert "stock_get_categories" not in tool_names
+    assert "stock_search_catalogue" in tool_names
+    assert "stock_get_product" in tool_names
 
 
 def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
@@ -345,6 +349,23 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
     assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
     assert payload["plan_status"]["steps"][0]["tool"] == "stock.inventory_snapshot"
     assert payload["validation"]["expected_rows"] is not None
+
+
+def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
+    with build_client() as client:
+        response = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock_inventory_snapshot",
+                "args": {"page": 1, "pageSize": 100},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["tool"] == "stock.inventory_snapshot"
+    assert payload["data"]["coverage"]["matchedProducts"] >= 1
+    assert payload["data"]["rows"]
 
 
 def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls() -> None:

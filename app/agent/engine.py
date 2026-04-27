@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import InventoryNotFoundError, ParameterMappingError, Settings, UpstreamServiceError
 from app.tool.stock.presenter import render_inventory_snapshot_markdown
 from app.prompt import render_composer, render_formatter, render_planner, render_system, render_validator
-from app.prompt.stock.furniture import render_furniture_capability_answer
 from app.prompt.context import render_plan_context
 from app.schemas import (
     AgentDebugGrounding,
@@ -130,25 +129,6 @@ class AgentEngine:
 
         plan_snapshot = json.dumps(plan_status.model_dump(mode="json"), ensure_ascii=False)
         thoughts.append(plan_snapshot)
-
-        static_capability_answer = self._static_capability_answer(plan_status)
-        if static_capability_answer is not None:
-            # Root Cause vs Logic: taxonomy/capability questions were forced into
-            # live stock retrieval. The planner now explicitly classifies static
-            # capability answers, so the runtime trusts that LLM-routed plan
-            # shape instead of inspecting the raw request text.
-            plan_status.status = "complete"
-            self._persist_plan_state(session_state, plan_status)
-            return AgentRun(
-                status="answered",
-                answer=static_capability_answer,
-                limitations=self._dedupe(planning_limitations),
-                thoughts=thoughts,
-                debug=None,
-                tool_trace=[],
-                resolved_items=[],
-                plan_status=plan_status,
-            )
 
         messages = self._build_runtime_messages(
             request=request.message,
@@ -289,7 +269,7 @@ class AgentEngine:
             assistant_thought = (assistant.get("content") or "").strip()
             for tool_call in tool_calls:
                 declared_tool = str(tool_call["function"].get("name") or "")
-                tool_name = declared_tool
+                tool_name = self.tool_registry.resolve_tool_name(declared_tool)
                 raw_arguments = tool_call["function"].get("arguments") or "{}"
                 try:
                     parsed_args = json.loads(raw_arguments)
@@ -1897,7 +1877,12 @@ class AgentEngine:
         return inserted, True
 
     def _all_plan_steps_done(self, plan_status: PlanStatus) -> bool:
-        return bool(plan_status.steps) and all(step.status == "done" for step in plan_status.steps)
+        # Root Cause vs Logic: capability-only plans intentionally have no tool
+        # steps; treat planner-complete empty plans as complete so the composer,
+        # not a hard-coded shortcut, can answer from prompt-provided policy data.
+        if not plan_status.steps:
+            return plan_status.status == "complete"
+        return all(step.status == "done" for step in plan_status.steps)
 
     def _next_open_step(self, plan_status: PlanStatus) -> PlanStep | None:
         completed = {step.id for step in plan_status.steps if step.status == "done"}
@@ -2736,12 +2721,6 @@ class AgentEngine:
     def _can_use_stock_snapshot_fast_path(self, plan_status: PlanStatus) -> bool:
         requested_domains = self._requested_domains(plan_status)
         return requested_domains == {"stock"}
-
-    def _static_capability_answer(self, plan_status: PlanStatus) -> str | None:
-        intent_classes = {intent.strip().lower() for intent in plan_status.intent_classes if intent.strip()}
-        if "capability" not in intent_classes or plan_status.steps:
-            return None
-        return render_furniture_capability_answer(include_categories=True)
 
     def _memo_stock_rows(self, memo_cache: Any) -> list[dict[str, Any]]:
         entries = getattr(memo_cache, "entries", None)

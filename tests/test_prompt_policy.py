@@ -63,6 +63,7 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "supported_department_count" in planner_prompt
     assert "mapped_furniture_category_count" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
+    assert "Do not classify named-category exploration as capability-only" in planner_prompt
     assert "avoid planning both `stock.inventory_snapshot` and `stock.compare_variants`" in planner_prompt
     assert "latency-aware" in planner_prompt
     assert "not yet implemented in the current tool contract" in planner_prompt
@@ -168,6 +169,18 @@ def test_render_system_routes_furniture_department_and_category_mapping() -> Non
     assert "mapped_furniture_category_count" in prompt
     assert "b7d70000-eacf-fc4c-c59a-08de7f19d85e" in prompt
     assert "b7d70000-eacf-fc4c-359b-08de7f19d91e" in prompt
+
+
+def test_render_system_routes_named_category_exploration_to_live_inventory() -> None:
+    prompt = render_system(
+        request="Let me know more about the coffee table category.",
+        session=SessionState(session_id="coffee-category-routing"),
+        tools=[],
+    )
+
+    assert "live category inventory exploration" in prompt
+    assert "stock.inventory_snapshot" in prompt
+    assert "b7d70000-eacf-fc4c-f320-08de7f19d96e" in prompt
 
 
 def test_render_system_handles_mixed_furniture_and_unsupported_departments() -> None:
