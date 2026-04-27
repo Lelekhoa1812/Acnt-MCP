@@ -15,6 +15,7 @@ from app.config import (
 )
 from app.orchestrator import OrchestratorService
 from app.schemas import ToolResult
+from app.mcp.tool_names import McpToolNameMap
 
 
 class McpToolAdapter:
@@ -25,11 +26,13 @@ class McpToolAdapter:
         self.orchestrator_service = orchestrator_service
         self.default_session_id = default_session_id
         self.logger = logger
+        tool_names = [tool.name for tool in self.orchestrator_service.tool_registry.list_tools()]
+        self.tool_name_map = McpToolNameMap(tool_names)
 
     def list_tools(self) -> list[types.Tool]:
         return [
             types.Tool(
-                name=tool.name,
+                name=self.tool_name_map.to_public(tool.name),
                 description=tool.description,
                 inputSchema=tool.input_schema,
             )
@@ -44,10 +47,11 @@ class McpToolAdapter:
     ) -> types.CallToolResult:
         session_id = self._resolve_session_id(request_context)
         payload = arguments or {}
+        tool_name = self.tool_name_map.to_internal(name)
 
         try:
             result = await self.orchestrator_service.call_tool_with_orchestration(
-                tool_name=name,
+                tool_name=tool_name,
                 args=payload,
                 session_id=session_id,
             )

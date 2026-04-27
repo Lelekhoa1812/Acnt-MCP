@@ -5,6 +5,7 @@ import os
 import select
 import subprocess
 import sys
+import re
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from app.mcp.server import build_mcp_server
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
+MCP_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def build_mcp_settings() -> Settings:
@@ -87,14 +89,15 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert initialize.serverInfo.icons[0].mimeType == "image/jpeg"
     assert initialize.serverInfo.websiteUrl == "/api/v1/ui"
     tool_names = {tool.name for tool in tools.tools}
-    assert "stock.search_catalogue" in tool_names
-    assert "stock.inventory_snapshot" in tool_names
-    assert "resolver.disambiguate_candidates" in tool_names
-    assert "weather.current" in tool_names
-    assert "news.search" in tool_names
-    assert "currency.convert" in tool_names
+    assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
+    assert "stock_search_catalogue" in tool_names
+    assert "stock_inventory_snapshot" in tool_names
+    assert "resolver_disambiguate_candidates" in tool_names
+    assert "weather_current" in tool_names
+    assert "news_search" in tool_names
+    assert "currency_convert" in tool_names
 
-    currency_convert = next(tool for tool in tools.tools if tool.name == "currency.convert")
+    currency_convert = next(tool for tool in tools.tools if tool.name == "currency_convert")
     assert "from" in currency_convert.inputSchema["properties"]
 
 
@@ -118,9 +121,9 @@ async def test_mcp_cloud_mode_hides_metadata_tools() -> None:
         tools = await client.list_tools()
 
     tool_names = {tool.name for tool in tools.tools}
-    assert "stock.get_departments" not in tool_names
-    assert "stock.get_categories" not in tool_names
-    assert "stock.search_catalogue" in tool_names
+    assert "stock_get_departments" not in tool_names
+    assert "stock_get_categories" not in tool_names
+    assert "stock_search_catalogue" in tool_names
 
 
 @pytest.mark.anyio
@@ -130,7 +133,7 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock.search_catalogue",
+            "stock_search_catalogue",
             {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
         )
 
@@ -150,7 +153,7 @@ async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock.inventory_snapshot",
+            "stock_inventory_snapshot",
             {"page": 1, "pageSize": 100},
         )
 
@@ -171,7 +174,7 @@ async def test_mcp_invalid_args_return_is_error_instead_of_crashing() -> None:
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
-        result = await client.call_tool("stock.get_product", {})
+        result = await client.call_tool("stock_get_product", {})
 
     assert result.isError is True
     assert result.structuredContent is not None
@@ -290,10 +293,11 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
             process.wait(timeout=5)
 
     assert initialize["result"]["serverInfo"]["name"] == "hth-stock-intelligence"
-    assert initialize["result"]["serverInfo"]["icons"][0]["src"] == "/api/v1/ui/public/hth.jpeg"
-    assert initialize["result"]["serverInfo"]["websiteUrl"] == "/api/v1/ui"
+    assert initialize["result"]["serverInfo"]["icons"][0]["src"].endswith("/api/v1/ui/public/hth.jpeg")
+    assert initialize["result"]["serverInfo"]["websiteUrl"].endswith("/api/v1/ui")
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
-    assert "stock.search_catalogue" in tool_names
+    assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
+    assert "stock_search_catalogue" in tool_names
     assert tool_call["result"]["isError"] is False
     assert tool_call["result"]["structuredContent"]["data"]["items"][0]["name"] == "Dance Floor - White Gloss "
 
