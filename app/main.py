@@ -255,12 +255,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mock_ui_assets_path = mock_ui_root_path / "assets"
         if mock_ui_assets_path.exists():
             app.mount(
+                f"{resolved_settings.api_prefix}/chat/assets",
+                StaticFiles(directory=mock_ui_assets_path),
+                name="chat-assets",
+            )
+            # Root Cause vs Logic: legacy paths still work for cached HTML or old bookmarks.
+            app.mount(
                 f"{resolved_settings.api_prefix}/ui/assets",
                 StaticFiles(directory=mock_ui_assets_path),
-                name="ui-assets",
+                name="ui-assets-legacy",
             )
-            # Root Cause vs Logic: callers are migrating from `/mock-ui` to
-            # `/ui`; we mount both asset paths so old links do not white-screen.
             app.mount(
                 f"{resolved_settings.api_prefix}/mock-ui/assets",
                 StaticFiles(directory=mock_ui_assets_path),
@@ -269,9 +273,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         mock_ui_public_path = mock_ui_root_path / "public"
         if mock_ui_public_path.exists():
             app.mount(
+                f"{resolved_settings.api_prefix}/chat/public",
+                StaticFiles(directory=mock_ui_public_path),
+                name="chat-public",
+            )
+            app.mount(
                 f"{resolved_settings.api_prefix}/ui/public",
                 StaticFiles(directory=mock_ui_public_path),
-                name="ui-public",
+                name="ui-public-legacy",
             )
             app.mount(
                 f"{resolved_settings.api_prefix}/mock-ui/public",

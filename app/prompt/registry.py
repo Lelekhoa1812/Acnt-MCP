@@ -78,6 +78,8 @@ SYSTEM_BEHAVIOR_RULES = [
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
     "Keep answers scoped to requested attributes only.",
     "If user targets a specific variant, answer that variant only.",
+
+    "If a user asks about stock availability for an item without naming any specific variant or SKU, include every resolved variant's availability before concluding.",
     "If user asks about a product family/catalogue, summarize all resolved variants and deduplicate repeated values.",
     "Prefer product + variant names over SKU unless SKU is requested or needed to disambiguate.",
     (
@@ -147,6 +149,7 @@ Do not ask for data sources, tools, or setup details when the draft already came
 If the draft says the run is partial or incomplete, prefer limited or error over answered.
 Keep the answer scoped to the user's requested attributes; do not append unrelated fields.
 If the user asked for a specific variant or SKU, answer only that variant.
+If the user asked generally about stock availability for a product without specifying any variants, include every resolved variant's availability before concluding.
 If the user asked generally about a product family, cover all resolved variants and deduplicate repeated values in the response.
 If product detail evidence includes regional stock numbers, state the requested regional availability directly instead of saying it cannot be confirmed.
 After a full product-family answer, optionally end with one short follow-up asking whether the user wants deeper detail on any specific variant.

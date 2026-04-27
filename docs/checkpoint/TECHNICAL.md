@@ -128,7 +128,7 @@ Use stdio MCP for local desktop clients and process-based integrations.
 - `/api/v1/tools`
 - `/api/v1/tools/call`
 - `/api/v1/query`
-- `/api/v1/ui`
+- `/api/v1/chat` (legacy: `/api/v1/ui`, `/api/v1/mock-ui`)
 
 This surface is for diagnostics and mock UI behavior, not a replacement for MCP.
 

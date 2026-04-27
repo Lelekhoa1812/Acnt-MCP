@@ -79,11 +79,18 @@ def _build_ui_response(container) -> HTMLResponse:
     return HTMLResponse(render_mock(path=path, settings=container.settings))
 
 
+@router.get("/chat", response_class=HTMLResponse)
+async def chat_ui(container = Depends(get_container)) -> HTMLResponse:
+    return _build_ui_response(container)
+
+
 @router.get("/ui", response_class=HTMLResponse)
 async def ui(container = Depends(get_container)) -> HTMLResponse:
+    # Legacy alias: same shell as /chat; prefer /chat for new links.
     return _build_ui_response(container)
 
 
 @router.get("/mock-ui", response_class=HTMLResponse)
 async def mock_ui_legacy(container = Depends(get_container)) -> HTMLResponse:
+    # Legacy alias: same shell as /chat; prefer /chat for new links.
     return _build_ui_response(container)

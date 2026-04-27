@@ -93,6 +93,24 @@ class AgentEngine:
         if self._client is not None:
             await self._client.aclose()
 
+    @staticmethod
+    def _parse_model_json_content(content: str | None, *, context: str) -> Any:
+        # Root Cause vs Logic: planner/formatter sometimes return whitespace-only bodies,
+        # or JSON wrapped in ``` fences despite response_format. json.loads("") yields
+        # the opaque "Expecting value: line 1 column 1" error and forces fallback plans
+        # that over-call tools. We normalize the payload before parsing.
+        text = (content or "").strip()
+        if not text:
+            raise json.JSONDecodeError(f"{context} returned empty message content", text, 0)
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        return json.loads(text)
+
     async def run(self, request: AgentQueryRequest, session_state: SessionState) -> AgentRun:
         if not self.settings.has_foundry:
             return AgentRun(
@@ -758,7 +776,7 @@ class AgentEngine:
                 }
                 response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/planner")
                 content = response_payload["choices"][0]["message"].get("content", "")
-                raw = json.loads(content)
+                raw = self._parse_model_json_content(content, context="Planner")
                 return self._sanitize_plan(raw, request, session_state)
 
             plan = await self._retry_on_context_limit("planner", run_mode)
@@ -1074,15 +1092,7 @@ class AgentEngine:
                 }
                 response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/validator")
                 content = response_payload["choices"][0]["message"].get("content") or ""
-                # Root Cause vs Logic: the model occasionally returns an empty or
-                # null content body (e.g. on a content-filter block or refusal).
-                # json.loads("") raises "Expecting value: line 1 column 1 (char 0)",
-                # which is logged as a cryptic fallback warning. Raising here
-                # produces a descriptive ValueError that routes cleanly through the
-                # existing JSONDecodeError/ValidationError fallback path below.
-                if not content.strip():
-                    raise json.JSONDecodeError("Validator returned empty content", content, 0)
-                raw = json.loads(content)
+                raw = self._parse_model_json_content(content, context="Validator")
                 return ValidatorEnvelope.model_validate(raw)
 
             return await self._retry_on_context_limit("validator", run_mode)
@@ -1152,6 +1162,10 @@ class AgentEngine:
             if not isinstance(item, dict):
                 continue
             product_name = (item.get("name") or "").strip() or None
+            product_api_id = item.get("id")
+            product_id_str = str(product_api_id).strip() if product_api_id is not None else None
+            if product_id_str == "":
+                product_id_str = None
             variants = item.get("variants")
             if not isinstance(variants, list):
                 continue
@@ -1161,10 +1175,20 @@ class AgentEngine:
                 details = variant.get("details")
                 if not isinstance(details, dict):
                     details = {}
+                variant_api_id = variant.get("id")
+                variant_id_str = str(variant_api_id).strip() if variant_api_id is not None else None
+                if variant_id_str == "":
+                    variant_id_str = None
+                # Motivation vs Logic: per-variant memo rows are used to recover
+                # `stock_get_product` / planner follow-ups. Rows previously exposed
+                # only names and optional SKU, so `id` was missing after search and
+                # the runtime could not run product detail steps without a manual SKU.
                 rows.append(
                     {
                         "product": product_name,
+                        "product_id": product_id_str,
                         "variant": (variant.get("name") or "").strip() or None,
+                        "variant_id": variant_id_str,
                         "sku": self._compact_identifier(variant.get("sku")),
                         "size": self._format_dimensions_from_details(details),
                         "stock": self._format_regional_stock_from_details(details, variant.get("totalHirable")),
@@ -1192,10 +1216,14 @@ class AgentEngine:
                 details = variant.get("details")
                 if not isinstance(details, dict):
                     details = {}
+                p_id = item.get("id")
+                v_id = variant.get("id")
                 evidence_items.append(
                     {
                         "product_name": product_name,
+                        "product_id": str(p_id).strip() if p_id is not None and str(p_id).strip() else None,
                         "variant_name": (variant.get("name") or "").strip() or None,
+                        "variant_id": str(v_id).strip() if v_id is not None and str(v_id).strip() else None,
                         "sku": self._compact_identifier(variant.get("sku")),
                         "dimensions": {
                             "length": details.get("length"),
@@ -1745,9 +1773,10 @@ class AgentEngine:
         try:
             response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/search-split")
             content = response_payload["choices"][0]["message"].get("content") or ""
-            if not content.strip():
+            try:
+                raw = self._parse_model_json_content(content, context="Search split")
+            except json.JSONDecodeError:
                 return [search_term]
-            raw = json.loads(content)
         except (UpstreamServiceError, json.JSONDecodeError):
             return [search_term]
         if not isinstance(raw, dict):
@@ -2201,7 +2230,14 @@ class AgentEngine:
         return None
 
     def _recover_identifier_from_memo_entry(self, entry: MemoEntry) -> dict[str, str] | None:
-        for key, target in [("sku", "sku"), ("id", "id"), ("product_id", "id"), ("productId", "id")]:
+        for key, target in [
+            ("sku", "sku"),
+            ("product_id", "id"),
+            ("productId", "id"),
+            ("id", "id"),
+            ("variant_id", "id"),
+            ("variantId", "id"),
+        ]:
             candidate = self._compact_identifier(entry.args.get(key))
             if candidate:
                 return {target: candidate}
@@ -2210,7 +2246,14 @@ class AgentEngine:
             for item in collection:
                 if not isinstance(item, dict):
                     continue
-                for key, target in [("sku", "sku"), ("product_id", "id"), ("productId", "id"), ("id", "id")]:
+                for key, target in [
+                    ("sku", "sku"),
+                    ("product_id", "id"),
+                    ("productId", "id"),
+                    ("id", "id"),
+                    ("variant_id", "id"),
+                    ("variantId", "id"),
+                ]:
                     candidate = self._compact_identifier(item.get(key))
                     if candidate:
                         return {target: candidate}
@@ -2590,8 +2633,8 @@ class AgentEngine:
                 "max_completion_tokens": 600,
             }
             response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query")
-            content = response_payload["choices"][0]["message"]["content"]
-            raw = json.loads(content)
+            content = response_payload["choices"][0]["message"].get("content")
+            raw = self._parse_model_json_content(content, context="Formatter")
             if clarification and raw.get("clarification") is None:
                 raw["clarification"] = clarification.model_dump(mode="json")
             return AgentEnvelope.model_validate(raw)
@@ -3104,9 +3147,7 @@ class AgentEngine:
         try:
             response_payload = await self._post_chat_completion(payload, endpoint_name="/api/v1/query/replan")
             content = response_payload["choices"][0]["message"].get("content") or ""
-            if not content.strip():
-                return None
-            raw = json.loads(content)
+            raw = self._parse_model_json_content(content, context="Replan")
         except (UpstreamServiceError, json.JSONDecodeError):
             return None
 

@@ -85,9 +85,9 @@ async def test_mcp_initialize_and_list_tools() -> None:
         tools = await client.list_tools()
 
     assert initialize.serverInfo.name == "hth-stock-intelligence"
-    assert initialize.serverInfo.icons[0].src == "/api/v1/ui/public/hth.jpeg"
+    assert initialize.serverInfo.icons[0].src == "/api/v1/chat/public/hth.jpeg"
     assert initialize.serverInfo.icons[0].mimeType == "image/jpeg"
-    assert initialize.serverInfo.websiteUrl == "/api/v1/ui"
+    assert initialize.serverInfo.websiteUrl == "/api/v1/chat"
     tool_names = {tool.name for tool in tools.tools}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_search_catalogue" in tool_names
@@ -108,8 +108,8 @@ async def test_mcp_initialize_uses_absolute_metadata_urls_for_public_deployments
     async with create_connected_server_and_client_session(server) as client:
         initialize = await client.initialize()
 
-    assert initialize.serverInfo.websiteUrl == "https://hth.example.test/api/v1/ui"
-    assert initialize.serverInfo.icons[0].src == "https://hth.example.test/api/v1/ui/public/hth.jpeg"
+    assert initialize.serverInfo.websiteUrl == "https://hth.example.test/api/v1/chat"
+    assert initialize.serverInfo.icons[0].src == "https://hth.example.test/api/v1/chat/public/hth.jpeg"
 
 
 @pytest.mark.anyio
@@ -293,8 +293,8 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
             process.wait(timeout=5)
 
     assert initialize["result"]["serverInfo"]["name"] == "hth-stock-intelligence"
-    assert initialize["result"]["serverInfo"]["icons"][0]["src"].endswith("/api/v1/ui/public/hth.jpeg")
-    assert initialize["result"]["serverInfo"]["websiteUrl"].endswith("/api/v1/ui")
+    assert initialize["result"]["serverInfo"]["icons"][0]["src"].endswith("/api/v1/chat/public/hth.jpeg")
+    assert initialize["result"]["serverInfo"]["websiteUrl"].endswith("/api/v1/chat")
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_search_catalogue" in tool_names

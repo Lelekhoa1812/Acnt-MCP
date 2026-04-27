@@ -53,6 +53,11 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "name tokens; categoryId only if FURNITURE_CATEGORY_ROUTES match is clear). Add search or a second "
             "hop only if the first hop cannot identify the product or stock."
         ),
+        # Motivation vs Logic: when users only cite the product name, the prompt should still surface every variant.
+        (
+            "If a single-product availability question does not name a variant or SKU, plan retrieval that "
+            "covers each resolved variant and state their availability before concluding."
+        ),
         (
             "Do not use `session_get_state` for availability; resolve ids from user text, prompt memo, or prior tools."
         ),

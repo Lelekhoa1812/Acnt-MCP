@@ -2,7 +2,7 @@
   const configNode = document.getElementById("mock-ui-config");
   const config = configNode ? JSON.parse(configNode.textContent || "{}") : {};
   const root = document.getElementById("root");
-  const BRAND_LOGO_URL = config.logoUrl || `${config.publicBaseUrl || "/api/v1/ui/public"}/hth.jpeg`;
+  const BRAND_LOGO_URL = config.logoUrl || `${config.publicBaseUrl || "/api/v1/chat/public"}/hth.jpeg`;
 
   if (!root) {
     return;

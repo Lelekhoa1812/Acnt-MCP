@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -7,6 +8,19 @@ import anyio
 import httpx
 
 from app.config import Settings, UpstreamServiceError
+
+# Motivation vs Logic: Harmonise bodies can be huge; cap debug output so logs stay usable.
+_HARMONISE_LOG_MAX_CHARS = 2000
+
+
+def _trim_harmonise_log_body(data: Any, max_chars: int = _HARMONISE_LOG_MAX_CHARS) -> str:
+    try:
+        rendered = json.dumps(data, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        rendered = str(data)
+    if len(rendered) <= max_chars:
+        return rendered
+    return f"{rendered[: max(0, max_chars - 12)]}…(trimmed)"
 
 
 class HarmoniseInventorySource:
@@ -18,6 +32,11 @@ class HarmoniseInventorySource:
         self.settings = settings
         self.logger = logger
         self._catalogue_index: dict[str, dict[str, Any]] = {}
+        # Motivation vs Logic: planner/memo sometimes pass a variant `id` to
+        # `stock_get_product` while the catalogue list indexes products by the
+        # product row `id` only, so id-only resolution failed with 404. We map
+        # variant ids seen in list responses back to the parent product row.
+        self._variant_id_to_product: dict[str, dict[str, Any]] = {}
         self._catalogue_scan_complete = False
         # Root Cause vs Logic: cloud list/search GETs 500 when multiple requests
         # hit /api/v1/products concurrently. Queue all Harmonise HTTP through one
@@ -145,7 +164,10 @@ class HarmoniseInventorySource:
         response = await self._request_with_retry(path=path, params=params)
         if response.status_code >= 400:
             raise UpstreamServiceError(status_code=response.status_code, detail=response.text)
-        return response.json()
+        data = response.json()
+        # Motivation vs Logic: pair with registry `tool_call` logs; show upstream shape without full payloads.
+        self.logger.debug("harmonise_response path=%s body=%s", path, _trim_harmonise_log_body(data))
+        return data
 
     async def _request_with_retry(self, path: str, params: dict[str, Any]) -> httpx.Response:
         # Root Cause vs Logic: cloud Harmonise list/detail calls can run for a long
@@ -259,6 +281,8 @@ class HarmoniseInventorySource:
     async def _resolve_catalogue_item(self, product_id: str) -> dict[str, Any] | None:
         if product_id in self._catalogue_index:
             return self._catalogue_index[product_id]
+        if product_id in self._variant_id_to_product:
+            return self._variant_id_to_product[product_id]
         if self._catalogue_scan_complete:
             return None
 
@@ -271,6 +295,8 @@ class HarmoniseInventorySource:
 
             if product_id in self._catalogue_index:
                 return self._catalogue_index[product_id]
+            if product_id in self._variant_id_to_product:
+                return self._variant_id_to_product[product_id]
 
             total_pages = max(1, int(paged.get("totalPages") or 1))
             if page >= total_pages:
@@ -381,6 +407,12 @@ class HarmoniseInventorySource:
             product_id = item.get("id")
             if product_id:
                 self._catalogue_index[str(product_id)] = item
+            for variant in item.get("variants", []) or []:
+                if not isinstance(variant, dict):
+                    continue
+                variant_id = variant.get("id")
+                if variant_id:
+                    self._variant_id_to_product[str(variant_id)] = item
 
     def _single_item_page(self, item: dict[str, Any], page: int, page_size: int) -> dict[str, Any]:
         include_item = page == 1 and page_size >= 1

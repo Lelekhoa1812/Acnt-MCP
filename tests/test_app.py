@@ -694,8 +694,8 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
             json={"message": "Check fl-la-la-lam-1-ble", "renderMockUi": True},
         )
 
-        ui_response = client.get("/api/v1/ui")
-        logo_response = client.get("/api/v1/ui/public/hth.jpeg")
+        ui_response = client.get("/api/v1/chat")
+        logo_response = client.get("/api/v1/chat/public/hth.jpeg")
 
     assert response.status_code == 200
     payload = response.json()
@@ -703,12 +703,12 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     assert payload["plan_status"]["status"] == "complete"
     assert payload["plan_status"]["steps"][0]["tool"] == "stock_get_product"
     assert payload["mock_ui"] is None
-    assert payload["mock_ui_path"] == "/api/v1/ui"
+    assert payload["mock_ui_path"] == "/api/v1/chat"
     assert ui_response.status_code == 200
     assert "HTH Claude" in ui_response.text
-    assert "/api/v1/ui/assets/app.js" in ui_response.text
-    assert "/api/v1/ui/public/hth.jpeg" in ui_response.text
-    assert '"logoUrl": "/api/v1/ui/public/hth.jpeg"' in ui_response.text
+    assert "/api/v1/chat/assets/app.js" in ui_response.text
+    assert "/api/v1/chat/public/hth.jpeg" in ui_response.text
+    assert '"logoUrl": "/api/v1/chat/public/hth.jpeg"' in ui_response.text
     assert logo_response.status_code == 200
     assert logo_response.headers["content-type"] == "image/jpeg"
 
@@ -812,8 +812,8 @@ def test_system_spec_reports_harmonise_orchestrator_scope() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["persona"] == "Harmonise Orchestrator"
-    assert payload["logo_url"] == "/api/v1/ui/public/hth.jpeg"
-    assert payload["integration_surfaces"]["mcp"]["logo_url"] == "/api/v1/ui/public/hth.jpeg"
+    assert payload["logo_url"] == "/api/v1/chat/public/hth.jpeg"
+    assert payload["integration_surfaces"]["mcp"]["logo_url"] == "/api/v1/chat/public/hth.jpeg"
     assert "separate audit/debug payloads for planner and retrieval traces" in payload["scope"]
     assert "not yet implemented in the current tool contract" in payload["out_of_scope"][0]
 
@@ -1314,7 +1314,7 @@ def test_ui_route_returns_404_when_simulation_disabled() -> None:
     )
 
     with TestClient(create_app(settings)) as client:
-        response = client.get("/api/v1/ui")
+        response = client.get("/api/v1/chat")
 
     assert response.status_code == 404
 

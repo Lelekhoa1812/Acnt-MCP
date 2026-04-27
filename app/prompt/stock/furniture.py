@@ -220,6 +220,11 @@ def furniture_category_rules() -> list[str]:
             "inventory exploration: use the matched `categoryId` with stock inventory/catalogue tools "
             "so the answer describes actual products, variants, availability, and relevant details."
         ),
+        # Motivation vs Logic: category reasoning should remind the model to enumerate variants when the request is about availability.
+        (
+            "When the user asks about item availability via a mapped category, ensure the response covers each resolved "
+            "variant's stock before wrapping up."
+        ),
     ]
 
 
@@ -242,5 +247,10 @@ Assistant: classify this as live category inventory exploration, then call stock
 
 FURNITURE Example 5:
 User: Is the Arc lounge chair in stock?
-Assistant: treat as a single-product availability check; call stock_inventory_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence.
+Assistant: treat as a single-product availability check; call stock_inventory_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include every returned variant (with colours/sizes) and state their availability before concluding.
+
+FURNITURE Example 6:
+User: Tell me if the Spencer chair is still available.
+Assistant: treat as another single-product availability request without variant names; use stock_inventory_snapshot so each resolved variant's stock is captured, and mention every variant's availability in the final answer before finishing.
 """.strip()
+# Motivation vs Logic: this example set now models explicit per-variant coverage when availability is requested without variant names.

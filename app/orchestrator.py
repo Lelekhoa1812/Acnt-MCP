@@ -87,7 +87,7 @@ class OrchestratorService:
         mock_ui = None
         mock_ui_path = None
         if request.renderMockUi and self.settings.enable_mock_ui_simulation:
-            mock_ui_path = f"{self.settings.api_prefix}/ui"
+            mock_ui_path = f"{self.settings.api_prefix}/chat"
 
         return AgentQueryResponse(
             status=run.status,

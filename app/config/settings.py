@@ -196,8 +196,8 @@ class Settings(BaseSettings):
         # server metadata URLs as suspicious, so the default implementation URL
         # should resolve to an absolute HTTPS origin when public_base_url is set.
         if self.public_base_url:
-            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/ui/public/hth.jpeg"
-        return f"{self.api_prefix}/ui/public/hth.jpeg"
+            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/chat/public/hth.jpeg"
+        return f"{self.api_prefix}/chat/public/hth.jpeg"
 
     @property
     def resolved_server_logo_url(self) -> str:
@@ -209,8 +209,8 @@ class Settings(BaseSettings):
     @property
     def default_website_url(self) -> str:
         if self.public_base_url:
-            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/ui"
-        return f"{self.api_prefix}/ui"
+            return f"{self.public_base_url.rstrip('/')}{self.api_prefix}/chat"
+        return f"{self.api_prefix}/chat"
 
     @property
     def resolved_server_website_url(self) -> str:

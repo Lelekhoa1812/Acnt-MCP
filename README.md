@@ -2,7 +2,7 @@
 
 HTH Stock MCP is a tool-driven inventory layer for the Harmonise catalogue. Users can ask about stock, variants, availability, families, weather, news, and currency in natural language; the runtime routes those questions through validated tools and returns grounded answers with provenance.
 
-[Production Preview](https://app-hth-mcp-dev-ause-01.azurewebsites.net/api/v1/mock-ui)
+[Production Preview](https://app-hth-mcp-dev-ause-01.azurewebsites.net/api/v1/chat)
 [MCP API](https://app-hth-mcp-dev-ause-01.azurewebsites.net/mcp)
 
 ## Runtime surfaces

@@ -54,6 +54,15 @@ class ToolSpec:
     handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
 
 
+# Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
+# stable IDs and session handles so local traces stay readable without leaking long UUIDs.
+_TOOL_LOG_REDACT_KEYS: frozenset[str] = frozenset({"id", "sessionId"})
+
+
+def _redact_args_for_tool_log(raw_args: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in raw_args.items() if k not in _TOOL_LOG_REDACT_KEYS}
+
+
 class ToolRegistry:
     def __init__(
         self,
@@ -129,7 +138,7 @@ class ToolRegistry:
         thought: str = "",
     ) -> ToolResult:
         tool_name = self.resolve_tool_name(tool_name)
-        self.logger.debug("tool_call tool=%s args=%s session_id=%s", tool_name, raw_args, session_id)
+        self.logger.debug("tool_call tool=%s args=%s", tool_name, _redact_args_for_tool_log(raw_args))
         spec = self._tools.get(tool_name)
         if spec is None:
             raise UnsupportedToolError(f"Unsupported tool '{tool_name}'.")
