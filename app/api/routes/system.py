@@ -31,6 +31,7 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
     return {
         "server_name": container.settings.server_name,
         "server_version": container.settings.server_version,
+        "logo_url": container.settings.resolved_server_logo_url,
         "integration_surfaces": {
             "rest": {
                 "transport": "http",
@@ -40,6 +41,7 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
             "mcp": {
                 "transport": "stdio",
                 "entrypoint": "python3 -m app.mcp.server",
+                "logo_url": container.settings.resolved_server_logo_url,
                 "notes": "Protocol-compliant MCP tool server for Claude/Cursor-style integrations.",
             },
         },

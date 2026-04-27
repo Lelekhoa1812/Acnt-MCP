@@ -138,11 +138,28 @@ code {
 }
 
 .sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
 .sidebar-brand.collapsed {
-  display: none;
+  justify-content: center;
+}
+
+.brand-logo,
+.avatar-logo {
+  display: block;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  object-fit: cover;
+  box-shadow: 0 6px 18px rgba(20, 117, 169, 0.18);
+}
+
+.sidebar-brand-copy {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -665,9 +682,16 @@ code {
 }
 
 .avatar.assistant {
-  color: #986b2f;
-  border-color: #ebd7bb;
-  background: #fbf2e2;
+  border-color: rgba(20, 117, 169, 0.26);
+  background: #f0fbff;
+  overflow: hidden;
+}
+
+.avatar-logo {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  box-shadow: none;
 }
 
 .bubble {

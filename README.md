@@ -175,7 +175,7 @@ curl -X POST http://localhost:80/api/v1/tools/call   -H "Content-Type: applicati
 
 The repo includes a local `.mcp.json` example for process-based MCP clients (Claude Code, Cursor, etc.).
 
-Claude.ai requires a public HTTP MCP endpoint, so the stdio server is not directly attachable. Follow `docs/phase2/mcp.md` for Azure deployments that wrap the shared registry with a browser-facing transport layer.
+Claude.ai requires a public HTTPS MCP endpoint, so the stdio server is not directly attachable. Follow `docs/phase2/mcp.md` for Azure deployments that expose `/mcp`, trust forwarded HTTPS headers, and enable the OAuth bridge for browser connectors.
 
 ## Tests
 

@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
+from mcp.types import Icon
 
 from app.config import AppContainer, Settings, build_container, get_settings
 from app.config.logging import configure_logging
@@ -23,6 +24,7 @@ class StdioMcpApplication:
         configure_logging(self.settings.log_level)
         self.logger = logging.getLogger("hth.mcp")
         self._container: AppContainer | None = None
+        server_icons = [Icon(src=self.settings.resolved_server_logo_url, mimeType="image/jpeg", sizes=["225x225"])]
         self.server: Server[dict[str, Any], Any] = Server(
             name=self.settings.server_name,
             version=self.settings.server_version,
@@ -32,6 +34,8 @@ class StdioMcpApplication:
                 "news, weather, and currency integrations. Prefer name-first responses, keep "
                 "answers scoped to requested attributes, and return image URLs when media is requested."
             ),
+            website_url=self.settings.resolved_server_website_url,
+            icons=server_icons,
             lifespan=self._lifespan,
         )
         self._register_handlers()
@@ -96,6 +100,14 @@ async def run_stdio_server(settings: Settings | None = None) -> None:
                     "HTH Stock Intelligence MCP server. Use the registered tools for grounded "
                     "inventory and plugin-backed lookups with intent-aligned, scoped responses."
                 ),
+                website_url=resolved_settings.resolved_server_website_url,
+                icons=[
+                    Icon(
+                        src=resolved_settings.resolved_server_logo_url,
+                        mimeType="image/jpeg",
+                        sizes=["225x225"],
+                    )
+                ],
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},

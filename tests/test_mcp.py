@@ -55,6 +55,9 @@ async def test_mcp_initialize_and_list_tools() -> None:
         tools = await client.list_tools()
 
     assert initialize.serverInfo.name == "hth-stock-intelligence"
+    assert initialize.serverInfo.icons[0].src == "/api/v1/ui/public/hth.jpeg"
+    assert initialize.serverInfo.icons[0].mimeType == "image/jpeg"
+    assert initialize.serverInfo.websiteUrl == "/api/v1/ui"
     tool_names = {tool.name for tool in tools.tools}
     assert "stock.search_catalogue" in tool_names
     assert "stock.inventory_snapshot" in tool_names
@@ -248,6 +251,8 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
             process.wait(timeout=5)
 
     assert initialize["result"]["serverInfo"]["name"] == "hth-stock-intelligence"
+    assert initialize["result"]["serverInfo"]["icons"][0]["src"] == "/api/v1/ui/public/hth.jpeg"
+    assert initialize["result"]["serverInfo"]["websiteUrl"] == "/api/v1/ui"
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
     assert "stock.search_catalogue" in tool_names
     assert tool_call["result"]["isError"] is False

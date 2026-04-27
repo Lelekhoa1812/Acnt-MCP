@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     mock_categories_path: str = Field("./mock/categories.json", alias="HTH_MOCK_CATEGORIES_PATH")
     enable_mock_ui_simulation: bool = Field(True, alias="HTH_ENABLE_MOCK_UI_SIMULATION")
     mock_ui_path: str = Field("./ui/mock/index.html", alias="HTH_MOCK_UI_PATH")
+    # Motivation vs Logic: keep the UI and MCP connector branding driven from
+    # one setting so clients that surface server icons stay visually aligned.
+    server_logo_url: str | None = Field(None, alias="HTH_SERVER_LOGO_URL")
+    server_website_url: str | None = Field(None, alias="HTH_SERVER_WEBSITE_URL")
     # Motivation vs Logic: default false so session/tool caches use Redis as the
     # durable source of truth; set HTH_REDIS_FALLBACK_ENABLED=true for dev without Redis.
     redis_fallback_enabled: bool = Field(False, alias="HTH_REDIS_FALLBACK_ENABLED")
@@ -109,6 +113,7 @@ class Settings(BaseSettings):
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
     open_weather_api_key: str | None = Field(None, alias="OPEN_WEATHER_API")
     news_api_key: str | None = Field(None, alias="NEWS_API")
+    public_base_url: str | None = Field(None, alias="HTH_PUBLIC_BASE_URL")
     mcp_path: str = Field("/mcp", alias="HTH_MCP_PATH")
     mcp_stateless: bool = Field(False, alias="HTH_MCP_STATELESS")
     mcp_json_response: bool = Field(False, alias="HTH_MCP_JSON_RESPONSE")
@@ -121,6 +126,8 @@ class Settings(BaseSettings):
     mcp_bearer_token: str | None = Field(None, alias="HTH_MCP_BEARER_TOKEN")
     mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
+    mcp_oauth_enabled: bool = Field(False, alias="HTH_MCP_OAUTH_ENABLED")
+    mcp_oauth_token_ttl_seconds: int = Field(3600, ge=60, alias="HTH_MCP_OAUTH_TOKEN_TTL_SECONDS")
 
     @property
     def harmonise_timeout_seconds(self) -> float | None:
@@ -174,6 +181,22 @@ class Settings(BaseSettings):
     @property
     def data_source_label(self) -> str:
         return f"harmonise_{self.harmonise_mode}"
+
+    @property
+    def default_logo_url(self) -> str:
+        return f"{self.api_prefix}/ui/public/hth.jpeg"
+
+    @property
+    def resolved_server_logo_url(self) -> str:
+        return self.server_logo_url or self.default_logo_url
+
+    @property
+    def default_website_url(self) -> str:
+        return f"{self.api_prefix}/ui"
+
+    @property
+    def resolved_server_website_url(self) -> str:
+        return self.server_website_url or self.default_website_url
 
     @property
     def has_foundry(self) -> bool:

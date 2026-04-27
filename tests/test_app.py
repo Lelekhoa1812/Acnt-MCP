@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -61,6 +62,24 @@ def build_cloud_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
+def build_mcp_auth_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        public_base_url="https://hth.example.test",
+        mcp_bearer_token="test-mcp-token",
+        mcp_oauth_enabled=True,
+    )
+    return TestClient(create_app(settings))
+
+
 def test_health_endpoint_reports_local_harmonise_mode() -> None:
     with build_client() as client:
         response = client.get("/api/v1/health")
@@ -74,6 +93,68 @@ def test_health_endpoint_reports_local_harmonise_mode() -> None:
     assert payload["redis_fallback_enabled"] is True
     assert payload["local_chat_memory_enabled"] is True
     assert payload["local_chat_memory_turns"] == 6
+
+
+def test_mcp_unauthorized_response_advertises_oauth_metadata() -> None:
+    with build_mcp_auth_client() as client:
+        response = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1.0.0"},
+                },
+            },
+            headers={"accept": "application/json, text/event-stream"},
+        )
+
+    assert response.status_code == 401
+    assert (
+        response.headers["www-authenticate"]
+        == 'Bearer resource_metadata="https://hth.example.test/.well-known/oauth-protected-resource"'
+    )
+
+
+def test_mcp_oauth_metadata_and_token_bridge() -> None:
+    with build_mcp_auth_client() as client:
+        protected = client.get("/.well-known/oauth-protected-resource")
+        authorization_server = client.get("/.well-known/oauth-authorization-server")
+        registered = client.post("/oauth/register", json={"client_name": "pytest"})
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+                "state": "state-1",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": query["code"][0],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+
+    assert protected.status_code == 200
+    assert protected.json()["resource"] == "https://hth.example.test/mcp"
+    assert authorization_server.status_code == 200
+    assert authorization_server.json()["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
+    assert registered.status_code == 201
+    assert authorized.status_code == 302
+    assert query["state"] == ["state-1"]
+    assert token.status_code == 200
+    assert token.json()["access_token"] == "test-mcp-token"
+    assert token.json()["token_type"] == "Bearer"
 
 
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
@@ -442,6 +523,7 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
         )
 
         ui_response = client.get("/api/v1/ui")
+        logo_response = client.get("/api/v1/ui/public/hth.jpeg")
 
     assert response.status_code == 200
     payload = response.json()
@@ -453,6 +535,10 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     assert ui_response.status_code == 200
     assert "HTH Claude" in ui_response.text
     assert "/api/v1/ui/assets/app.js" in ui_response.text
+    assert "/api/v1/ui/public/hth.jpeg" in ui_response.text
+    assert '"logoUrl": "/api/v1/ui/public/hth.jpeg"' in ui_response.text
+    assert logo_response.status_code == 200
+    assert logo_response.headers["content-type"] == "image/jpeg"
 
 
 def test_query_endpoint_returns_structured_debug_payload(monkeypatch) -> None:
@@ -554,6 +640,8 @@ def test_system_spec_reports_harmonise_orchestrator_scope() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["persona"] == "Harmonise Orchestrator"
+    assert payload["logo_url"] == "/api/v1/ui/public/hth.jpeg"
+    assert payload["integration_surfaces"]["mcp"]["logo_url"] == "/api/v1/ui/public/hth.jpeg"
     assert "separate audit/debug payloads for planner and retrieval traces" in payload["scope"]
     assert "not yet implemented in the current tool contract" in payload["out_of_scope"][0]
 
@@ -563,6 +651,7 @@ def test_mock_ui_asset_prefers_structured_debug_payload_when_present() -> None:
 
     assert "payload?.debug" in asset
     assert "buildRuntimeDebug(payload)" in asset
+    assert "avatar-logo" in asset
 
 
 def test_query_endpoint_replays_local_chat_history_across_turns(monkeypatch) -> None:

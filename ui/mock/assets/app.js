@@ -2,6 +2,7 @@
   const configNode = document.getElementById("mock-ui-config");
   const config = configNode ? JSON.parse(configNode.textContent || "{}") : {};
   const root = document.getElementById("root");
+  const BRAND_LOGO_URL = config.logoUrl || `${config.publicBaseUrl || "/api/v1/ui/public"}/hth.jpeg`;
 
   if (!root) {
     return;
@@ -121,6 +122,10 @@
   function icon(name, className) {
     const content = ICONS[name] || "";
     return `<span class="ui-icon ${className || ""}">${content}</span>`;
+  }
+
+  function brandLogo(className) {
+    return `<img class="${className || "brand-logo"}" src="${escapeHtml(BRAND_LOGO_URL)}" alt="HTH logo" />`;
   }
 
   // Root Cause vs Logic: the previous runtime depended on external frontend
@@ -1423,7 +1428,7 @@
       .map((message, index) => {
         const roleClass = message.role === "user" ? "user" : "assistant";
         const animateClass = index >= messages.length - 2 ? "message-enter" : "";
-        const avatar = message.role === "user" ? icon("user") : icon("sparkle");
+        const avatar = message.role === "user" ? icon("user") : brandLogo("avatar-logo");
         const isEditing = message.role === "user" && state.editingMessageId === message.id;
         const versionSwitcher = message.role === "user" ? renderMessageVersionSwitcher(session, message) : "";
         const messageAction =
@@ -1576,12 +1581,15 @@
         <aside class="claude-sidebar">
           <div class="sidebar-top">
             <div class="sidebar-brand ${state.sidebarCollapsed ? "collapsed" : ""}">
+              ${brandLogo("brand-logo")}
               ${
                 state.sidebarCollapsed
                   ? ""
                   : `
+                  <div class="sidebar-brand-copy">
                     <p class="eyebrow">Claude Desktop</p>
                     <p class="brand-text">${escapeHtml(config.serviceName || "HTH MCP")}</p>
+                  </div>
                   `
               }
             </div>

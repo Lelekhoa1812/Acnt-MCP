@@ -20,4 +20,4 @@ COPY ui ./ui
 
 EXPOSE 80
 
-CMD ["sh", "-c", "uvicorn ${APP_TARGET:-app.main:app} --host 0.0.0.0 --port ${HTH_PORT:-80}"]
+CMD ["sh", "-c", "uvicorn ${APP_TARGET:-app.main:app} --host 0.0.0.0 --port ${HTH_PORT:-80} --proxy-headers --forwarded-allow-ips='*'"]
