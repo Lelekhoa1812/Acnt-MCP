@@ -38,6 +38,7 @@ def build_client() -> TestClient:
         public_base_url=None,
         server_website_url=None,
         server_logo_url=None,
+        mcp_allowed_hosts="testserver",
         mock_catalog_path="./mock/product-catalog.json",
         mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
@@ -60,6 +61,7 @@ def build_cloud_client() -> TestClient:
         public_base_url=None,
         server_website_url=None,
         server_logo_url=None,
+        mcp_allowed_hosts="testserver",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
@@ -75,6 +77,7 @@ def build_mcp_auth_client() -> TestClient:
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
+        mcp_allowed_hosts="testserver",
         mock_catalog_path="./mock/product-catalog.json",
         mock_details_path="./mock/product-details.json",
         mock_departments_path="./mock/departments.json",
@@ -1274,5 +1277,5 @@ def test_http_app_does_not_expose_fake_mcp_routes() -> None:
             },
         )
 
-    assert get_response.status_code == 401
-    assert post_response.status_code == 401
+    assert get_response.status_code != 401
+    assert post_response.status_code != 401

@@ -124,6 +124,10 @@ class Settings(BaseSettings):
         alias="HTH_MCP_SESSION_IDLE_TIMEOUT_SECONDS",
     )
     mcp_bearer_token: str | None = Field(None, alias="HTH_MCP_BEARER_TOKEN")
+    # Motivation vs Logic: remote Claude web connectors can complete OAuth, but
+    # many hosted connector UIs do not let you pre-supply a bearer token. Keep
+    # bearer enforcement opt-in so the MCP endpoint can be public by default.
+    mcp_require_bearer_token: bool = Field(False, alias="HTH_MCP_REQUIRE_BEARER_TOKEN")
     mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
     mcp_oauth_enabled: bool = Field(False, alias="HTH_MCP_OAUTH_ENABLED")
@@ -277,9 +281,9 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_MCP_BEARER_TOKEN is not configured; the public `/mcp` transport will accept unauthenticated requests."
             )
-        elif not self.mcp_oauth_enabled:
+        elif self.mcp_require_bearer_token and not self.mcp_oauth_enabled:
             notes.append(
-                "HTH_MCP_OAUTH_ENABLED=false, but a bearer token is present; the browser OAuth bridge remains available automatically so Claude.ai can complete the remote MCP handshake."
+                "HTH_MCP_REQUIRE_BEARER_TOKEN=true while HTH_MCP_OAUTH_ENABLED=false; browser OAuth will not be available for bearer-protected remote MCP access."
             )
         return notes
 

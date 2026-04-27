@@ -118,6 +118,10 @@ class McpTransportASGI:
             await response(scope, receive, send)
             return
 
+        if not self.settings.mcp_require_bearer_token:
+            await self.manager.handle_request(scope, receive, send)
+            return
+
         if not self._is_authorized(scope):
             base_url = _base_url_from_scope(scope, self.settings)
             response = JSONResponse(
@@ -304,7 +308,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_transport": "streamable-http",
             "mcp_path": resolved_settings.mcp_path,
             "mcp_entrypoint": "uvicorn app.main:app (StreamableHTTPSessionManager at /mcp)",
-            "mcp_auth_required": bool(resolved_settings.mcp_bearer_token),
+            "mcp_auth_required": resolved_settings.mcp_require_bearer_token,
             "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
             "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,
