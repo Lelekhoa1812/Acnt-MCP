@@ -77,6 +77,11 @@ def _oauth_authorization_server_metadata(base_url: str, settings: Settings) -> d
         "authorization_endpoint": f"{base_url}/oauth/authorize",
         "token_endpoint": f"{base_url}/oauth/token",
         "registration_endpoint": f"{base_url}/oauth/register",
+        # Motivation vs Logic: Claude.ai web connectors and other remote MCP
+        # clients are more reliable when the auth server advertises CIMD support,
+        # because they can register via a metadata URL instead of depending only
+        # on dynamic registration semantics.
+        "client_id_metadata_document_supported": True,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "client_credentials"],
         "code_challenge_methods_supported": ["S256", "plain"],
@@ -120,7 +125,7 @@ class McpTransportASGI:
                 content={"detail": "Missing or invalid HTH_MCP_BEARER_TOKEN."},
                 headers={
                     "WWW-Authenticate": (
-                        'Bearer resource_metadata="'
+                        'Bearer realm="mcp", resource_metadata="'
                         f'{base_url}/.well-known/oauth-protected-resource"'
                     )
                 },

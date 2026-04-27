@@ -123,7 +123,7 @@ def test_mcp_unauthorized_response_advertises_oauth_metadata() -> None:
     assert response.status_code == 401
     assert (
         response.headers["www-authenticate"]
-        == 'Bearer resource_metadata="https://hth.example.test/.well-known/oauth-protected-resource"'
+        == 'Bearer realm="mcp", resource_metadata="https://hth.example.test/.well-known/oauth-protected-resource"'
     )
 
 
@@ -157,6 +157,7 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
     assert protected.json()["resource"] == "https://hth.example.test/mcp"
     assert authorization_server.status_code == 200
     assert authorization_server.json()["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
+    assert authorization_server.json()["client_id_metadata_document_supported"] is True
     assert registered.status_code == 201
     assert authorized.status_code == 302
     assert query["state"] == ["state-1"]
