@@ -153,34 +153,29 @@ def furniture_capability_summary() -> dict[str, object]:
     }
 
 
-def render_furniture_capability_answer(*, include_categories: bool = False) -> str:
-    summary = furniture_capability_summary()
-    answer = (
-        "Currently, I support 1 stock department: Furniture (`departmentId=3`). "
-        f"Within Furniture, I have {summary['mapped_furniture_category_count']} mapped category routes."
-    )
-    if not include_categories:
-        return answer
-
-    category_lines = [
-        f"- {route.name} (`categoryId={route.category_id}`)"
-        for route in FURNITURE_CATEGORY_ROUTES
-    ]
-    return f"{answer}\n\nMapped Furniture categories:\n" + "\n".join(category_lines)
-
-
 def furniture_capability_rules() -> list[str]:
+    # Motivation vs Logic: the JSON reference is the contract; the model composes
+    # lists, counts, and routing choices in natural language—no canned string answer.
     summary = furniture_capability_summary()
     compact_reference = json.dumps(summary, ensure_ascii=True, indent=2)
     return [
         f"FURNITURE_CAPABILITY_SUMMARY reference:\n{compact_reference}",
         (
-            "For pure capability, taxonomy, supported-department, supported-category, or count questions, "
-            "answer directly from FURNITURE_CAPABILITY_SUMMARY without calling stock tools."
+            "This object is the authoritative list of supported departments, mapped category routes "
+            "(names, category_id, descriptions), and counts. Ground capability answers and planning "
+            "inferences only in this reference; do not call stock tools for pure taxonomy, scope, or count questions."
         ),
         (
-            "`stock.inventory_snapshot` is for live product/variant inventory evidence only; do not use it for "
-            "department/category capability counts."
+            "Compose the user-facing reply yourself: match the request—e.g. full list, short overview, exact "
+            "count, or which category best matches a user phrase—using natural wording, not a single fixed template."
+        ),
+        (
+            "In stock, inventory_search, or mixed plans, use the same reference to choose `departmentId` and "
+            "`categoryId` and to reason about category names; prefer explicit ids from the reference when the match is clear."
+        ),
+        (
+            "`stock_inventory_snapshot` is for live product/variant inventory evidence only; do not use it for "
+            "department/category capability listing or counts."
         ),
     ]
 
@@ -231,11 +226,11 @@ def furniture_category_rules() -> list[str]:
 FURNITURE_EXAMPLES = """
 FURNITURE Example 1:
 User: Show me chairs in stock.
-Assistant: classify this as a furniture stock request, then call stock.search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
+Assistant: classify this as a furniture stock request, then call stock_search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
 
 FURNITURE Example 2:
 User: What lounge options do we have?
-Assistant: call stock.search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e, then summarize returned variants.
+Assistant: call stock_search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e, then summarize returned variants.
 
 FURNITURE Example 3:
 User: Show me stools and electronics.
@@ -243,5 +238,9 @@ Assistant: handle stools via furniture stock tools with departmentId=3 and categ
 
 FURNITURE Example 4:
 User: Let me know more about the coffee table category.
-Assistant: classify this as live category inventory exploration, then call stock.inventory_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
+Assistant: classify this as live category inventory exploration, then call stock_inventory_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
+
+FURNITURE Example 5:
+User: Is the Arc lounge chair in stock?
+Assistant: treat as a single-product availability check; call stock_inventory_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence.
 """.strip()

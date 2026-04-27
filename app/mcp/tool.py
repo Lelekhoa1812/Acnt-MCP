@@ -9,10 +9,8 @@ _NON_MCP_TOOL_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]+")
 
 def normalize_mcp_tool_name(name: str) -> str:
     # Root Cause vs Logic: the MCP deployment validator only accepts tool names
-    # that match `^[a-zA-Z0-9_-]{1,64}$`, but the internal registry uses dotted
-    # names such as `stock.search_catalogue`. We normalize at the protocol edge
-    # so the public MCP contract stays valid while internal orchestration keeps
-    # its existing stable identifiers.
+    # that match `^[a-zA-Z0-9_-]{1,64}$`. Keep normalization centralized so any
+    # future non-compliant registry name is made safe before it reaches MCP.
     candidate = _NON_MCP_TOOL_NAME_CHARS.sub("_", name).strip("_-")
     if not candidate:
         candidate = "tool"

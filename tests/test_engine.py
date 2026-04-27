@@ -142,7 +142,7 @@ async def test_agent_engine_does_not_keyword_short_circuit_stock_plan() -> None:
                                         {
                                             "id": 1,
                                             "name": "inventory snapshot",
-                                            "tool": "stock.inventory_snapshot",
+                                            "tool": "stock_inventory_snapshot",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 100, "search": "", "departmentId": 3},
                                             "depends_on": [],
@@ -228,8 +228,8 @@ async def test_agent_engine_does_not_keyword_short_circuit_stock_plan() -> None:
     finally:
         await container.close()
 
-    assert tool_calls == ["stock.inventory_snapshot"]
-    assert any(trace.tool == "stock.inventory_snapshot" for trace in result.tool_trace)
+    assert tool_calls == ["stock_inventory_snapshot"]
+    assert any(trace.tool == "stock_inventory_snapshot" for trace in result.tool_trace)
     assert result.status == "answered"
 
 
@@ -252,7 +252,7 @@ async def test_agent_engine_keeps_live_stock_questions_on_tool_path() -> None:
                                         {
                                             "id": 1,
                                             "name": "chair catalogue search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 5, "search": "chair", "departmentId": 3},
                                             "depends_on": [],
@@ -348,8 +348,8 @@ async def test_agent_engine_keeps_live_stock_questions_on_tool_path() -> None:
         await container.close()
 
     assert result.status == "answered"
-    assert tool_calls == ["stock.search_catalogue"]
-    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
+    assert tool_calls == ["stock_search_catalogue"]
+    assert any(trace.tool == "stock_search_catalogue" for trace in result.tool_trace)
     assert "Live chair stock was retrieved." in result.answer
 
 
@@ -372,7 +372,7 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
                                         {
                                             "id": 1,
                                             "name": "inventory snapshot",
-                                            "tool": "stock.inventory_snapshot",
+                                            "tool": "stock_inventory_snapshot",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 100},
                                             "hypotheses": ["Snapshot rows are table-ready."],
@@ -449,7 +449,7 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
                                     "goal: collect table-ready inventory evidence\n"
                                     "entity_guess: category\n"
                                     "strategy: catalogue search\n"
-                                    "tool: stock.inventory_snapshot\n"
+                                    "tool: stock_inventory_snapshot\n"
                                     "args_draft: {\"page\":1,\"pageSize\":100}\n"
                                     "risk: none\n"
                                     "</thought>"
@@ -459,7 +459,7 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
                                         "id": "call_1",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.inventory_snapshot",
+                                            "name": "stock_inventory_snapshot",
                                             "arguments": "{\"page\":1,\"pageSize\":100}",
                                         },
                                     }
@@ -543,7 +543,7 @@ async def test_agent_engine_retries_initial_query_with_compact_context_on_contex
                                         {
                                             "id": 1,
                                             "name": "catalogue search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 5, "search": "floor"},
                                             "hypotheses": ["Search the catalogue first."],
@@ -573,7 +573,7 @@ async def test_agent_engine_retries_initial_query_with_compact_context_on_contex
                                 "goal: collect catalogue results\n"
                                 "entity_guess: product\n"
                                 "strategy: catalogue search\n"
-                                "tool: stock.search_catalogue\n"
+                                "tool: stock_search_catalogue\n"
                                 "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"floor\"}\n"
                                 "risk: none\n"
                                 "</thought>"
@@ -583,7 +583,7 @@ async def test_agent_engine_retries_initial_query_with_compact_context_on_contex
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "stock.search_catalogue",
+                                        "name": "stock_search_catalogue",
                                         "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"floor\"}",
                                     },
                                 }
@@ -665,7 +665,7 @@ async def test_agent_engine_retries_initial_query_with_compact_context_on_contex
             entries=[
                 MemoEntry(
                     step_id=1,
-                    tool="stock.search_catalogue",
+                    tool="stock_search_catalogue",
                     args={"page": 1, "pageSize": 5, "search": "floor"},
                     rows=[
                         {
@@ -723,7 +723,7 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
                                         {
                                             "id": 1,
                                             "name": "inventory snapshot",
-                                            "tool": "stock.inventory_snapshot",
+                                            "tool": "stock_inventory_snapshot",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 100},
                                             "hypotheses": ["Snapshot rows are available."],
@@ -777,7 +777,7 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
                                     "goal: collect table-ready inventory evidence\n"
                                     "entity_guess: category\n"
                                     "strategy: catalogue search\n"
-                                    "tool: stock.inventory_snapshot\n"
+                                    "tool: stock_inventory_snapshot\n"
                                     "args_draft: {\"page\":1,\"pageSize\":100}\n"
                                     "risk: none\n"
                                     "</thought>"
@@ -787,7 +787,7 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
                                         "id": "call_1",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.inventory_snapshot",
+                                            "name": "stock_inventory_snapshot",
                                             "arguments": "{\"page\":1,\"pageSize\":100}",
                                         },
                                     }
@@ -820,7 +820,7 @@ async def test_agent_engine_renders_grounded_snapshot_when_model_never_finishes_
     assert "\n|  |" in result.answer
     assert "Harmonise data" not in result.answer
     assert "total=" not in result.answer
-    assert any(trace.tool == "stock.inventory_snapshot" for trace in result.tool_trace)
+    assert any(trace.tool == "stock_inventory_snapshot" for trace in result.tool_trace)
     assert len(result.resolved_items) == 60
     assert isinstance(result.limitations, list)
 
@@ -842,7 +842,7 @@ async def test_agent_engine_executes_next_planned_step_when_model_skips_tool_cal
                                         {
                                             "id": 1,
                                             "name": "chair catalogue search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 50, "search": "chair"},
                                             "hypotheses": ["Chair variants can be resolved from catalogue rows."],
@@ -1004,7 +1004,7 @@ async def test_agent_engine_executes_next_planned_step_when_model_skips_tool_cal
     assert result.status == "answered"
     assert "chairs we have" in result.answer
     assert "retrieval is incomplete" not in result.answer
-    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
+    assert any(trace.tool == "stock_search_catalogue" for trace in result.tool_trace)
     assert any("runtime executed planned step" in item for item in result.limitations)
 
 
@@ -1025,7 +1025,7 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
                                         {
                                             "id": 1,
                                             "name": "catalogue pass",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "done",
                                             "args": {"page": 1, "pageSize": 5, "search": "chair"},
                                             "hypotheses": ["Prior step already captured chair identifiers."],
@@ -1034,7 +1034,7 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
                                         {
                                             "id": 2,
                                             "name": "candidate selection",
-                                            "tool": "resolver.disambiguate_candidates",
+                                            "tool": "resolver_disambiguate_candidates",
                                             "status": "done",
                                             "args": {"query": "alto chair", "limit": 5},
                                             "hypotheses": ["Prior step narrowed candidates."],
@@ -1043,7 +1043,7 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
                                         {
                                             "id": 3,
                                             "name": "extract evidence",
-                                            "tool": "stock.extract_variant_evidence",
+                                            "tool": "stock_extract_variant_evidence",
                                             "status": "planned",
                                             "args": {},
                                             "hypotheses": ["Variant evidence should be extracted for the selected chair."],
@@ -1132,10 +1132,10 @@ async def test_agent_engine_recovers_variant_lookup_args_when_auto_executing_pla
         await container.close()
 
     assert result.status == "answered"
-    assert any(trace.tool in {"stock.extract_variant_evidence", "stock.get_product"} for trace in result.tool_trace)
+    assert any(trace.tool in {"stock_extract_variant_evidence", "stock_get_product"} for trace in result.tool_trace)
     assert any("runtime executed planned step `3` directly" in item for item in result.limitations)
     assert any("Runtime recovered missing lookup args for planned step `3`" in item for item in result.limitations)
-    assert not any("Invalid arguments for 'stock.extract_variant_evidence'" in item for item in result.limitations)
+    assert not any("Invalid arguments for 'stock_extract_variant_evidence'" in item for item in result.limitations)
 
 
 @pytest.mark.anyio
@@ -1149,14 +1149,14 @@ async def test_resolve_or_insert_binds_get_product_rewrite_to_pending_variant_ev
                 PlanStep(
                     id=1,
                     name="search",
-                    tool="stock.search_catalogue",
+                    tool="stock_search_catalogue",
                     status="done",
                     args={"search": "Spencer", "page": 1, "pageSize": 5},
                 ),
                 PlanStep(
                     id=2,
                     name="variant evidence",
-                    tool="stock.extract_variant_evidence",
+                    tool="stock_extract_variant_evidence",
                     status="pending",
                     args={"id": "sp-p1"},
                 ),
@@ -1165,9 +1165,9 @@ async def test_resolve_or_insert_binds_get_product_rewrite_to_pending_variant_ev
         gp_args = {"id": "sp-p1", "page": 1, "pageSize": 20}
         step, inserted = container.agent_engine._resolve_or_insert_plan_step(
             plan,
-            "stock.get_product",
+            "stock_get_product",
             gp_args,
-            binding_source_tool="stock.extract_variant_evidence",
+            binding_source_tool="stock_extract_variant_evidence",
         )
         assert inserted is False
         assert step.id == 2
@@ -1188,7 +1188,7 @@ async def test_resolve_or_insert_reuses_done_step_for_identical_runtime_call() -
                 PlanStep(
                     id=1,
                     name="catalogue search",
-                    tool="stock.search_catalogue",
+                    tool="stock_search_catalogue",
                     status="done",
                     args={"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
                 )
@@ -1196,7 +1196,7 @@ async def test_resolve_or_insert_reuses_done_step_for_identical_runtime_call() -
         )
         step, inserted = container.agent_engine._resolve_or_insert_plan_step(
             plan,
-            "stock.search_catalogue",
+            "stock_search_catalogue",
             {"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
         )
         assert inserted is False
@@ -1218,7 +1218,7 @@ async def test_resolve_or_insert_reuses_semantically_equivalent_catalogue_search
                 PlanStep(
                     id=1,
                     name="catalogue search",
-                    tool="stock.search_catalogue",
+                    tool="stock_search_catalogue",
                     status="done",
                     args={"search": "Spencer chair", "page": 1, "pageSize": 10, "departmentId": 3},
                 )
@@ -1226,7 +1226,7 @@ async def test_resolve_or_insert_reuses_semantically_equivalent_catalogue_search
         )
         step, inserted = container.agent_engine._resolve_or_insert_plan_step(
             plan,
-            "stock.search_catalogue",
+            "stock_search_catalogue",
             {"search": "chair Spencer", "page": 1, "pageSize": 10, "departmentId": 3},
         )
         assert inserted is False
@@ -1254,7 +1254,7 @@ async def test_agent_engine_does_not_leak_stock_get_product_schema_error_for_inc
                                         {
                                             "id": 1,
                                             "name": "product detail lookup",
-                                            "tool": "stock.get_product",
+                                            "tool": "stock_get_product",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 20},
                                             "hypotheses": ["Product detail can be fetched directly."],
@@ -1340,7 +1340,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                                         {
                                             "id": 1,
                                             "name": "catalogue search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
                                             "depends_on": [],
@@ -1351,7 +1351,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                                         {
                                             "id": 2,
                                             "name": "product detail lookup",
-                                            "tool": "stock.get_product",
+                                            "tool": "stock_get_product",
                                             "status": "planned",
                                             "args": {"sku": "fl-da-dan"},
                                             "depends_on": [],
@@ -1419,7 +1419,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                                 "goal: resolve stock evidence\n"
                                 "entity_guess: product\n"
                                 "strategy: exact lookup\n"
-                                "tool: stock.search_catalogue\n"
+                                "tool: stock_search_catalogue\n"
                                 "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"dance floor\"}\n"
                                 "risk: none\n"
                                 "</thought>"
@@ -1429,7 +1429,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {
-                                        "name": "stock.search_catalogue",
+                                        "name": "stock_search_catalogue",
                                         "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"dance floor\"}",
                                     },
                                 },
@@ -1437,7 +1437,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                                     "id": "call_2",
                                     "type": "function",
                                     "function": {
-                                        "name": "stock.get_product",
+                                        "name": "stock_get_product",
                                         "arguments": "{\"sku\":\"fl-da-dan\"}",
                                     },
                                 },
@@ -1449,7 +1449,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
         raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
 
     async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
-        if tool_name == "stock.search_catalogue":
+        if tool_name == "stock_search_catalogue":
             await anyio.sleep(0.05)
             return ToolResult(
                 tool=tool_name,
@@ -1462,7 +1462,7 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
                     result_count=1,
                 ),
             )
-        if tool_name == "stock.get_product":
+        if tool_name == "stock_get_product":
             await anyio.sleep(0.01)
             return ToolResult(
                 tool=tool_name,
@@ -1494,10 +1494,10 @@ async def test_agent_engine_executes_same_turn_tool_calls_in_parallel_with_stabl
         await container.close()
 
     assert result.status == "answered"
-    assert [trace.tool for trace in result.tool_trace] == ["stock.search_catalogue", "stock.get_product"]
+    assert [trace.tool for trace in result.tool_trace] == ["stock_search_catalogue", "stock_get_product"]
     assert result.debug is not None
     assert result.debug.retrieval.parallel_batches[0].execution_mode == "parallel"
-    assert result.debug.retrieval.parallel_batches[0].tools == ["stock.search_catalogue", "stock.get_product"]
+    assert result.debug.retrieval.parallel_batches[0].tools == ["stock_search_catalogue", "stock_get_product"]
 
 
 @pytest.mark.anyio
@@ -1517,7 +1517,7 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
                                         {
                                             "id": 1,
                                             "name": "disambiguate family",
-                                            "tool": "resolver.disambiguate_candidates",
+                                            "tool": "resolver_disambiguate_candidates",
                                             "status": "planned",
                                             "args": {"query": "alto chair", "limit": 10},
                                             "depends_on": [],
@@ -1598,7 +1598,7 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
                                         "id": "call-resolver",
                                         "type": "function",
                                         "function": {
-                                            "name": "resolver.disambiguate_candidates",
+                                            "name": "resolver_disambiguate_candidates",
                                             "arguments": json.dumps({"query": "alto chair", "limit": 10}),
                                         },
                                     }
@@ -1611,7 +1611,7 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
         raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
 
     async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
-        if tool_name == "resolver.disambiguate_candidates":
+        if tool_name == "resolver_disambiguate_candidates":
             return ToolResult(
                 tool=tool_name,
                 data={
@@ -1630,7 +1630,7 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
                     result_count=1,
                 ),
             )
-        if tool_name == "stock.get_product":
+        if tool_name == "stock_get_product":
             return ToolResult(
                 tool=tool_name,
                 data={
@@ -1679,8 +1679,8 @@ async def test_agent_engine_continues_with_get_product_after_resolved_product_fa
     assert result.status == "answered"
     assert "variants" in result.answer.lower()
     assert not result.clarification
-    assert any(trace.tool == "resolver.disambiguate_candidates" for trace in result.tool_trace)
-    assert any(trace.tool == "stock.get_product" for trace in result.tool_trace)
+    assert any(trace.tool == "resolver_disambiguate_candidates" for trace in result.tool_trace)
+    assert any(trace.tool == "stock_get_product" for trace in result.tool_trace)
 
 
 @pytest.mark.anyio
@@ -1701,7 +1701,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
                                         {
                                             "id": 1,
                                             "name": "inventory snapshot",
-                                            "tool": "stock.inventory_snapshot",
+                                            "tool": "stock_inventory_snapshot",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3},
                                             "depends_on": [],
@@ -1712,7 +1712,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
                                         {
                                             "id": 2,
                                             "name": "compare family variants",
-                                            "tool": "stock.compare_variants",
+                                            "tool": "stock_compare_variants",
                                             "status": "planned",
                                             "args": {
                                                 "identifiers": [
@@ -1780,7 +1780,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
                                     "id": "call_snapshot",
                                     "type": "function",
                                     "function": {
-                                        "name": "stock.inventory_snapshot",
+                                        "name": "stock_inventory_snapshot",
                                         "arguments": json.dumps({"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3}),
                                     },
                                 },
@@ -1788,7 +1788,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
                                     "id": "call_compare",
                                     "type": "function",
                                     "function": {
-                                        "name": "stock.compare_variants",
+                                        "name": "stock_compare_variants",
                                         "arguments": json.dumps(
                                             {
                                                 "identifiers": [
@@ -1811,9 +1811,9 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
         raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
 
     async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
-        if tool_name == "stock.compare_variants":
-            raise AssertionError("stock.compare_variants should be pruned once snapshot evidence exists")
-        if tool_name == "stock.inventory_snapshot":
+        if tool_name == "stock_compare_variants":
+            raise AssertionError("stock_compare_variants should be pruned once snapshot evidence exists")
+        if tool_name == "stock_inventory_snapshot":
             variant_specs = [
                 ("Black", "fn-se-ch-alt-bla", 172, 120, 50.0),
                 ("Blue", "fn-se-ch-alt-blu", 96, 70, 48.0),
@@ -1854,7 +1854,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
                         "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
                         "media": {"imageFileName": None, "imageUrl": None},
                         "components": [],
-                        "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
+                        "provenance": {"tool": "stock_inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
                         "evidence_paths": {},
                     }
                     for color, sku, total_stock, vic_stock, cost in variant_specs
@@ -1903,7 +1903,7 @@ async def test_agent_engine_prunes_overscheduled_compare_after_snapshot() -> Non
     assert result.status == "answered"
     assert "Alto Chair - Black" in result.answer
     assert "Alto Chair - White" in result.answer
-    assert not any(trace.tool == "stock.compare_variants" for trace in result.tool_trace)
+    assert not any(trace.tool == "stock_compare_variants" for trace in result.tool_trace)
     assert any("Pruned planned step" in item for item in result.limitations)
 
 
@@ -1925,7 +1925,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         {
                                             "id": 1,
                                             "name": "inventory snapshot",
-                                            "tool": "stock.inventory_snapshot",
+                                            "tool": "stock_inventory_snapshot",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3},
                                             "depends_on": [],
@@ -1936,7 +1936,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         {
                                             "id": 2,
                                             "name": "redundant compare",
-                                            "tool": "stock.compare_variants",
+                                            "tool": "stock_compare_variants",
                                             "status": "planned",
                                             "args": {"identifiers": ["fn-se-ch-alt-bla", "fn-se-ch-alt-whi"]},
                                             "depends_on": [],
@@ -1947,7 +1947,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         {
                                             "id": 3,
                                             "name": "convert currency",
-                                            "tool": "currency.convert",
+                                            "tool": "currency_convert",
                                             "status": "planned",
                                             "args": {"from": "AUD", "to": "USD", "amount": 90.0},
                                             "depends_on": [1],
@@ -1958,7 +1958,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         {
                                             "id": 4,
                                             "name": "melbourne news",
-                                            "tool": "news.search",
+                                            "tool": "news_search",
                                             "status": "planned",
                                             "args": {"q": "Melbourne events business hospitality demand", "pageSize": 3},
                                             "depends_on": [],
@@ -1969,7 +1969,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         {
                                             "id": 5,
                                             "name": "table search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 5, "search": "table", "departmentId": 3},
                                             "depends_on": [],
@@ -2056,7 +2056,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         "id": "call_snapshot",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.inventory_snapshot",
+                                            "name": "stock_inventory_snapshot",
                                             "arguments": json.dumps({"page": 1, "pageSize": 10, "search": "alto chair", "departmentId": 3}),
                                         },
                                     },
@@ -2064,7 +2064,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         "id": "call_compare",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.compare_variants",
+                                            "name": "stock_compare_variants",
                                             "arguments": json.dumps({"identifiers": ["fn-se-ch-alt-bla", "fn-se-ch-alt-whi"]}),
                                         },
                                     },
@@ -2072,7 +2072,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         "id": "call_currency",
                                         "type": "function",
                                         "function": {
-                                            "name": "currency.convert",
+                                            "name": "currency_convert",
                                             "arguments": json.dumps({"from": "AUD", "to": "USD", "amount": 90.0}),
                                         },
                                     },
@@ -2080,7 +2080,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         "id": "call_news",
                                         "type": "function",
                                         "function": {
-                                            "name": "news.search",
+                                            "name": "news_search",
                                             "arguments": json.dumps({"q": "Melbourne events business hospitality demand", "pageSize": 3}),
                                         },
                                     },
@@ -2088,7 +2088,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                                         "id": "call_tables",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.search_catalogue",
+                                            "name": "stock_search_catalogue",
                                             "arguments": json.dumps({"page": 1, "pageSize": 5, "search": "table", "departmentId": 3}),
                                         },
                                     },
@@ -2101,9 +2101,9 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
         raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
 
     async def fake_call_tool(tool_name, raw_args, session_id=None, thought=""):  # noqa: ANN001
-        if tool_name == "stock.compare_variants":
-            raise AssertionError("stock.compare_variants should be pruned for the mixed-domain query too")
-        if tool_name == "stock.inventory_snapshot":
+        if tool_name == "stock_compare_variants":
+            raise AssertionError("stock_compare_variants should be pruned for the mixed-domain query too")
+        if tool_name == "stock_inventory_snapshot":
             snapshot_data = {
                 "rows": [
                     {
@@ -2144,7 +2144,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                         "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
                         "media": {"imageFileName": None, "imageUrl": None},
                             "components": [],
-                            "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
+                            "provenance": {"tool": "stock_inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[0].details"},
                             "evidence_paths": {},
                         },
                         {
@@ -2165,7 +2165,7 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                             "lifecycle": {"isActive": True, "startDate": None, "endDate": None, "lastUpdatedDate": None},
                             "media": {"imageFileName": None, "imageUrl": None},
                             "components": [],
-                            "provenance": {"tool": "stock.inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[1].details"},
+                            "provenance": {"tool": "stock_inventory_snapshot", "matched_on": ["catalogue_snapshot"], "confidence": 0.96, "source_path": "items[0].variants[1].details"},
                             "evidence_paths": {},
                         },
                     ],
@@ -2186,26 +2186,26 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
                 llm_content=snapshot_data,
                 trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=2),
             )
-        if tool_name == "currency.convert":
+        if tool_name == "currency_convert":
             return ToolResult(
                 tool=tool_name,
                 data={"query": {"from": "AUD", "to": "USD", "amount": 90.0}, "result": 58.5, "info": {"rate": 0.65}},
                 trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=1),
             )
-        if tool_name == "news.search":
+        if tool_name == "news_search":
             return ToolResult(
                 tool=tool_name,
                 data={"topSources": ["The Age"], "topKeywords": ["Melbourne", "events"], "publishedRange": {"from": "2026-04-20", "to": "2026-04-24"}, "totalResults": 3, "matchingArticles": [{"title": "Melbourne hospitality demand rises", "matchingKeywords": ["Melbourne", "hospitality"]}]},
                 trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=3),
             )
-        if tool_name == "stock.search_catalogue":
+        if tool_name == "stock_search_catalogue":
             return ToolResult(
                 tool=tool_name,
                 data={"items": [{"id": "table-1", "name": "Arc Side Table", "variants": [{"id": "var-table-1", "name": "Arc Side Table - Oak", "sku": "tb-arc-side-oak"}]}], "page": 1, "pageSize": 5, "totalCount": 1, "totalPages": 1},
                 llm_content={"items": [{"id": "table-1", "name": "Arc Side Table", "variants": [{"id": "var-table-1", "name": "Arc Side Table - Oak", "sku": "tb-arc-side-oak"}]}]},
                 trace=ToolTrace(thought=thought, tool=tool_name, args=raw_args, status="ok", result_count=1),
             )
-        if tool_name == "stock.get_product":
+        if tool_name == "stock_get_product":
             return ToolResult(
                 tool=tool_name,
                 data={
@@ -2250,13 +2250,13 @@ async def test_agent_engine_uses_composer_for_mixed_query_even_with_snapshot() -
     assert "Melbourne headlines" in result.answer
     assert "table options" in result.answer
     assert not result.clarification
-    assert not any(trace.tool == "stock.compare_variants" for trace in result.tool_trace)
+    assert not any(trace.tool == "stock_compare_variants" for trace in result.tool_trace)
     assert {trace.tool for trace in result.tool_trace} == {
-        "stock.inventory_snapshot",
-        "currency.convert",
-        "news.search",
-        "stock.search_catalogue",
-        "stock.get_product",
+        "stock_inventory_snapshot",
+        "currency_convert",
+        "news_search",
+        "stock_search_catalogue",
+        "stock_get_product",
     }
 
 
@@ -2278,7 +2278,7 @@ async def test_agent_engine_adds_recursive_follow_up_step_when_catalogue_result_
                                         {
                                             "id": 1,
                                             "name": "catalogue search",
-                                            "tool": "stock.search_catalogue",
+                                            "tool": "stock_search_catalogue",
                                             "status": "planned",
                                             "args": {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
                                             "depends_on": [],
@@ -2348,7 +2348,7 @@ async def test_agent_engine_adds_recursive_follow_up_step_when_catalogue_result_
                                     "goal: resolve floor candidate\n"
                                     "entity_guess: variant\n"
                                     "strategy: catalogue search\n"
-                                    "tool: stock.search_catalogue\n"
+                                    "tool: stock_search_catalogue\n"
                                     "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"white gloss dance floor\"}\n"
                                     "risk: ambiguity\n"
                                     "</thought>"
@@ -2358,7 +2358,7 @@ async def test_agent_engine_adds_recursive_follow_up_step_when_catalogue_result_
                                         "id": "call_1",
                                         "type": "function",
                                         "function": {
-                                            "name": "stock.search_catalogue",
+                                            "name": "stock_search_catalogue",
                                             "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"white gloss dance floor\"}",
                                         },
                                     }
@@ -2386,8 +2386,8 @@ async def test_agent_engine_adds_recursive_follow_up_step_when_catalogue_result_
         await container.close()
 
     assert result.status == "answered"
-    assert any(trace.tool == "stock.search_catalogue" for trace in result.tool_trace)
-    assert any(trace.tool in {"stock.extract_variant_evidence", "stock.get_product"} for trace in result.tool_trace)
+    assert any(trace.tool == "stock_search_catalogue" for trace in result.tool_trace)
+    assert any(trace.tool in {"stock_extract_variant_evidence", "stock_get_product"} for trace in result.tool_trace)
     assert len(result.plan_status.steps) >= 2
     assert result.plan_status.steps[1].depends_on == [1]
     assert any("recursive detail retrieval step(s)" in item for item in result.limitations)
@@ -2417,7 +2417,7 @@ async def test_agent_engine_derives_variant_follow_up_steps_for_all_unique_varia
         await container.close()
 
     assert len(steps) == 2
-    assert all(tool_name == "stock.extract_variant_evidence" for tool_name, _ in steps)
+    assert all(tool_name == "stock_extract_variant_evidence" for tool_name, _ in steps)
     assert {args.get("sku") for _, args in steps} == {"alto-black", "alto-white"}
 
 
@@ -2432,7 +2432,7 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
                 PlanStep(
                     id=1,
                     name="catalogue search",
-                    tool="stock.search_catalogue",
+                    tool="stock_search_catalogue",
                     status="done",
                     args={"search": "chair", "page": 1, "pageSize": 10, "departmentId": 3},
                 )
@@ -2441,7 +2441,7 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
         search_step = plan.steps[0]
 
         alto_result = ToolResult(
-            tool="stock.search_catalogue",
+            tool="stock_search_catalogue",
             data={
                 "items": [
                     {
@@ -2453,14 +2453,14 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
             },
             trace=ToolTrace(
                 thought="",
-                tool="stock.search_catalogue",
+                tool="stock_search_catalogue",
                 args=search_step.args,
                 status="ok",
                 result_count=1,
             ),
         )
         baxter_result = ToolResult(
-            tool="stock.search_catalogue",
+            tool="stock_search_catalogue",
             data={
                 "items": [
                     {
@@ -2472,7 +2472,7 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
             },
             trace=ToolTrace(
                 thought="",
-                tool="stock.search_catalogue",
+                tool="stock_search_catalogue",
                 args=search_step.args,
                 status="ok",
                 result_count=1,
@@ -2497,9 +2497,9 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
     assert first_note is not None
     assert second_note is not None
     assert [step.tool for step in plan.steps] == [
-        "stock.search_catalogue",
-        "stock.get_product",
-        "stock.get_product",
+        "stock_search_catalogue",
+        "stock_get_product",
+        "stock_get_product",
     ]
     assert {step.args.get("sku") for step in plan.steps[1:]} == {"alto-black", "baxter-black"}
 
@@ -2515,7 +2515,7 @@ async def test_validate_and_record_prefers_full_stock_fallback_rows_over_partial
                 PlanStep(
                     id=1,
                     name="inventory snapshot",
-                    tool="stock.inventory_snapshot",
+                    tool="stock_inventory_snapshot",
                     status="in-progress",
                     args={"search": "chairs", "page": 1, "pageSize": 10, "departmentId": 3},
                 )
@@ -2523,7 +2523,7 @@ async def test_validate_and_record_prefers_full_stock_fallback_rows_over_partial
         )
         step = plan.steps[0]
         result = ToolResult(
-            tool="stock.inventory_snapshot",
+            tool="stock_inventory_snapshot",
             data={
                 "rows": [
                     {
@@ -2546,7 +2546,7 @@ async def test_validate_and_record_prefers_full_stock_fallback_rows_over_partial
             },
             trace=ToolTrace(
                 thought="",
-                tool="stock.inventory_snapshot",
+                tool="stock_inventory_snapshot",
                 args=step.args,
                 status="ok",
                 result_count=2,
@@ -2572,7 +2572,7 @@ async def test_validate_and_record_prefers_full_stock_fallback_rows_over_partial
             session_state=session_state,
             plan_status=plan,
             step=step,
-            tool_name="stock.inventory_snapshot",
+            tool_name="stock_inventory_snapshot",
             tool_args=step.args,
             result=result,
         )

@@ -26,7 +26,7 @@ class NewsService:
 
     async def search(self, args: NewsSearchArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "news.search",
+            "news_search",
             args.model_dump(mode="json", by_alias=True, exclude_none=True),
             lambda: self._get(
                 "/everything",
@@ -36,14 +36,14 @@ class NewsService:
 
     async def headlines(self, args: NewsHeadlinesArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "news.headlines",
+            "news_headlines",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._get("/top-headlines", args.model_dump(mode="json", exclude_none=True)),
         )
 
     async def sources(self, args: NewsSourcesArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "news.sources",
+            "news_sources",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._get("/top-headlines/sources", args.model_dump(mode="json", exclude_none=True)),
         )

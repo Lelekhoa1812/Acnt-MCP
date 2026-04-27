@@ -66,7 +66,7 @@ class InventoryService:
         cache_key = self._cache_key(args.model_dump(mode="json"))
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
-            key=f"stock.get_departments:{cache_key}",
+            key=f"stock_get_departments:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
             loader=lambda: self.source.get_departments(
                 include_inactive=args.includeInactive,
@@ -83,7 +83,7 @@ class InventoryService:
         cache_key = self._cache_key(args.model_dump(mode="json"))
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
-            key=f"stock.get_categories:{cache_key}",
+            key=f"stock_get_categories:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
             loader=lambda: self.source.get_categories(page=args.page, page_size=args.pageSize),
         )
@@ -96,7 +96,7 @@ class InventoryService:
         cache_key = self._cache_key(args.model_dump(mode="json"))
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
-            key=f"stock.search_catalogue:{cache_key}",
+            key=f"stock_search_catalogue:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
             loader=lambda: self.source.search_catalogue(
                 page=args.page,
@@ -115,7 +115,7 @@ class InventoryService:
         cache_key = self._cache_key(args.model_dump(mode="json"))
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
-            key=f"stock.get_product:{cache_key}",
+            key=f"stock_get_product:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
             loader=lambda: self.source.get_product(
                 product_id=args.id,
@@ -131,7 +131,7 @@ class InventoryService:
         args: StockExtractVariantEvidenceArgs,
         matched_on: list[str] | None = None,
         confidence: float | None = None,
-        tool_name: str = "stock.extract_variant_evidence",
+        tool_name: str = "stock_extract_variant_evidence",
     ) -> tuple[NormalizedEvidence, str, list[str]]:
         # Root Cause vs Logic: variant-only lookups were building StockGetProductArgs
         # before checking whether the upstream products endpoint had a resolvable id
@@ -140,7 +140,7 @@ class InventoryService:
         if args.variantId and not args.id and not args.sku:
             raise ParameterMappingError(
                 "variantId alone cannot resolve product details. Reuse the matching catalogue "
-                "item's variants[].sku or product id when calling stock.get_variant_evidence."
+                "item's variants[].sku or product id when calling stock_get_variant_evidence."
             )
         lookup_args = StockGetProductArgs(
             id=args.id if args.id and self.looks_like_uuid(args.id) else None,
@@ -184,7 +184,7 @@ class InventoryService:
                     args=extract_args,
                     matched_on=["identifier"],
                     confidence=0.99,
-                    tool_name="stock.compare_variants",
+                    tool_name="stock_compare_variants",
                 )
 
         async with anyio.create_task_group() as task_group:
@@ -204,7 +204,7 @@ class InventoryService:
         args: StockInventorySnapshotArgs,
     ) -> tuple[InventorySnapshotResponse, str, list[str]]:
         # Motivation vs Logic: broad inventory questions were forcing the model
-        # to chain dozens of raw `stock.get_product` calls, which ballooned the
+        # to chain dozens of raw `stock_get_product` calls, which ballooned the
         # context window and often ended with an empty synthesis turn. This
         # composition path keeps tool choice LLM-driven while returning a single
         # compact, answer-ready evidence bundle for large table requests.
@@ -342,7 +342,7 @@ class InventoryService:
                         variant_index=variant_index,
                         matched_on=["catalogue_snapshot", "product_id"],
                         confidence=0.96,
-                        tool_name="stock.inventory_snapshot",
+                        tool_name="stock_inventory_snapshot",
                     )
                 )
 

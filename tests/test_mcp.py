@@ -142,7 +142,7 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     names = [item["name"] for item in result.structuredContent["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
     assert result.structuredContent["plan_status"]["status"] == "complete"
-    assert result.structuredContent["memo_update"]["tool"] == "stock.search_catalogue"
+    assert result.structuredContent["memo_update"]["tool"] == "stock_search_catalogue"
     assert result.structuredContent["validation"]["actual_rows"] is not None
 
 
@@ -178,7 +178,7 @@ async def test_mcp_invalid_args_return_is_error_instead_of_crashing() -> None:
 
     assert result.isError is True
     assert result.structuredContent is not None
-    assert "Invalid arguments for 'stock.get_product'" in result.structuredContent["error"]["message"]
+    assert "Invalid arguments for 'stock_get_product'" in result.structuredContent["error"]["message"]
 
 
 @pytest.mark.anyio
@@ -204,9 +204,9 @@ async def test_mcp_connection_scoped_session_id_persists_across_calls() -> None:
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
-        before = await client.call_tool("session.get_state", {})
-        cleared = await client.call_tool("session.clear_state", {})
-        after = await client.call_tool("session.get_state", {})
+        before = await client.call_tool("session_get_state", {})
+        cleared = await client.call_tool("session_clear_state", {})
+        after = await client.call_tool("session_get_state", {})
 
     before_id = before.structuredContent["data"]["session_id"]
     cleared_id = cleared.structuredContent["data"]["session_id"]
@@ -276,7 +276,7 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
                 "id": 3,
                 "method": "tools/call",
                 "params": {
-                    "name": "stock.search_catalogue",
+                    "name": "stock_search_catalogue",
                     "arguments": {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
                 },
             },

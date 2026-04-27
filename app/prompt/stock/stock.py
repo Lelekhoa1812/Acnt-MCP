@@ -38,26 +38,30 @@ def build_stock_prompt_policy(request: str, *, context_mode: str = "normal") -> 
 def _build_routing_rules(route: StockPromptRoute) -> list[str]:
     return [
         (
-            "Treat user requests as inventory, catalogue, or product inquiries; use your reasoning to "
-            "decide whether stock tooling is warranted before invoking any tools."
+            "Inventory/catalogue/product questions: call stock tools only when you need real product evidence."
         ),
         (
-            "Route stock requests through the cheapest sufficient evidence lane: static capability policy "
-            "for supported department/category metadata, session memo for already-retrieved facts, "
-            "lightweight metadata tools when available, then live catalogue/detail tools for product evidence."
+            "Cheapest evidence first: capability policy + session memo (retrieved facts), metadata tools when available, "
+            "then live catalogue/detail for product facts (stock evidence)."
         ),
         (
-            "Prefer the smallest stock-tool chain that can answer the request; once a product-family tool "
-            "already returns variant sizes, options, pricing, and stock, do not plan redundant stock lookups."
+            "Smallest stock chain; if one family call already has sizes, options, pricing, and stock, "
+            "do not add redundant stock steps."
         ),
         (
-            "Color/finish are not separate fields; they exist only within variant `name` or options. "
-            "Use these strings for color queries; do not invent or expect a dedicated property."
+            "Single-product availability: prefer one `stock_inventory_snapshot` (departmentId, search from "
+            "name tokens; categoryId only if FURNITURE_CATEGORY_ROUTES match is clear). Add search or a second "
+            "hop only if the first hop cannot identify the product or stock."
         ),
         (
-            f"Confine cataloguing and stock tool calls to the {route.department_name} department by "
-            f"setting `departmentId={route.department_id}` and explaining any other departments the "
-            "user mentions as unsupported."
+            "Do not use `session_get_state` for availability; resolve ids from user text, prompt memo, or prior tools."
+        ),
+        (
+            "Colour/finish live in variant `name` or options only—no separate field; never invent one."
+        ),
+        (
+            f"Limit catalogue/stock to {route.department_name} (`departmentId={route.department_id}`); "
+            "state when other departments are out of scope."
         ),
         *furniture_capability_rules(),
         *furniture_department_rules(),

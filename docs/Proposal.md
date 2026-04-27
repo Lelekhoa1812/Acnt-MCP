@@ -136,48 +136,48 @@ This verifies that:
 
 These tools operate on the currently documented Harmonise stock/common surface.
 
- **`stock.get_departments`**
+ **`stock_get_departments`**
 Wraps `/api/v1/common/departments` and returns departments plus optional sub-departments for controlled filtering and metadata enrichment.
 
- **`stock.get_categories`**
+ **`stock_get_categories`**
 Wraps `/api/v1/stock/categories` and returns paged category metadata for browsing and filtering.
 
- **`stock.search_catalogue`**
+ **`stock_search_catalogue`**
 Wraps `/api/v1/stock/product-catalogue` and supports paged search using the currently documented backend parameters: `page`, `pageSize`, `search`, `departmentId`, and `categoryId`.
 
- **`stock.get_product`**
+ **`stock_get_product`**
 Wraps `/api/v1/stock/products` and retrieves product records by exact `id` or `sku`, preserving product-level and variant-level structure.
 
- **`stock.get_variant_evidence`**
+ **`stock_get_variant_evidence`**
 An MCP-level composition tool that resolves a chosen product/variant into a normalized evidence block derived from the `/api/v1/stock/products` response, especially the nested `variants[].details` structure.
 
- **`stock.compare_variants`**
+ **`stock_compare_variants`**
 An MCP-level comparison tool, not a direct backend endpoint, used to compare multiple resolved variants side by side after retrieval.
 
 ### 7.2 Booking tool family
 
 These tools operate on quote and booking intelligence.
 
- **`booking.search`** *(proposed/internal)*
+ **`booking_search`** *(proposed/internal)*
 Search bookings by quote ID, date range, customer hint, location, or status.
 
- **`booking.get_booking`** *(proposed/internal)*
+ **`booking_get_booking`** *(proposed/internal)*
 Retrieve a single booking header and line-item structure.
 
- **`booking.expand_items`** *(proposed/internal)*
+ **`booking_expand_items`** *(proposed/internal)*
 Resolve booking line items against stock tools and return enriched item evidence.
 
 ### 7.3 Shared utility tools
 
 These tools support orchestration rather than direct business retrieval.
 
- **`resolver.disambiguate_candidates`**
+ **`resolver_disambiguate_candidates`**
 Return a ranked list of product or variant candidates and a structured clarification question.
 
- **`session.get_state`**
+ **`session_get_state`**
 Expose current task-state to continue a multi-step workflow.
 
- **`session.clear_state`**
+ **`session_clear_state`**
 Reset operational memory for the active task.
 
  he key design rule is that tools should return **task-usable evidence**, not raw ERP dumps, while still preserving enough structure to distinguish product-level records from variant-level facts.   
@@ -202,7 +202,7 @@ Parameter quality determines retrieval quality. The same user utterance can map 
 
 ```json
 {
-  "name": "stock.search_catalogue",
+  "name": "stock_search_catalogue",
   "description": "Search the Harmonise stock catalogue using the currently documented backend parameters.",
   "input_schema": {
     "type": "object",
@@ -239,7 +239,7 @@ Parameter quality determines retrieval quality. The same user utterance can map 
 
 ```json
 {
-  "name": "booking.search",
+  "name": "booking_search",
   "description": "Search bookings by quote id, date, customer hint, location, or status.",
   "input_schema": {
     "type": "object",
@@ -781,7 +781,7 @@ Azure Monitor / Application Insights supports application telemetry and OpenTele
   ],
   "tool_calls": [
     {
-      "tool": "booking.search",
+      "tool": "booking_search",
       "args": {
         "location": "Richmond",
         "limit": 5
@@ -789,14 +789,14 @@ Azure Monitor / Application Insights supports application telemetry and OpenTele
       "result_summary": "2 candidates found"
     },
     {
-      "tool": "booking.get_booking",
+      "tool": "booking_get_booking",
       "args": {
         "quote_id": "Q-10492"
       },
       "result_summary": "booking resolved"
     },
     {
-      "tool": "booking.expand_items",
+      "tool": "booking_expand_items",
       "args": {
         "booking_id": "bk_10492"
       },
@@ -834,7 +834,7 @@ User asks:
 
 Execution path:
 
-1. Claude selects `inventory.search_items`
+1. Claude selects `inventory_search_items`
 2. MCP normalizes query
 3. resolver runs hybrid search
 4. one strong candidate found
@@ -848,12 +848,12 @@ User asks:
 
 Execution path:
 
-1. Claude selects `booking.search`
+1. Claude selects `booking_search`
 2. multiple results returned
 3. MCP returns clarification bundle
 4. Claude asks user which candidate they meant
 5. user confirms
-6. Claude calls `booking.get_booking`
+6. Claude calls `booking_get_booking`
 
 ## Flow C: booking-to-item expansion
 
@@ -862,9 +862,9 @@ User asks:
 
 Execution path:
 
-1. Claude calls `booking.get_booking`
+1. Claude calls `booking_get_booking`
 2. booking line items retrieved
-3. Claude calls `booking.expand_items`
+3. Claude calls `booking_expand_items`
 4. MCP enriches each SKU via inventory
 5. validation confirms evidence coverage
 6. Claude answers from enriched item set

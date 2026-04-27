@@ -310,18 +310,18 @@ def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.search_catalogue",
+                "tool": "stock_search_catalogue",
                 "args": {"page": 1, "pageSize": 10, "search": "white gloss dance floor"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock.search_catalogue"
+    assert payload["tool"] == "stock_search_catalogue"
     names = [item["name"] for item in payload["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
     assert payload["plan_status"]["status"] == "complete"
-    assert payload["memo_update"]["tool"] == "stock.search_catalogue"
+    assert payload["memo_update"]["tool"] == "stock_search_catalogue"
     assert payload["validation"]["actual_rows"] is not None
 
 
@@ -330,14 +330,14 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.inventory_snapshot",
+                "tool": "stock_inventory_snapshot",
                 "args": {"page": 1, "pageSize": 100},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock.inventory_snapshot"
+    assert payload["tool"] == "stock_inventory_snapshot"
     assert payload["data"]["coverage"]["matchedProducts"] == 40
     assert payload["data"]["coverage"]["matchedPages"] == 1
     assert payload["data"]["coverage"]["enrichedVariants"] == 60
@@ -350,7 +350,7 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
     assert "in stock" in row["stock"]
     assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
     assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
-    assert payload["plan_status"]["steps"][0]["tool"] == "stock.inventory_snapshot"
+    assert payload["plan_status"]["steps"][0]["tool"] == "stock_inventory_snapshot"
     assert payload["validation"]["expected_rows"] is not None
 
 
@@ -366,7 +366,7 @@ def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock.inventory_snapshot"
+    assert payload["tool"] == "stock_inventory_snapshot"
     assert payload["data"]["coverage"]["matchedProducts"] >= 1
     assert payload["data"]["rows"]
 
@@ -378,7 +378,7 @@ def test_snapshot_duplicate_signature_skips() -> None:
     signature = engine._inventory_snapshot_signature(args)
     assert signature is not None
     item = {
-        "tool_name": "stock.inventory_snapshot",
+        "tool_name": "stock_inventory_snapshot",
         "normalized_args": args,
         "snapshot_signature": signature,
         "inserted": True,
@@ -413,7 +413,7 @@ def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls()
         first = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.search_catalogue",
+                "tool": "stock_search_catalogue",
                 "sessionId": session_id,
                 "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
             },
@@ -421,7 +421,7 @@ def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls()
         second = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.search_catalogue",
+                "tool": "stock_search_catalogue",
                 "sessionId": session_id,
                 "args": {"page": 1, "pageSize": 5, "search": "dance floor"},
             },
@@ -441,13 +441,13 @@ def test_rest_tool_endpoint_returns_structured_bad_request_for_invalid_args() ->
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.get_product",
+                "tool": "stock_get_product",
                 "args": {},
             },
         )
 
     assert response.status_code == 400
-    assert "Invalid arguments for 'stock.get_product'" in response.json()["detail"]
+    assert "Invalid arguments for 'stock_get_product'" in response.json()["detail"]
 
 
 def test_variant_evidence_tool_resolves_by_sku() -> None:
@@ -455,14 +455,14 @@ def test_variant_evidence_tool_resolves_by_sku() -> None:
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.get_variant_evidence",
+                "tool": "stock_get_variant_evidence",
                 "args": {"sku": "fl-ca-ca-10m"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock.extract_variant_evidence"
+    assert payload["tool"] == "stock_extract_variant_evidence"
     assert payload["data"]["sku"] == "fl-ca-ca-10m"
     assert payload["data"]["dimensions"]["length"] == 1.0
     assert payload["data"]["dimensions"]["width"] == 1.0
@@ -473,7 +473,7 @@ def test_variant_evidence_tool_rejects_bare_variant_id_with_clear_guidance() -> 
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "stock.get_variant_evidence",
+                "tool": "stock_get_variant_evidence",
                 "args": {"variantId": "d2a50000-0e48-c047-e1bc-08dde35c3772"},
             },
         )
@@ -489,14 +489,14 @@ def test_disambiguate_candidates_returns_selectable_options_for_small_ambiguity(
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "resolver.disambiguate_candidates",
+                "tool": "resolver_disambiguate_candidates",
                 "args": {"query": "chair", "limit": 10},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "resolver.disambiguate_candidates"
+    assert payload["tool"] == "resolver_disambiguate_candidates"
     assert payload["data"]["status"] == "needs_clarification"
     assert payload["data"]["selection_mode"] == "select_option"
     assert payload["data"]["total_matches"] is not None
@@ -559,14 +559,14 @@ def test_disambiguate_candidates_resolves_single_product_family_without_clarific
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "resolver.disambiguate_candidates",
+                "tool": "resolver_disambiguate_candidates",
                 "args": {"query": "alto chair", "limit": 10},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "resolver.disambiguate_candidates"
+    assert payload["tool"] == "resolver_disambiguate_candidates"
     assert payload["data"]["status"] == "resolved_product_family"
     assert payload["data"]["variant_count"] >= 1
     assert payload["data"]["product_id"]
@@ -601,14 +601,14 @@ def test_currency_history_rebases_when_primary_base_is_restricted(monkeypatch) -
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "currency.history",
+                "tool": "currency_history",
                 "args": {"date": "2026-04-22", "base": "USD", "symbols": "AUD"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "currency.history"
+    assert payload["tool"] == "currency_history"
     assert payload["data"]["base"] == "USD"
     assert payload["data"]["provider"] == "exchangeratesapi_cross_rate"
     assert payload["data"]["rates"]["AUD"] == 1.0 / 0.65
@@ -635,14 +635,14 @@ def test_currency_convert_falls_back_when_primary_provider_is_unavailable(monkey
         response = client.post(
             "/api/v1/tools/call",
             json={
-                "tool": "currency.convert",
+                "tool": "currency_convert",
                 "args": {"from": "aud", "to": "usd", "amount": 250, "date": "2025-04-22"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "currency.convert"
+    assert payload["tool"] == "currency_convert"
     assert payload["data"]["query"] == {"from": "AUD", "to": "USD", "amount": 250.0}
     assert payload["data"]["info"]["rate"] == 0.66
     assert payload["data"]["result"] == 165.0
@@ -658,7 +658,7 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
             tool_trace=[
                 ToolTrace(
                     thought="<thought>goal: resolve sku</thought>",
-                    tool="stock.get_product",
+                    tool="stock_get_product",
                     args={"sku": "fl-la-la-lam-1-ble"},
                     status="ok",
                     cache_status="memory_hit",
@@ -674,7 +674,7 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
                     PlanStep(
                         id=1,
                         name="fetch product",
-                        tool="stock.get_product",
+                        tool="stock_get_product",
                         status="done",
                         args={"sku": "fl-la-la-lam-1-ble"},
                         hypotheses=[],
@@ -701,7 +701,7 @@ def test_query_endpoint_uses_agent_engine_and_exposes_ui_entrypoint(monkeypatch)
     payload = response.json()
     assert payload["status"] == "answered"
     assert payload["plan_status"]["status"] == "complete"
-    assert payload["plan_status"]["steps"][0]["tool"] == "stock.get_product"
+    assert payload["plan_status"]["steps"][0]["tool"] == "stock_get_product"
     assert payload["mock_ui"] is None
     assert payload["mock_ui_path"] == "/api/v1/ui"
     assert ui_response.status_code == 200
@@ -736,7 +736,7 @@ def test_query_endpoint_returns_structured_debug_payload(monkeypatch) -> None:
                         AgentDebugPlanStep(
                             id=1,
                             name="fetch product",
-                            tool="stock.get_product",
+                            tool="stock_get_product",
                             status="done",
                             depends_on=[],
                             parallel_group=None,
@@ -770,7 +770,7 @@ def test_query_endpoint_returns_structured_debug_payload(monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["debug"]["intent"]["primary_entity_guess"] == "variant"
-    assert payload["debug"]["plan"]["dag"][0]["tool"] == "stock.get_product"
+    assert payload["debug"]["plan"]["dag"][0]["tool"] == "stock_get_product"
     assert payload["debug"]["grounding"]["evidence_count"] == 1
 
 

@@ -207,7 +207,7 @@ risk: ambiguity | missing attribute | low confidence | none
 goal: Resolve whether "white gloss dance floor" exists and get its stock evidence
 entity_guess: variant
 strategy: catalogue search, then exact product lookup by selected id
-tool: stock.search_catalogue
+tool: stock_search_catalogue
 args_draft: {"page":1,"pageSize":10,"search":"dance floor white gloss"}
 risk: ambiguity
 </thought>
@@ -355,7 +355,7 @@ If only descriptive text is given:
 - extract the strongest search phrase
 - remove filler words
 - keep distinguishing terms
-- use `search` on `stock.search_catalogue`
+- use `search` on `stock_search_catalogue`
 
 #### D. Resolution Path
 If catalogue results return plausible candidates:
@@ -381,7 +381,7 @@ If a required parameter cannot be mapped safely:
 
 These are the conceptual MCP tools you may use.
 
-### `stock.get_departments`
+### `stock_get_departments`
 Purpose:
 - retrieve department metadata
 - optionally include sub-departments
@@ -392,7 +392,7 @@ Use when:
 - you need department names for clarification
 - you need metadata enrichment
 
-### `stock.get_categories`
+### `stock_get_categories`
 Purpose:
 - retrieve category metadata with pagination
 
@@ -400,7 +400,7 @@ Use when:
 - the user asks by category
 - you need to narrow or explain category structure
 
-### `stock.search_catalogue`
+### `stock_search_catalogue`
 Purpose:
 - search the product catalogue using:
   - `page`
@@ -414,7 +414,7 @@ Use when:
 - you need a candidate set
 - exact `sku` or `id` is not already known
 
-### `stock.get_product`
+### `stock_get_product`
 Purpose:
 - retrieve product records by exact `id` or `sku`
 - inspect product-level and variant-level structure
@@ -425,7 +425,7 @@ Use when:
 - you need richer variant evidence
 - you need detail fields for grounded answering
 
-### `stock.extract_variant_evidence`
+### `stock_extract_variant_evidence`
 Purpose:
 - normalize a product/variant into a concise evidence block
 
@@ -433,7 +433,7 @@ Use when:
 - you need answer-ready evidence
 - you need a clean summary from nested JSON
 
-### `stock.compare_variants`
+### `stock_compare_variants`
 Purpose:
 - compare multiple variants or products side by side
 
@@ -442,7 +442,7 @@ Use when:
 - the user is choosing between variants
 - ambiguity can be resolved by comparison
 
-### `resolver.disambiguate_candidates`
+### `resolver_disambiguate_candidates`
 Purpose:
 - turn a ranked candidate list into a user-facing clarification bundle
 
@@ -450,14 +450,14 @@ Use when:
 - multiple plausible products remain
 - a direct answer would be unsafe
 
-### `session.get_state`
+### `session_get_state`
 Purpose:
 - inspect current working memory
 
 Use when:
 - continuing a multi-turn resolution flow
 
-### `session.clear_state`
+### `session_clear_state`
 Purpose:
 - clear stale operational context
 
@@ -471,20 +471,20 @@ Use when:
 
 ### If user provides a SKU
 Use:
-1. `stock.get_product`
-2. optional `stock.extract_variant_evidence`
+1. `stock_get_product`
+2. optional `stock_extract_variant_evidence`
 
 ### If user provides a product id
 Use:
-1. `stock.get_product`
-2. optional `stock.extract_variant_evidence`
+1. `stock_get_product`
+2. optional `stock_extract_variant_evidence`
 
 ### If user provides a vague product phrase
 Use:
-1. `stock.search_catalogue`
+1. `stock_search_catalogue`
 2. candidate ranking
-3. `stock.get_product` for chosen candidate if needed
-4. `resolver.disambiguate_candidates` if ambiguous
+3. `stock_get_product` for chosen candidate if needed
+4. `resolver_disambiguate_candidates` if ambiguous
 
 ### If user asks for specs
 Prefer:
@@ -698,7 +698,7 @@ Use:
 │ > show me the white gloss dance floor        │
 ├──────────────────────────────────────────────┤
 │ Tool                                         │
-│ stock.search_catalogue                       │
+│ stock_search_catalogue                       │
 ├──────────────────────────────────────────────┤
 │ Status                                       │
 │ 1 strong match found                         │

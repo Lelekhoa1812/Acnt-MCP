@@ -92,7 +92,7 @@ def test_apply_virtual_pruning_resets_entity_memory_and_archives_subject() -> No
         ),
         recent_product_names=["Alto Chair"],
         recent_resolved_identifiers=["fn-se-ch-alt-bla"],
-        memo_cache=MemoCache(entries=[MemoEntry(tool="stock.get_product", rows=[{"product": "Alto Chair"}])]),
+        memo_cache=MemoCache(entries=[MemoEntry(tool="stock_get_product", rows=[{"product": "Alto Chair"}])]),
         conversation_history=[],
     )
     scope = SessionMemoryScope(transition="topic_shift", target_entity="Spencer Chair")
@@ -114,13 +114,13 @@ def test_render_session_context_scopes_memo_to_active_subject_on_topic_shift() -
         memo_cache=MemoCache(
             entries=[
                 MemoEntry(
-                    tool="stock.get_product",
+                    tool="stock_get_product",
                     args={"search": "Alto Chair"},
                     rows=[{"product": "Alto Chair", "sku": "fn-se-ch-alt-bla"}],
                     provenance={"subject_names": ["Alto Chair"]},
                 ),
                 MemoEntry(
-                    tool="stock.get_product",
+                    tool="stock_get_product",
                     args={"search": "Spencer Chair"},
                     rows=[{"product": "Spencer Chair", "sku": "fn-se-ch-spe-bla"}],
                     provenance={"subject_names": ["Spencer Chair"]},
@@ -141,7 +141,7 @@ async def test_plan_query_does_not_resume_in_progress_plan_on_topic_shift() -> N
             session_id="scope-plan-shift",
             current_plan=PlanStatus(
                 goal="Old Alto plan",
-                steps=[PlanStep(id=1, name="old", tool="stock.get_product", status="in-progress")],
+                steps=[PlanStep(id=1, name="old", tool="stock_get_product", status="in-progress")],
                 status="in-progress",
             ),
             memory_scope=SessionMemoryScope(transition="topic_shift", target_entity="Spencer Chair"),
@@ -161,7 +161,7 @@ async def test_plan_query_resumes_in_progress_plan_on_continuation() -> None:
             session_id="scope-plan-continue",
             current_plan=PlanStatus(
                 goal="Existing Spencer plan",
-                steps=[PlanStep(id=1, name="existing", tool="stock.get_product", status="in-progress")],
+                steps=[PlanStep(id=1, name="existing", tool="stock_get_product", status="in-progress")],
                 status="in-progress",
             ),
             memory_scope=SessionMemoryScope(transition="continuation"),

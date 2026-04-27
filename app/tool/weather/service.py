@@ -25,28 +25,28 @@ class WeatherService:
 
     async def resolve(self, args: WeatherResolveArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "weather.resolve",
+            "weather_resolve",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._resolve_payload(args),
         )
 
     async def current(self, args: WeatherCurrentArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "weather.current",
+            "weather_current",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._current_payload(args),
         )
 
     async def forecast(self, args: WeatherForecastArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "weather.forecast",
+            "weather_forecast",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._forecast_payload(args),
         )
 
     async def history(self, args: WeatherHistoryArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "weather.history",
+            "weather_history",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._history_payload(args),
         )

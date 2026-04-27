@@ -45,39 +45,39 @@ class CurrencyService:
         await self._fallback.aclose()
 
     async def symbols(self, args: CurrencySymbolsArgs) -> tuple[dict[str, object], str, list[str]]:
-        return await self._cached("currency.symbols", args.model_dump(mode="json"), self._symbols_payload)
+        return await self._cached("currency_symbols", args.model_dump(mode="json"), self._symbols_payload)
 
     async def latest(self, args: CurrencyLatestArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "currency.latest",
+            "currency_latest",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._snapshot_payload(date_value=None, base=args.base, symbols=args.symbols),
         )
 
     async def history(self, args: CurrencyHistoryArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "currency.history",
+            "currency_history",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._snapshot_payload(date_value=args.date, base=args.base, symbols=args.symbols),
         )
 
     async def timeseries(self, args: CurrencyTimeseriesArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "currency.timeseries",
+            "currency_timeseries",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._timeseries_payload(args),
         )
 
     async def convert(self, args: CurrencyConvertArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "currency.convert",
+            "currency_convert",
             args.model_dump(mode="json", by_alias=True, exclude_none=True),
             lambda: self._convert_payload(args),
         )
 
     async def fluctuation(self, args: CurrencyFluctuationArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "currency.fluctuation",
+            "currency_fluctuation",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._fluctuation_payload(args),
         )

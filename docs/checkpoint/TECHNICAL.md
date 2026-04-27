@@ -138,26 +138,26 @@ The registry is the single source of truth for tool definitions.
 
 ### Stock tools
 
-- `stock.get_departments`
-- `stock.get_categories`
-- `stock.search_catalogue`
-- `stock.get_product`
-- `stock.extract_variant_evidence`
-- `stock.get_variant_evidence`
-- `stock.compare_variants`
-- `stock.inventory_snapshot`
+- `stock_get_departments`
+- `stock_get_categories`
+- `stock_search_catalogue`
+- `stock_get_product`
+- `stock_extract_variant_evidence`
+- `stock_get_variant_evidence`
+- `stock_compare_variants`
+- `stock_inventory_snapshot`
 
 ### Shared tools
 
-- `resolver.disambiguate_candidates`
-- `session.get_state`
-- `session.clear_state`
+- `resolver_disambiguate_candidates`
+- `session_get_state`
+- `session_clear_state`
 
 ### External plugin tools
 
-- `news.search`, `news.headlines`, `news.sources`
-- `weather.resolve`, `weather.current`, `weather.forecast`, `weather.history`
-- `currency.symbols`, `currency.latest`, `currency.history`, `currency.timeseries`, `currency.convert`, `currency.fluctuation`
+- `news_search`, `news_headlines`, `news_sources`
+- `weather_resolve`, `weather_current`, `weather_forecast`, `weather_history`
+- `currency_symbols`, `currency_latest`, `currency_history`, `currency_timeseries`, `currency_convert`, `currency_fluctuation`
 
 ### Tool contract behavior
 

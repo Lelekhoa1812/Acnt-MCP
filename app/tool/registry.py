@@ -140,10 +140,9 @@ class ToolRegistry:
         return await spec.handler(validated, session_id, thought)
 
     def resolve_tool_name(self, tool_name: str) -> str:
-        # Root Cause vs Logic: `/query` must expose MCP-safe function names such as
-        # `stock_inventory_snapshot`, while the internal registry is keyed by
-        # dotted names. Resolve public names at the registry boundary so model,
-        # REST, and MCP callers execute the same tool implementation.
+        # Root Cause vs Logic: `/query`, REST function payloads, and MCP all need
+        # validator-safe tool names. Resolve through the shared map at the registry
+        # boundary so future aliases still execute the same implementation.
         if tool_name in self._tools:
             return tool_name
         return self._tool_name_map.to_internal(tool_name)
@@ -168,7 +167,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.get_departments(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.get_departments",
+                tool="stock_get_departments",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -177,7 +176,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.get_departments",
+                tool="stock_get_departments",
                 data=[item.model_dump(mode="json") for item in data],
                 normalization_notes=notes,
                 trace=trace,
@@ -187,7 +186,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.get_categories(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.get_categories",
+                tool="stock_get_categories",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -196,7 +195,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.get_categories",
+                tool="stock_get_categories",
                 data=data.model_dump(mode="json"),
                 normalization_notes=notes,
                 trace=trace,
@@ -206,7 +205,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.search_catalogue",
+                tool="stock_search_catalogue",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -215,7 +214,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.search_catalogue",
+                tool="stock_search_catalogue",
                 data=data.model_dump(mode="json"),
                 llm_content=self._catalogue_model_view(data),
                 normalization_notes=notes,
@@ -226,7 +225,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.get_product(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.get_product",
+                tool="stock_get_product",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -235,7 +234,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.get_product",
+                tool="stock_get_product",
                 data=data.model_dump(mode="json"),
                 llm_content=self._product_model_view(data),
                 normalization_notes=notes,
@@ -246,7 +245,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.extract_variant_evidence(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.extract_variant_evidence",
+                tool="stock_extract_variant_evidence",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -255,7 +254,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.extract_variant_evidence",
+                tool="stock_extract_variant_evidence",
                 data=data.model_dump(mode="json"),
                 llm_content=self._evidence_model_view(data),
                 normalization_notes=notes,
@@ -266,7 +265,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.compare_variants(validated.identifiers)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.compare_variants",
+                tool="stock_compare_variants",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -275,7 +274,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock.compare_variants",
+                tool="stock_compare_variants",
                 data=[item.model_dump(mode="json") for item in data],
                 llm_content=[self._evidence_model_view(item) for item in data],
                 normalization_notes=notes,
@@ -286,7 +285,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.inventory_snapshot(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock.inventory_snapshot",
+                tool="stock_inventory_snapshot",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -295,7 +294,7 @@ class ToolRegistry:
                 normalization_notes=notes + data.coverage.limitations,
             )
             return ToolResult(
-                tool="stock.inventory_snapshot",
+                tool="stock_inventory_snapshot",
                 data=data.model_dump(mode="json"),
                 llm_content=self._inventory_snapshot_model_view(data),
                 normalization_notes=notes + data.coverage.limitations,
@@ -306,9 +305,9 @@ class ToolRegistry:
             # Motivation vs Logic: the cloud Harmonise contract currently exposes
             # product endpoints only, so metadata tools are local-dev only.
             self._register(
-                "stock.get_departments",
+                "stock_get_departments",
                 (
-                    "Retrieve raw local Harmonise department metadata and optional sub-departments for inventory "
+                    "Retrieve raw department metadata and optional sub-departments for inventory "
                     "narrowing. Do not use for supported-scope counts; stock prompt policy defines the assistant's "
                     "canonical supported departments."
                 ),
@@ -316,7 +315,7 @@ class ToolRegistry:
                 get_departments,
             )
             self._register(
-                "stock.get_categories",
+                "stock_get_categories",
                 (
                     "Retrieve raw local Harmonise category metadata pages. Do not use for supported-scope counts; "
                     "stock prompt policy defines the assistant's canonical supported furniture category routes."
@@ -325,38 +324,38 @@ class ToolRegistry:
                 get_categories,
             )
         self._register(
-            "stock.search_catalogue",
-            "Search the Harmonise product catalogue with search text and supported filters.",
+            "stock_search_catalogue",
+            "Harmonise product search (text + supported filters).",
             StockSearchCatalogueArgs,
             search_catalogue,
         )
         self._register(
-            "stock.get_product",
-            "Retrieve exact Harmonise product records by id or sku.",
+            "stock_get_product",
+            "Product detail by id or sku.",
             StockGetProductArgs,
             get_product,
         )
         self._register(
-            "stock.extract_variant_evidence",
-            "Normalize one specific Harmonise variant into answer-ready evidence. Use for variant-targeted requests; product-family requests should use stock.get_product or stock.inventory_snapshot.",
+            "stock_extract_variant_evidence",
+            "One variant → answer-ready evidence. Use for a specific variant; product families use stock_get_product or stock_inventory_snapshot.",
             StockExtractVariantEvidenceArgs,
             extract_variant,
         )
         self._register(
-            "stock.get_variant_evidence",
-            "Alias for stock.extract_variant_evidence for proposal compatibility. Requires variant-specific lookup context (sku or product id alongside variantId).",
+            "stock_get_variant_evidence",
+            "Same as stock_extract_variant_evidence. Needs variant context: sku or product id with variantId.",
             StockExtractVariantEvidenceArgs,
             extract_variant,
         )
         self._register(
-            "stock.compare_variants",
-            "Compare multiple resolved Harmonise variants side by side.",
+            "stock_compare_variants",
+            "Side-by-side compare of already-resolved variants.",
             StockCompareVariantsArgs,
             compare_variants,
         )
         self._register(
-            "stock.inventory_snapshot",
-            "Retrieve a compact, answer-ready inventory evidence snapshot for a catalogue page, including variant-level specs and stock summaries.",
+            "stock_inventory_snapshot",
+            "Answer-ready page of inventory: variant specs + stock summaries (filtered catalogue view).",
             StockInventorySnapshotArgs,
             inventory_snapshot,
         )
@@ -564,7 +563,7 @@ class ToolRegistry:
                 }
                 trace = ToolTrace(
                     thought=thought,
-                    tool="resolver.disambiguate_candidates",
+                    tool="resolver_disambiguate_candidates",
                     args=validated.model_dump(exclude_none=True),
                     status="ok",
                     cache_status="resolver",
@@ -573,7 +572,7 @@ class ToolRegistry:
                     normalization_notes=notes,
                 )
                 return ToolResult(
-                    tool="resolver.disambiguate_candidates",
+                    tool="resolver_disambiguate_candidates",
                     data=payload,
                     llm_content=payload,
                     normalization_notes=notes,
@@ -589,7 +588,7 @@ class ToolRegistry:
             )
             trace = ToolTrace(
                 thought=thought,
-                tool="resolver.disambiguate_candidates",
+                tool="resolver_disambiguate_candidates",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status="resolver",
@@ -598,15 +597,15 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="resolver.disambiguate_candidates",
+                tool="resolver_disambiguate_candidates",
                 data=clarification.model_dump(mode="json"),
                 normalization_notes=notes,
                 trace=trace,
             )
 
         self._register(
-            "resolver.disambiguate_candidates",
-            "Use only when catalogue search could mean multiple distinct products. Ranks candidates and returns a user-facing disambiguation prompt. Do not use when you already have a confirmed product and only need variant-level details—use `stock.get_product` or `stock.inventory_snapshot` instead.",
+            "resolver_disambiguate_candidates",
+            "When one search may match several products: rank and return a disambiguation prompt. If the product is already known and you only need variants, use stock_get_product or stock_inventory_snapshot.",
             ResolverDisambiguateCandidatesArgs,
             disambiguate,
         )
@@ -616,17 +615,17 @@ class ToolRegistry:
             state, cache_status = await self.session_store.get_state(session_id or validated.sessionId)
             trace = ToolTrace(
                 thought=thought,
-                tool="session.get_state",
+                tool="session_get_state",
                 args={"sessionId": session_id or validated.sessionId},
                 status="ok",
                 cache_status=cache_status,
                 source_data="session -> state",
                 result_count=1,
             )
-            summary = summarize_session_state(state, f"session.get_state {session_id or validated.sessionId}", mode="compact")
+            summary = summarize_session_state(state, f"session_get_state {session_id or validated.sessionId}", mode="compact")
             rendered_summary = render_session_context(
                 state,
-                f"session.get_state {session_id or validated.sessionId}",
+                f"session_get_state {session_id or validated.sessionId}",
                 mode="compact",
             )
             # Motivation vs Logic: the API response can keep the full structured
@@ -655,30 +654,30 @@ class ToolRegistry:
                 "conversation": summary.get("conversation"),
                 "summary": rendered_summary,
             }
-            return ToolResult(tool="session.get_state", data=data, llm_content=summary_payload, trace=trace)
+            return ToolResult(tool="session_get_state", data=data, llm_content=summary_payload, trace=trace)
 
         async def clear_state(validated: SessionToolArgs, session_id: str | None, thought: str) -> ToolResult:
             state, cache_status = await self.session_store.clear_state(session_id or validated.sessionId)
             trace = ToolTrace(
                 thought=thought,
-                tool="session.clear_state",
+                tool="session_clear_state",
                 args={"sessionId": session_id or validated.sessionId},
                 status="ok",
                 cache_status=cache_status,
                 source_data="session -> state",
                 result_count=1,
             )
-            return ToolResult(tool="session.clear_state", data=state.model_dump(mode="json"), trace=trace)
+            return ToolResult(tool="session_clear_state", data=state.model_dump(mode="json"), trace=trace)
 
         self._register(
-            "session.get_state",
-            "Return the current working-memory state for the active session.",
+            "session_get_state",
+            "Read session working memory (compact summary + ids, plan, memo digest).",
             SessionToolArgs,
             get_state,
         )
         self._register(
-            "session.clear_state",
-            "Reset the current working-memory state for the active session.",
+            "session_clear_state",
+            "Clear session working memory.",
             SessionToolArgs,
             clear_state,
         )
@@ -688,7 +687,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.news_service.search(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="news.search",
+                tool="news_search",
                 args=validated.model_dump(by_alias=True, exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -703,7 +702,7 @@ class ToolRegistry:
                 request_type="search",
             )
             return ToolResult(
-                tool="news.search",
+                tool="news_search",
                 data=data,
                 llm_content=formatted,
                 normalization_notes=notes,
@@ -714,7 +713,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.news_service.headlines(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="news.headlines",
+                tool="news_headlines",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -728,7 +727,7 @@ class ToolRegistry:
                 request_type="headlines",
             )
             return ToolResult(
-                tool="news.headlines",
+                tool="news_headlines",
                 data=data,
                 llm_content=formatted,
                 normalization_notes=notes,
@@ -739,7 +738,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.news_service.sources(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="news.sources",
+                tool="news_sources",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -749,7 +748,7 @@ class ToolRegistry:
             )
             formatted = format_news_sources(data, validated.model_dump(exclude_none=True))
             return ToolResult(
-                tool="news.sources",
+                tool="news_sources",
                 data=data,
                 llm_content=formatted,
                 normalization_notes=notes,
@@ -757,20 +756,20 @@ class ToolRegistry:
             )
 
         self._register(
-            "news.search",
-            "Search News API's article index with keywords, sources, domains, dates, and sorting controls.",
+            "news_search",
+            "News API article search: keywords, sources, domains, dates, sort.",
             NewsSearchArgs,
             search,
         )
         self._register(
-            "news.headlines",
-            "Retrieve live top headlines from News API by country, category, source, or keyword.",
+            "news_headlines",
+            "Top headlines: country, category, source, or keyword.",
             NewsHeadlinesArgs,
             headlines,
         )
         self._register(
-            "news.sources",
-            "List News API sources filtered by category, language, or country.",
+            "news_sources",
+            "List News API outlets by category, language, or country.",
             NewsSourcesArgs,
             sources,
         )
@@ -780,7 +779,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.weather_service.resolve(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="weather.resolve",
+                tool="weather_resolve",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -788,13 +787,13 @@ class ToolRegistry:
                 result_count=data.get("count"),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="weather.resolve", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="weather_resolve", data=data, normalization_notes=notes, trace=trace)
 
         async def current(validated: WeatherCurrentArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.weather_service.current(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="weather.current",
+                tool="weather_current",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -802,13 +801,13 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="weather.current", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="weather_current", data=data, normalization_notes=notes, trace=trace)
 
         async def forecast(validated: WeatherForecastArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.weather_service.forecast(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="weather.forecast",
+                tool="weather_forecast",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -816,13 +815,13 @@ class ToolRegistry:
                 result_count=data.get("returned"),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="weather.forecast", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="weather_forecast", data=data, normalization_notes=notes, trace=trace)
 
         async def history(validated: WeatherHistoryArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.weather_service.history(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="weather.history",
+                tool="weather_history",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -830,29 +829,29 @@ class ToolRegistry:
                 result_count=data.get("count"),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="weather.history", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="weather_history", data=data, normalization_notes=notes, trace=trace)
 
         self._register(
-            "weather.resolve",
-            "Resolve a location through OpenWeather geocoding by place query or lat/lon.",
+            "weather_resolve",
+            "OpenWeather: geocode by place name or lat/lon.",
             WeatherResolveArgs,
             resolve,
         )
         self._register(
-            "weather.current",
-            "Retrieve OpenWeather current conditions for a dynamic location.",
+            "weather_current",
+            "OpenWeather current conditions for a resolved location.",
             WeatherCurrentArgs,
             current,
         )
         self._register(
-            "weather.forecast",
-            "Retrieve OpenWeather 5-day / 3-hour forecast data for a dynamic location.",
+            "weather_forecast",
+            "OpenWeather 5-day / 3-hour forecast for a location.",
             WeatherForecastArgs,
             forecast,
         )
         self._register(
-            "weather.history",
-            "Retrieve OpenWeather historical weather snapshots for one or more dates when the vendor plan allows it.",
+            "weather_history",
+            "OpenWeather past-day conditions (if the plan allows the history endpoint).",
             WeatherHistoryArgs,
             history,
         )
@@ -862,7 +861,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.currency_service.symbols(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.symbols",
+                tool="currency_symbols",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -870,13 +869,13 @@ class ToolRegistry:
                 result_count=len(data.get("symbols", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.symbols", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_symbols", data=data, normalization_notes=notes, trace=trace)
 
         async def latest(validated: CurrencyLatestArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.latest(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.latest",
+                tool="currency_latest",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -884,13 +883,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.latest", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_latest", data=data, normalization_notes=notes, trace=trace)
 
         async def history(validated: CurrencyHistoryArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.history(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.history",
+                tool="currency_history",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -898,13 +897,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.history", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_history", data=data, normalization_notes=notes, trace=trace)
 
         async def timeseries(validated: CurrencyTimeseriesArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.timeseries(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.timeseries",
+                tool="currency_timeseries",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -912,13 +911,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.timeseries", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_timeseries", data=data, normalization_notes=notes, trace=trace)
 
         async def convert(validated: CurrencyConvertArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.convert(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.convert",
+                tool="currency_convert",
                 args=validated.model_dump(by_alias=True, exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -926,13 +925,13 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.convert", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_convert", data=data, normalization_notes=notes, trace=trace)
 
         async def fluctuation(validated: CurrencyFluctuationArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.fluctuation(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency.fluctuation",
+                tool="currency_fluctuation",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -940,41 +939,41 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency.fluctuation", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="currency_fluctuation", data=data, normalization_notes=notes, trace=trace)
 
         self._register(
-            "currency.symbols",
-            "List supported currency symbols from Exchange Rates API.",
+            "currency_symbols",
+            "Exchange Rates API: supported currency codes.",
             CurrencySymbolsArgs,
             symbols,
         )
         self._register(
-            "currency.latest",
-            "Retrieve the latest exchange rates for a base currency and optional symbol targets.",
+            "currency_latest",
+            "Latest FX rates: base + optional target symbols.",
             CurrencyLatestArgs,
             latest,
         )
         self._register(
-            "currency.history",
-            "Retrieve historical exchange rates for a specific date.",
+            "currency_history",
+            "Historical rates for a single date.",
             CurrencyHistoryArgs,
             history,
         )
         self._register(
-            "currency.timeseries",
-            "Retrieve daily historical exchange-rate series between two dates.",
+            "currency_timeseries",
+            "Daily rate series between two dates.",
             CurrencyTimeseriesArgs,
             timeseries,
         )
         self._register(
-            "currency.convert",
-            "Convert an amount between currencies, optionally on a historical date.",
+            "currency_convert",
+            "Amount conversion (optional as-of date).",
             CurrencyConvertArgs,
             convert,
         )
         self._register(
-            "currency.fluctuation",
-            "Retrieve currency fluctuation data between two dates.",
+            "currency_fluctuation",
+            "Rate change over a date range (start vs end).",
             CurrencyFluctuationArgs,
             fluctuation,
         )

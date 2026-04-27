@@ -17,7 +17,7 @@ def test_plan_step_supports_dag_metadata() -> None:
     step = PlanStep(
         id=2,
         name="follow-up detail lookup",
-        tool="stock.get_product",
+        tool="stock_get_product",
         status="pending",
         args={"sku": "fl-da-dan"},
         depends_on=[1],
@@ -50,7 +50,7 @@ def test_agent_query_response_accepts_debug_payload() -> None:
                     AgentDebugPlanStep(
                         id=1,
                         name="catalogue search",
-                        tool="stock.search_catalogue",
+                        tool="stock_search_catalogue",
                         status="done",
                         depends_on=[],
                         parallel_group=None,
@@ -59,7 +59,7 @@ def test_agent_query_response_accepts_debug_payload() -> None:
                 next_hop_rules=["Follow catalogue identifiers with exact lookups when detail is missing."],
             ),
             retrieval=AgentDebugRetrieval(
-                thought_blocks=["<thought>\ngoal: resolve floor\nentity_guess: variant\nstrategy: catalogue search\ntool: stock.search_catalogue\nargs_draft: {'search': 'white gloss dance floor'}\nrisk: none\n</thought>"],
+                thought_blocks=["<thought>\ngoal: resolve floor\nentity_guess: variant\nstrategy: catalogue search\ntool: stock_search_catalogue\nargs_draft: {'search': 'white gloss dance floor'}\nrisk: none\n</thought>"],
             ),
             grounding=AgentDebugGrounding(
                 resolved_identifiers=["fl-da-dan"],
@@ -72,5 +72,5 @@ def test_agent_query_response_accepts_debug_payload() -> None:
     )
 
     assert payload.debug is not None
-    assert payload.debug.plan.dag[0].tool == "stock.search_catalogue"
+    assert payload.debug.plan.dag[0].tool == "stock_search_catalogue"
     assert payload.debug.grounding.evidence_count == 1

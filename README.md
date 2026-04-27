@@ -158,7 +158,7 @@ curl http://localhost:80/api/v1/tools
 
 ```bash
 curl -X POST http://localhost:80/api/v1/tools/call   -H "Content-Type: application/json"   -d '{
-    "tool": "stock.search_catalogue",
+    "tool": "stock_search_catalogue",
     "args": {
       "page": 1,
       "pageSize": 5,

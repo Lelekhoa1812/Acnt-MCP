@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     harmonise_retry_backoff_ms: int = Field(400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_MS")
     harmonise_retry_backoff_cap_ms: int = Field(2400, ge=0, alias="HTH_HARMONISE_RETRY_BACKOFF_CAP_MS")
     # Motivation vs Logic: the cloud /api/v1/products list route can 500 when many
-    # in-flight GETs run at once (e.g. parallel stock.search_catalogue). This caps
+    # in-flight GETs run at once (e.g. parallel stock_search_catalogue). This caps
     # concurrent requests per process to the same Harmonise base URL. Local ASGI
     # uses a high effective limit in HarmoniseInventorySource.
     harmonise_concurrent_request_limit: int = Field(2, ge=1, alias="HTH_HARMONISE_CONCURRENT_REQUESTS")

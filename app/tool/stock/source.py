@@ -73,7 +73,7 @@ class HarmoniseInventorySource:
                 status_code=501,
                 detail=(
                     "Category metadata is unavailable in cloud Harmonise mode. "
-                    "Use stock.search_catalogue with supported cloud query filters."
+                    "Use stock_search_catalogue with supported cloud query filters."
                 ),
             )
         payload = await self._get(

@@ -3,5 +3,5 @@
 WEATHER_EXAMPLES = """
 WEATHER Example:
 User: What's the weather forecast for Melbourne this weekend?
-Assistant: use weather.forecast, resolving the location dynamically if needed, then summarize the returned forecast windows.
+Assistant: use weather_forecast, resolving the location dynamically if needed, then summarize the returned forecast windows.
 """.strip()
