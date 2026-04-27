@@ -334,7 +334,10 @@ class InventoryService:
 
             detail_product = product_response.items[0]
             enriched_products += 1
+            seen_skus: set[str] = set()
             for variant_index, variant in enumerate(detail_product.variants):
+                if variant.sku:
+                    seen_skus.add(variant.sku)
                 evidence_items.append(
                     self._normalize_variant_evidence(
                         product=detail_product,
@@ -345,6 +348,48 @@ class InventoryService:
                         tool_name="stock_inventory_snapshot",
                     )
                 )
+            # Root Cause vs Logic: SKU detail endpoints may return only the
+            # requested variant, so the first-SKU hydration path under-counted
+            # multi-variant product families. Fan out through remaining catalogue
+            # variant SKUs so snapshot answers cover every family variant.
+            for variant in product.variants:
+                if not variant.sku or variant.sku in seen_skus:
+                    continue
+                try:
+                    variant_response, variant_cache_status, variant_notes = await self.get_product(
+                        StockGetProductArgs(
+                            id=None,
+                            sku=variant.sku,
+                            page=1,
+                            pageSize=20,
+                        )
+                    )
+                except UpstreamServiceError as exc:
+                    detail_lookup_failures.append(
+                        f"sku={variant.sku} (status {exc.status_code}): {exc.detail}"
+                    )
+                    continue
+                cache_statuses.append(variant_cache_status)
+                notes.extend(variant_notes)
+                if not variant_response.items:
+                    coverage_limitations.append(
+                        f"No detail payload was returned for sku {variant.sku}; this variant was skipped."
+                    )
+                    continue
+                variant_product = variant_response.items[0]
+                for variant_index, detail_variant in enumerate(variant_product.variants):
+                    if detail_variant.sku:
+                        seen_skus.add(detail_variant.sku)
+                    evidence_items.append(
+                        self._normalize_variant_evidence(
+                            product=variant_product,
+                            variant=detail_variant,
+                            variant_index=variant_index,
+                            matched_on=["catalogue_snapshot", "variant_sku"],
+                            confidence=0.96,
+                            tool_name="stock_inventory_snapshot",
+                        )
+                    )
 
         if detail_lookup_failures:
             failure_count = len(detail_lookup_failures)

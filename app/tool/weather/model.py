@@ -4,10 +4,10 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class WeatherResolveArgs(BaseModel):
-    query: str | None = None
-    lat: float | None = None
-    lon: float | None = None
-    limit: int = Field(5, ge=1, le=10)
+    query: str | None = Field(None, description="Place name to geocode, e.g. Melbourne, AU.")
+    lat: float | None = Field(None, description="Latitude for direct coordinate lookup.")
+    lon: float | None = Field(None, description="Longitude for direct coordinate lookup.")
+    limit: int = Field(5, ge=1, le=10, description="Maximum geocoding candidates to return, from 1 to 10.")
 
     @model_validator(mode="after")
     def validate_location(self) -> "WeatherResolveArgs":
@@ -19,24 +19,24 @@ class WeatherResolveArgs(BaseModel):
 
 
 class WeatherCurrentArgs(WeatherResolveArgs):
-    units: str | None = None
-    lang: str | None = None
+    units: str | None = Field(None, description="OpenWeather units, e.g. metric, imperial, or standard.")
+    lang: str | None = Field(None, description="Optional OpenWeather language code for descriptions.")
 
 
 class WeatherForecastArgs(WeatherResolveArgs):
-    units: str | None = None
-    lang: str | None = None
-    count: int = Field(8, ge=1, le=40)
+    units: str | None = Field(None, description="OpenWeather units, e.g. metric, imperial, or standard.")
+    lang: str | None = Field(None, description="Optional OpenWeather language code for descriptions.")
+    count: int = Field(8, ge=1, le=40, description="Number of 3-hour forecast points to return, from 1 to 40.")
 
 
 class WeatherHistoryArgs(WeatherResolveArgs):
-    date: str | None = None
-    start: str | None = None
-    end: str | None = None
-    dt: int | None = None
-    onlyCurrent: bool = True
-    units: str | None = None
-    lang: str | None = None
+    date: str | None = Field(None, description="Historical date in YYYY-MM-DD format when supported by the configured endpoint.")
+    start: str | None = Field(None, description="Start date/time for a historical window when supported.")
+    end: str | None = Field(None, description="End date/time for a historical window when supported.")
+    dt: int | None = Field(None, description="Unix timestamp for historical conditions when supported.")
+    onlyCurrent: bool = Field(True, description="Return a compact current-like historical point when possible.")
+    units: str | None = Field(None, description="OpenWeather units, e.g. metric, imperial, or standard.")
+    lang: str | None = Field(None, description="Optional OpenWeather language code for descriptions.")
 
     @model_validator(mode="after")
     def validate_window(self) -> "WeatherHistoryArgs":

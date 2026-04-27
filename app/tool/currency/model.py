@@ -31,8 +31,8 @@ class CurrencySymbolsArgs(BaseModel):
 
 
 class CurrencyLatestArgs(BaseModel):
-    base: str | None = None
-    symbols: str | None = None
+    base: str | None = Field(None, description="Optional base currency code. Codes are normalized to uppercase.")
+    symbols: str | None = Field(None, description="Optional comma-separated target currency codes, normalized to uppercase.")
 
     @field_validator("base")
     @classmethod
@@ -46,9 +46,9 @@ class CurrencyLatestArgs(BaseModel):
 
 
 class CurrencyHistoryArgs(BaseModel):
-    date: str
-    base: str | None = None
-    symbols: str | None = None
+    date: str = Field(description="Historical date in YYYY-MM-DD format.")
+    base: str | None = Field(None, description="Optional base currency code. Codes are normalized to uppercase.")
+    symbols: str | None = Field(None, description="Optional comma-separated target currency codes, normalized to uppercase.")
 
     @field_validator("date")
     @classmethod
@@ -67,10 +67,10 @@ class CurrencyHistoryArgs(BaseModel):
 
 
 class CurrencyTimeseriesArgs(BaseModel):
-    start_date: str
-    end_date: str
-    base: str | None = None
-    symbols: str | None = None
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    base: str | None = Field(None, description="Optional base currency code. Codes are normalized to uppercase.")
+    symbols: str | None = Field(None, description="Optional comma-separated target currency codes, normalized to uppercase.")
 
     @field_validator("start_date", "end_date")
     @classmethod
@@ -95,10 +95,10 @@ class CurrencyTimeseriesArgs(BaseModel):
 
 
 class CurrencyConvertArgs(BaseModel):
-    from_code: str = Field(alias="from")
-    to: str
-    amount: float = Field(gt=0)
-    date: str | None = None
+    from_code: str = Field(alias="from", description="Source currency code. Codes are normalized to uppercase.")
+    to: str = Field(description="Target currency code. Codes are normalized to uppercase.")
+    amount: float = Field(gt=0, description="Positive amount to convert.")
+    date: str | None = Field(None, description="Optional conversion date in YYYY-MM-DD format.")
 
     @field_validator("from_code", "to")
     @classmethod
@@ -117,10 +117,10 @@ class CurrencyConvertArgs(BaseModel):
 
 
 class CurrencyFluctuationArgs(BaseModel):
-    start_date: str
-    end_date: str
-    base: str | None = None
-    symbols: str | None = None
+    start_date: str = Field(description="Start date in YYYY-MM-DD format.")
+    end_date: str = Field(description="End date in YYYY-MM-DD format.")
+    base: str | None = Field(None, description="Optional base currency code. Codes are normalized to uppercase.")
+    symbols: str | None = Field(None, description="Optional comma-separated target currency codes, normalized to uppercase.")
 
     @field_validator("start_date", "end_date")
     @classmethod

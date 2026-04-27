@@ -11,7 +11,7 @@ def build_tools_router() -> APIRouter:
 
     @router.get("/tools")
     async def list_tools(container = Depends(get_container)) -> dict[str, object]:
-        return {"tools": [tool.model_dump(mode="json") for tool in container.tool_registry.list_tools()]}
+        return {"tools": [tool.model_dump(mode="json") for tool in container.tool_registry.list_tools(include_hidden=False)]}
 
     @router.post("/tools/call")
     async def call_tool(payload: CallToolRequest, container = Depends(get_container)) -> dict[str, object]:

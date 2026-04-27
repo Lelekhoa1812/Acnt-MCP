@@ -33,7 +33,7 @@ class McpToolAdapter:
                 description=tool.description,
                 inputSchema=tool.input_schema,
             )
-            for tool in self.orchestrator_service.tool_registry.list_tools()
+            for tool in self.orchestrator_service.tool_registry.list_tools(include_hidden=False)
         ]
 
     async def call_tool(
@@ -77,6 +77,8 @@ class McpToolAdapter:
 
     def _success_result(self, result: ToolResult) -> types.CallToolResult:
         envelope: dict[str, Any] = {"data": result.data}
+        if result.llm_content is not None:
+            envelope["answer_ready"] = result.llm_content
         if result.normalization_notes:
             envelope["normalization_notes"] = result.normalization_notes
         if result.plan_status is not None:

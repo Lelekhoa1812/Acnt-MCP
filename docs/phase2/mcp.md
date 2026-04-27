@@ -41,4 +41,11 @@ The current FastAPI app run `uvicorn app.main:app` exposes diagnostics plus `Str
 2. Enter the public `https://<domain>/mcp` URL and complete the OAuth flow tied to `HTH_MCP_BEARER_TOKEN`.
 3. Save, refresh the tool list, and run a safe stock lookup to confirm `tools/list`/`tools/call` are functional.
 
+## Claude.ai tool-choice checks
+- Supported scope/counts: ask “how many department and category of stock do we have?” and confirm Claude uses `stock_get_supported_scope`, not raw Harmonise metadata.
+- Product-family availability: ask “let me know about our Alto chair stock availability” and confirm Claude uses `stock_get_product_family_inventory` or `stock_inventory_snapshot` and summarizes every returned variant/SKU.
+- Regional ranking: ask “which Charlie chair variant is most in stock in Victoria?” and confirm Claude uses `stock_rank_variants_by_stock` with `region="VIC"`.
+- Exact variant detail: only use `stock_extract_variant_evidence` after a SKU or variant is known.
+- Avoid hidden/admin tools in normal Claude.ai discovery: deprecated aliases, raw local metadata, and session clearing are kept callable for compatibility but should not appear as primary choices.
+
 Running `python3 -m app.mcp.server` remains useful for local CLI clients, but browser-based Claude access must go through the `/mcp` transport hosted on Azure.

@@ -14,6 +14,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from app.config import Settings
 from app.mcp.server import build_mcp_server
+from app.prompt.stock.furniture import furniture_capability_summary
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,11 +92,29 @@ async def test_mcp_initialize_and_list_tools() -> None:
     tool_names = {tool.name for tool in tools.tools}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_search_catalogue" in tool_names
+    assert "stock_get_supported_scope" in tool_names
+    assert "stock_get_product_family_inventory" in tool_names
+    assert "stock_rank_variants_by_stock" in tool_names
     assert "stock_inventory_snapshot" in tool_names
     assert "resolver_disambiguate_candidates" in tool_names
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
     assert "currency_convert" in tool_names
+    assert "stock_get_departments" not in tool_names
+    assert "stock_get_categories" not in tool_names
+    assert "stock_get_variant_evidence" not in tool_names
+    assert "session_clear_state" not in tool_names
+
+    search_catalogue = next(tool for tool in tools.tools if tool.name == "stock_search_catalogue")
+    assert "supported filters" in search_catalogue.description
+    assert "variants" in search_catalogue.description
+    assert "description" in search_catalogue.inputSchema["properties"]["departmentId"]
+
+    family_inventory = next(tool for tool in tools.tools if tool.name == "stock_get_product_family_inventory")
+    assert "all resolved variants" in family_inventory.description
+
+    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_rank_variants_by_stock")
+    assert "VIC" in rank_tool.description
 
     currency_convert = next(tool for tool in tools.tools if tool.name == "currency_convert")
     assert "from" in currency_convert.inputSchema["properties"]
@@ -123,6 +142,9 @@ async def test_mcp_cloud_mode_hides_metadata_tools() -> None:
     tool_names = {tool.name for tool in tools.tools}
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
+    assert "stock_get_variant_evidence" not in tool_names
+    assert "session_clear_state" not in tool_names
+    assert "stock_get_supported_scope" in tool_names
     assert "stock_search_catalogue" in tool_names
 
 
@@ -144,6 +166,7 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     assert result.structuredContent["plan_status"]["status"] == "complete"
     assert result.structuredContent["memo_update"]["tool"] == "stock_search_catalogue"
     assert result.structuredContent["validation"]["actual_rows"] is not None
+    assert result.structuredContent["answer_ready"]["items"]
 
 
 @pytest.mark.anyio
@@ -166,6 +189,75 @@ async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
     assert "total=" not in row["stock"]
     assert "Overall" in row["stock"]
     assert "in stock" in row["stock"]
+
+
+@pytest.mark.anyio
+async def test_mcp_supported_scope_returns_canonical_counts() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool("stock_get_supported_scope", {})
+
+    expected = furniture_capability_summary()
+    assert result.isError is False
+    assert result.structuredContent is not None
+    data = result.structuredContent["data"]
+    assert data["supported_department_count"] == expected["supported_department_count"] == 1
+    assert data["mapped_furniture_category_count"] == expected["mapped_furniture_category_count"]
+    assert "guidance" in data
+
+
+@pytest.mark.anyio
+async def test_mcp_hidden_variant_alias_remains_callable() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool("stock_get_variant_evidence", {"sku": "fl-ca-ca-10m"})
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["data"]["sku"] == "fl-ca-ca-10m"
+
+
+@pytest.mark.anyio
+async def test_mcp_product_family_inventory_returns_all_variants() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock_get_product_family_inventory",
+            {"search": "Laminate Timber Floor", "pageSize": 20},
+        )
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    rows = result.structuredContent["data"]["rows"]
+    variants = {row["variant"] for row in rows}
+    assert {"Bleached Oak", "Grey Ash", "Smoked Oak"}.issubset(variants)
+    assert result.structuredContent["answer_ready"]["coverage"]["enrichedVariants"] >= 3
+
+
+@pytest.mark.anyio
+async def test_mcp_rank_variants_by_stock_orders_region_stock() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock_rank_variants_by_stock",
+            {"search": "Laminate Timber Floor", "region": "VIC", "direction": "most"},
+        )
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    rows = result.structuredContent["data"]["rows"]
+    assert len(rows) >= 3
+    vic_stock = [row["stock"] for row in rows if row["stock"] is not None]
+    assert vic_stock == sorted(vic_stock, reverse=True)
+    assert rows[0]["region"] == "VIC"
 
 
 @pytest.mark.anyio

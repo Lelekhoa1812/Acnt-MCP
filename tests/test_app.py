@@ -282,9 +282,14 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
-    assert "stock_get_departments" in tool_names
-    assert "stock_get_categories" in tool_names
+    assert "stock_get_supported_scope" in tool_names
+    assert "stock_get_departments" not in tool_names
+    assert "stock_get_categories" not in tool_names
+    assert "stock_get_variant_evidence" not in tool_names
+    assert "session_clear_state" not in tool_names
     assert "stock_search_catalogue" in tool_names
+    assert "stock_get_product_family_inventory" in tool_names
+    assert "stock_rank_variants_by_stock" in tool_names
     assert "stock_inventory_snapshot" in tool_names
     assert "resolver_disambiguate_candidates" in tool_names
     assert "weather_current" in tool_names
@@ -301,6 +306,7 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
+    assert "stock_get_supported_scope" in tool_names
     assert "stock_search_catalogue" in tool_names
     assert "stock_get_product" in tool_names
 

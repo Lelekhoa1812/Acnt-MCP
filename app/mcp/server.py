@@ -15,6 +15,20 @@ from app.config.logging import configure_logging
 from app.mcp.adapter import McpToolAdapter
 
 
+MCP_SERVER_INSTRUCTIONS = (
+    "Protocol-compliant MCP tool server for Harmonise inventory intelligence. "
+    "For supported stock scope, department counts, category counts, and categoryId routing, call "
+    "stock_get_supported_scope. For named product-family availability such as 'Alto chair stock', retrieve "
+    "all variants with stock_get_product_family_inventory or stock_inventory_snapshot; do not answer from only "
+    "the first SKU. For regional best/worst stock questions, use stock_rank_variants_by_stock with region VIC, "
+    "NSW, QLD, or overall. Use stock_extract_variant_evidence only for one exact SKU/variant, and "
+    "stock_compare_variants only for explicit 2-20 variant side-by-side comparisons. Weather, news, and currency "
+    "tools are auxiliary and should not be used for inventory questions. Tool responses may include plan_status, "
+    "memo_update, validation, and answer_ready; use them for grounding but do not present internal metadata as "
+    "user-facing prose."
+)
+
+
 class StdioMcpApplication:
     # Motivation vs Logic: this runtime wraps the existing app container in a
     # real stdio MCP server so coding tools can speak the standard protocol
@@ -28,12 +42,7 @@ class StdioMcpApplication:
         self.server: Server[dict[str, Any], Any] = Server(
             name=self.settings.server_name,
             version=self.settings.server_version,
-            instructions=(
-                "Protocol-compliant MCP tool server for Harmonise inventory intelligence. "
-                "Use tools for inventory lookup, variant resolution, comparison, and optional "
-                "news, weather, and currency integrations. Prefer name-first responses, keep "
-                "answers scoped to requested attributes, and return image URLs when media is requested."
-            ),
+            instructions=MCP_SERVER_INSTRUCTIONS,
             website_url=self.settings.resolved_server_website_url,
             icons=server_icons,
             lifespan=self._lifespan,
@@ -97,8 +106,7 @@ async def run_stdio_server(settings: Settings | None = None) -> None:
                 server_name=resolved_settings.server_name,
                 server_version=resolved_settings.server_version,
                 instructions=(
-                    "HTH Stock Intelligence MCP server. Use the registered tools for grounded "
-                    "inventory and plugin-backed lookups with intent-aligned, scoped responses."
+                    MCP_SERVER_INSTRUCTIONS
                 ),
                 website_url=resolved_settings.resolved_server_website_url,
                 icons=[

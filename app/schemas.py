@@ -455,28 +455,47 @@ class AgentQueryResponse(BaseModel):
 
 
 class StockGetDepartmentsArgs(BaseModel):
-    includeInactive: bool = False
-    includeSubDepartments: bool = False
+    includeInactive: bool = Field(
+        False,
+        description="Include inactive Harmonise departments. Raw metadata only; use stock_get_supported_scope for supported MCP capability counts.",
+    )
+    includeSubDepartments: bool = Field(
+        False,
+        description="Include nested Harmonise sub-departments when local metadata is available.",
+    )
 
 
 class StockGetCategoriesArgs(BaseModel):
-    page: int = Field(1, ge=1)
-    pageSize: int = Field(20, ge=1, le=100)
+    page: int = Field(1, ge=1, description="Raw Harmonise category page to retrieve.")
+    pageSize: int = Field(20, ge=1, le=100, description="Raw category page size, from 1 to 100.")
+
+
+class StockGetSupportedScopeArgs(BaseModel):
+    pass
 
 
 class StockSearchCatalogueArgs(BaseModel):
-    page: int = Field(1, ge=1)
-    pageSize: int = Field(20, ge=1, le=100)
-    search: str | None = None
-    departmentId: int | None = None
-    categoryId: str | None = None
+    page: int = Field(1, ge=1, description="Catalogue result page to retrieve.")
+    pageSize: int = Field(20, ge=1, le=100, description="Catalogue page size, from 1 to 100.")
+    search: str | None = Field(
+        None,
+        description="Product/family search text such as 'Alto chair'. Do not combine several unrelated product names in one search.",
+    )
+    departmentId: int | None = Field(
+        None,
+        description="Supported department filter. Furniture is departmentId=3; use stock_get_supported_scope for supported IDs.",
+    )
+    categoryId: str | None = Field(
+        None,
+        description="Optional mapped furniture category UUID from stock_get_supported_scope; omit when unsure to avoid false negatives.",
+    )
 
 
 class StockGetProductArgs(BaseModel):
-    id: str | None = None
-    sku: str | None = None
-    page: int = Field(1, ge=1)
-    pageSize: int = Field(20, ge=1, le=100)
+    id: str | None = Field(None, description="Harmonise product family UUID from catalogue/search results.")
+    sku: str | None = Field(None, description="Variant SKU. Prefer sku for exact variant/detail lookup when available.")
+    page: int = Field(1, ge=1, description="Detail result page to retrieve.")
+    pageSize: int = Field(20, ge=1, le=100, description="Detail page size, from 1 to 100.")
 
     @model_validator(mode="after")
     def validate_identifier(self) -> "StockGetProductArgs":
@@ -486,16 +505,22 @@ class StockGetProductArgs(BaseModel):
 
 
 class StockExtractVariantEvidenceArgs(BaseModel):
-    id: str | None = None
-    sku: str | None = None
-    variantId: str | None = None
+    id: str | None = Field(None, description="Parent product family UUID. Required when using variantId without sku.")
+    sku: str | None = Field(None, description="Exact variant SKU; safest identifier for one-variant evidence.")
+    variantId: str | None = Field(
+        None,
+        description="Variant UUID. Must be paired with sku or parent product id so the product family can be resolved.",
+    )
 
     @model_validator(mode="after")
     def validate_identifier(self) -> "StockExtractVariantEvidenceArgs":
         if not self.id and not self.sku and not self.variantId:
             raise ValueError("At least one of 'id', 'sku', or 'variantId' must be provided.")
         if self.variantId and not self.id and not self.sku:
-            raise ValueError("`variantId` requires accompanying `sku` or `id` for product resolution.")
+            raise ValueError(
+                "variantId alone cannot resolve product details; reuse the matching catalogue item's variants[].sku "
+                "or pair variantId with a product id."
+            )
         return self
 
 
@@ -503,23 +528,51 @@ class StockCompareVariantsArgs(BaseModel):
     # Motivation vs Logic: catalogue products can have >5 colour/SKU variants; a low cap
     # caused validation errors when comparing full variant sets. The service semaphore
     # (HTH_STOCK_PARALLEL_REQUESTS_LIMIT) still bounds concurrent Harmonise fan-out.
-    identifiers: list[str] = Field(min_length=2, max_length=20)
+    identifiers: list[str] = Field(
+        min_length=2,
+        max_length=20,
+        description="Two to twenty variant SKUs or UUID-like product/variant identifiers that have already been resolved.",
+    )
 
 
 class StockInventorySnapshotArgs(BaseModel):
-    page: int = Field(1, ge=1)
-    pageSize: int = Field(20, ge=1, le=100)
-    search: str | None = None
-    departmentId: int | None = None
-    categoryId: str | None = None
+    page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
+    pageSize: int = Field(20, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
+    search: str | None = Field(None, description="Focused product/family/category text, e.g. 'Charlie chair'.")
+    departmentId: int | None = Field(None, description="Supported department filter; Furniture is departmentId=3.")
+    categoryId: str | None = Field(None, description="Mapped furniture category UUID when the user's category is clear.")
+
+
+class StockProductFamilyInventoryArgs(BaseModel):
+    search: str = Field(
+        description="Named product or family text, e.g. 'Alto chair'. Retrieves every resolved variant/SKU for availability answers."
+    )
+    departmentId: int | None = Field(None, description="Optional supported department filter. Furniture is departmentId=3.")
+    categoryId: str | None = Field(None, description="Mapped furniture category UUID when known; omit when uncertain.")
+    pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich, from 1 to 100.")
+
+
+class StockRankVariantsByStockArgs(BaseModel):
+    search: str = Field(description="Named product or family text whose variants should be ranked.")
+    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
+        "overall",
+        description="Stock field to rank by. Use VIC for Victoria, NSW, QLD, or overall for total stock.",
+    )
+    direction: Literal["most", "least"] = Field("most", description="Rank highest stock first with most, or lowest first with least.")
+    departmentId: int | None = Field(None, description="Optional supported department filter. Furniture is departmentId=3.")
+    categoryId: str | None = Field(None, description="Mapped furniture category UUID when known; omit when uncertain.")
+    pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich before ranking.")
 
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):
-    query: str
-    limit: int = Field(10, ge=2, le=10)
-    departmentId: int | None = None
-    categoryId: str | None = None
+    query: str = Field(description="Ambiguous user phrase or product name to rank against catalogue candidates.")
+    limit: int = Field(10, ge=2, le=10, description="Number of candidate options to return, from 2 to 10.")
+    departmentId: int | None = Field(None, description="Optional supported department filter; Furniture is departmentId=3.")
+    categoryId: str | None = Field(None, description="Optional mapped furniture category UUID.")
 
 
 class SessionToolArgs(BaseModel):
-    sessionId: str | None = None
+    sessionId: str | None = Field(
+        None,
+        description="Optional explicit session id. MCP transports usually scope this automatically per client/session.",
+    )

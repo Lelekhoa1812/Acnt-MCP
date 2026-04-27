@@ -90,6 +90,28 @@ Contract boundary: the JSON schemas in `app/schemas.py` and the tools defined in
 - Session memory and memoization across related calls
 - Modular news, weather, and currency lookups
 
+## MCP tool catalog
+
+Claude.ai and other MCP clients should treat the stock tools as a curated workflow:
+
+- `stock_get_supported_scope`: supported stock department/category counts, mapped furniture category routes, and filter IDs.
+- `stock_search_catalogue`: product discovery with `search`, `departmentId`, `categoryId`, and paging.
+- `stock_get_product`: exact product-family or SKU detail after an id/SKU is known.
+- `stock_get_product_family_inventory`: named product-family availability across every resolved variant/SKU.
+- `stock_inventory_snapshot`: answer-ready stock/spec rows for broader catalogue, category, or multi-variant questions.
+- `stock_rank_variants_by_stock`: rank variants by `VIC`, `NSW`, `QLD`, or `overall` stock.
+- `stock_extract_variant_evidence`: one exact variant only.
+- `stock_compare_variants`: explicit 2-20 variant side-by-side comparison.
+- `resolver_disambiguate_candidates`: use only when product search is genuinely ambiguous.
+
+The raw local metadata tools and deprecated aliases remain callable for compatibility but are hidden from normal MCP discovery so external models do not choose them by accident.
+
+Example Claude.ai tool routing:
+
+- “How many department and category of stock do we have?” -> `stock_get_supported_scope`.
+- “Let me know about our Alto chair stock availability.” -> `stock_get_product_family_inventory` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
+- “Which Charlie chair variant is most in stock in Victoria?” -> `stock_rank_variants_by_stock` with `search="Charlie chair"`, `region="VIC"`, and `direction="most"`.
+
 ## Local setup
 
 ### 1. Create a virtual environment

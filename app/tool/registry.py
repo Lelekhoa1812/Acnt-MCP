@@ -34,14 +34,19 @@ from app.schemas import (
     StockGetCategoriesArgs,
     StockGetDepartmentsArgs,
     StockGetProductArgs,
+    StockGetSupportedScopeArgs,
     StockInventorySnapshotArgs,
+    StockProductFamilyInventoryArgs,
+    StockRankVariantsByStockArgs,
     StockSearchCatalogueArgs,
     ToolDefinition,
     ToolResult,
     ToolTrace,
 )
 from app.prompt.context import render_session_context, summarize_session_state
+from app.prompt.stock.furniture import furniture_capability_summary
 from app.session.store import SessionStore
+from app.text.utils import lexical_overlap
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
 from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name, normalize_mcp_tool_name
 
@@ -52,6 +57,7 @@ class ToolSpec:
     description: str
     model: type[BaseModel]
     handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
+    visible: bool = True
 
 
 # Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
@@ -90,9 +96,11 @@ class ToolRegistry:
         self._register_currency()
         self._tool_name_map = McpToolNameMap(list(self._tools))
 
-    def list_tools(self) -> list[ToolDefinition]:
+    def list_tools(self, *, include_hidden: bool = True) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
+            if not include_hidden and not spec.visible:
+                continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we
             # reuse the MCP map to keep front-end names compliant while preserving
@@ -110,9 +118,11 @@ class ToolRegistry:
             )
         return tools
 
-    def tool_payloads(self) -> list[dict[str, Any]]:
+    def tool_payloads(self, *, include_hidden: bool = True) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         for spec in self._tools.values():
+            if not include_hidden and not spec.visible:
+                continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: keep the REST function payload signature aligned with
             # the MCP-safe name so callers sharing these definitions stay compliant.
@@ -168,8 +178,8 @@ class ToolRegistry:
         rendered = "; ".join(parts) if parts else "Invalid arguments."
         return f"Invalid arguments for '{tool_name}': {rendered}"
 
-    def _register(self, name: str, description: str, model: type[BaseModel], handler) -> None:
-        self._tools[name] = ToolSpec(name=name, description=description, model=model, handler=handler)
+    def _register(self, name: str, description: str, model: type[BaseModel], handler, *, visible: bool = True) -> None:
+        self._tools[name] = ToolSpec(name=name, description=description, model=model, handler=handler, visible=visible)
 
     def _register_stock(self) -> None:
         async def get_departments(validated: StockGetDepartmentsArgs, _: str | None, thought: str) -> ToolResult:
@@ -310,6 +320,154 @@ class ToolRegistry:
                 trace=trace,
             )
 
+        async def get_supported_scope(
+            validated: StockGetSupportedScopeArgs, _: str | None, thought: str
+        ) -> ToolResult:
+            summary = furniture_capability_summary()
+            data = {
+                **summary,
+                "guidance": {
+                    "purpose": (
+                        "Use this tool for supported stock scope, department/category counts, and categoryId "
+                        "routing. It is the MCP-visible source of truth for supported inventory capability."
+                    ),
+                    "live_inventory": (
+                        "For products, variants, or availability inside a category, use stock_inventory_snapshot "
+                        "or stock_get_product_family_inventory with the returned department/category ids."
+                    ),
+                },
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_get_supported_scope",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status="policy",
+                source_data="prompt_policy -> furniture_capability_summary",
+                result_count=int(summary.get("mapped_furniture_category_count", 0)),
+            )
+            return ToolResult(tool="stock_get_supported_scope", data=data, llm_content=data, trace=trace)
+
+        async def collect_family_evidence(
+            validated: StockProductFamilyInventoryArgs | StockRankVariantsByStockArgs,
+        ) -> tuple[list[NormalizedEvidence], str, list[str], dict[str, Any]]:
+            catalogue_args = StockSearchCatalogueArgs(
+                page=1,
+                pageSize=validated.pageSize,
+                search=validated.search,
+                departmentId=validated.departmentId,
+                categoryId=validated.categoryId,
+            )
+            catalogue, catalogue_cache_status, notes = await self.inventory_service.search_catalogue(catalogue_args)
+            matched_products = self._filter_products_for_query(catalogue.items, validated.search)
+            if not matched_products and catalogue.items:
+                matched_products = list(catalogue.items)
+
+            evidence_items: list[NormalizedEvidence] = []
+            cache_statuses = [catalogue_cache_status]
+            skipped_variants = 0
+            for product in matched_products:
+                for variant in product.variants:
+                    if not variant.sku:
+                        skipped_variants += 1
+                        continue
+                    evidence, cache_status, extract_notes = await self.inventory_service.extract_variant_evidence(
+                        StockExtractVariantEvidenceArgs(sku=variant.sku),
+                        matched_on=["catalogue_family", "sku"],
+                        confidence=0.98,
+                        tool_name="stock_get_product_family_inventory",
+                    )
+                    evidence_items.append(evidence)
+                    cache_statuses.append(cache_status)
+                    notes.extend(extract_notes)
+
+            limitations: list[str] = []
+            if skipped_variants:
+                limitations.append(f"Skipped {skipped_variants} catalogue variant(s) without SKU identifiers.")
+            if not evidence_items:
+                limitations.append("No variant-level stock evidence was returned for the requested family.")
+            coverage = {
+                "requestedPage": 1,
+                "requestedPageSize": validated.pageSize,
+                "matchedProducts": len(matched_products),
+                "matchedPages": catalogue.totalPages,
+                "enrichedProducts": len({item.product_id for item in evidence_items if item.product_id}),
+                "enrichedVariants": len(evidence_items),
+                "isPartial": bool(limitations),
+                "limitations": limitations,
+            }
+            return evidence_items, self.inventory_service._combine_cache_statuses(cache_statuses), notes, coverage
+
+        async def product_family_inventory(
+            validated: StockProductFamilyInventoryArgs, _: str | None, thought: str
+        ) -> ToolResult:
+            evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
+            payload = {
+                "query": validated.search,
+                "rows": [self.inventory_service._build_inventory_row(item).model_dump(mode="json") for item in evidence_items],
+                "evidence": [self._compact_snapshot_evidence(item) for item in evidence_items],
+                "coverage": coverage,
+                "guidance": (
+                    "Treat this as product-family inventory: answer availability across every returned variant/SKU, "
+                    "not only the first row."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_get_product_family_inventory",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> catalogue variants -> variant evidence[*]",
+                result_count=len(evidence_items),
+                normalization_notes=notes + coverage["limitations"],
+            )
+            return ToolResult(
+                tool="stock_get_product_family_inventory",
+                data=payload,
+                llm_content=payload,
+                normalization_notes=notes + coverage["limitations"],
+                trace=trace,
+            )
+
+        async def rank_variants_by_stock(
+            validated: StockRankVariantsByStockArgs, _: str | None, thought: str
+        ) -> ToolResult:
+            evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
+            ranked = self._rank_snapshot_evidence(
+                evidence_items,
+                region=validated.region,
+                direction=validated.direction,
+            )
+            payload = {
+                "query": validated.search,
+                "region": validated.region,
+                "direction": validated.direction,
+                "rows": ranked,
+                "coverage": coverage,
+                "guidance": (
+                    "Rows are sorted for most/least stock questions. Use the first row as the best match when "
+                    "coverage is not partial."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_rank_variants_by_stock",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> normalized variant evidence[*]",
+                result_count=len(ranked),
+                normalization_notes=notes + coverage["limitations"],
+            )
+            return ToolResult(
+                tool="stock_rank_variants_by_stock",
+                data=payload,
+                llm_content=payload,
+                normalization_notes=notes + coverage["limitations"],
+                trace=trace,
+            )
+
         if self.inventory_service.settings.local_harmonise:
             # Motivation vs Logic: the cloud Harmonise contract currently exposes
             # product endpoints only, so metadata tools are local-dev only.
@@ -322,6 +480,7 @@ class ToolRegistry:
                 ),
                 StockGetDepartmentsArgs,
                 get_departments,
+                visible=False,
             )
             self._register(
                 "stock_get_categories",
@@ -331,42 +490,95 @@ class ToolRegistry:
                 ),
                 StockGetCategoriesArgs,
                 get_categories,
+                visible=False,
             )
         self._register(
+            "stock_get_supported_scope",
+            (
+                "Supported stock scope and filter IDs. Use for questions like 'how many departments/categories do "
+                "we support?', 'which categoryId is chairs?', or before filtering furniture inventory. Returns the "
+                "canonical supported Furniture department and mapped category routes."
+            ),
+            StockGetSupportedScopeArgs,
+            get_supported_scope,
+        )
+        self._register(
             "stock_search_catalogue",
-            "Harmonise product search (text + supported filters).",
+            (
+                "Harmonise catalogue discovery by product/family text plus supported filters: page, pageSize, "
+                "search, departmentId, categoryId. Use to find product ids/SKUs and variants; for availability of a "
+                "named family, follow with stock_inventory_snapshot or stock_get_product_family_inventory so every variant is covered."
+            ),
             StockSearchCatalogueArgs,
             search_catalogue,
         )
         self._register(
             "stock_get_product",
-            "Product detail by id or sku.",
+            (
+                "Exact product-family or SKU detail. Use when a product id or SKU is already known. Detail includes "
+                "variants, dimensions, pricing, image metadata, and VIC/NSW/QLD stock fields; generic family "
+                "availability still needs all returned variants summarized."
+            ),
             StockGetProductArgs,
             get_product,
         )
         self._register(
             "stock_extract_variant_evidence",
-            "One variant → answer-ready evidence. Use for a specific variant; product families use stock_get_product or stock_inventory_snapshot.",
+            (
+                "One exact variant -> answer-ready evidence. Use only when the user names a SKU/specific variant or "
+                "after catalogue/detail resolution. For product-family stock questions, use stock_get_product_family_inventory "
+                "or stock_inventory_snapshot instead."
+            ),
             StockExtractVariantEvidenceArgs,
             extract_variant,
         )
         self._register(
             "stock_get_variant_evidence",
-            "Same as stock_extract_variant_evidence. Needs variant context: sku or product id with variantId.",
+            (
+                "Deprecated alias for stock_extract_variant_evidence. Direct calls still work, but MCP clients should "
+                "prefer stock_extract_variant_evidence."
+            ),
             StockExtractVariantEvidenceArgs,
             extract_variant,
+            visible=False,
         )
         self._register(
             "stock_compare_variants",
-            "Side-by-side compare of already-resolved variants.",
+            (
+                "Side-by-side comparison of 2-20 already-resolved variant SKUs/identifiers. Use for explicit compare "
+                "requests, not broad family availability; for many variants or stock tables use stock_inventory_snapshot."
+            ),
             StockCompareVariantsArgs,
             compare_variants,
         )
         self._register(
             "stock_inventory_snapshot",
-            "Answer-ready page of inventory: variant specs + stock summaries (filtered catalogue view).",
+            (
+                "Answer-ready inventory snapshot: enriches catalogue matches into variant rows with size, known specs, "
+                "overall stock, and VIC/NSW/QLD availability text. Best default for broad/multi-variant stock, category "
+                "inventory, and named-family availability when every variant must be included."
+            ),
             StockInventorySnapshotArgs,
             inventory_snapshot,
+        )
+        self._register(
+            "stock_get_product_family_inventory",
+            (
+                "Named product/family availability across all resolved variants. Use for questions like 'Alto chair "
+                "stock availability' when no SKU/variant is specified; returns all variant SKUs with stock, dimensions, "
+                "pricing/media, and coverage notes."
+            ),
+            StockProductFamilyInventoryArgs,
+            product_family_inventory,
+        )
+        self._register(
+            "stock_rank_variants_by_stock",
+            (
+                "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for 'which "
+                "Charlie chair variant is most in stock in Victoria?' and similar best/worst availability questions."
+            ),
+            StockRankVariantsByStockArgs,
+            rank_variants_by_stock,
         )
 
     def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
@@ -446,6 +658,25 @@ class ToolRegistry:
             },
         }
 
+    def _filter_products_for_query(self, products: list[ProductListItemDto], query: str) -> list[ProductListItemDto]:
+        # Motivation vs Logic: MCP family helpers must not degrade into broad page
+        # scans when a backend ignores text search; local filtering keeps the
+        # helper focused on the named family before variant-level fan-out.
+        matched: list[ProductListItemDto] = []
+        for product in products:
+            candidate = " ".join(
+                value
+                for value in [
+                    product.name,
+                    " ".join(variant.name or "" for variant in product.variants),
+                    " ".join(variant.sku or "" for variant in product.variants),
+                ]
+                if value
+            )
+            if lexical_overlap(query, candidate) >= 0.6:
+                matched.append(product)
+        return matched
+
     def _evidence_model_view(self, evidence: NormalizedEvidence) -> dict[str, Any]:
         return {
             "product": evidence.product_name,
@@ -508,6 +739,47 @@ class ToolRegistry:
             "salesNote": evidence.salesNote,
             "media": evidence.media.model_dump(mode="json"),
         }
+
+    def _rank_snapshot_evidence(
+        self,
+        evidence_items: list[NormalizedEvidence],
+        *,
+        region: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        stock_fields = {
+            "VIC": ("vicStock", "vicHirable"),
+            "NSW": ("nswStock", "nswHirable"),
+            "QLD": ("qldStock", "qldHirable"),
+            "overall": ("totalStock", "totalHirable"),
+        }
+        stock_field, hirable_field = stock_fields[region]
+
+        def stock_value(evidence: NormalizedEvidence) -> int:
+            value = getattr(evidence.stock, stock_field)
+            return value if value is not None else -1
+
+        reverse = direction == "most"
+        ranked = sorted(evidence_items, key=stock_value, reverse=reverse)
+        rows: list[dict[str, Any]] = []
+        for rank, evidence in enumerate(ranked, start=1):
+            rows.append(
+                {
+                    "rank": rank,
+                    "product": evidence.product_name,
+                    "variant": evidence.variant_name,
+                    "sku": evidence.sku,
+                    "region": region,
+                    "stock": getattr(evidence.stock, stock_field),
+                    "hirable": getattr(evidence.stock, hirable_field),
+                    "totalStock": evidence.stock.totalStock,
+                    "totalHirable": evidence.stock.totalHirable,
+                    "dimensions": evidence.dimensions.model_dump(mode="json"),
+                    "pricing": evidence.pricing.model_dump(mode="json"),
+                    "media": evidence.media.model_dump(mode="json"),
+                }
+            )
+        return rows
 
     def _compact_attribute_evidence(self, row: dict[str, Any]) -> list[str]:
         product = (row.get("product") or "").strip()
@@ -614,7 +886,11 @@ class ToolRegistry:
 
         self._register(
             "resolver_disambiguate_candidates",
-            "When one search may match several products: rank and return a disambiguation prompt. If the product is already known and you only need variants, use stock_get_product or stock_inventory_snapshot.",
+            (
+                "Rank ambiguous catalogue candidates for a user phrase and return either a resolved product family or "
+                "clarification options. Use only when search results could mean several products; if the family is "
+                "already known, use stock_get_product_family_inventory, stock_inventory_snapshot, or stock_get_product."
+            ),
             ResolverDisambiguateCandidatesArgs,
             disambiguate,
         )
@@ -680,15 +956,19 @@ class ToolRegistry:
 
         self._register(
             "session_get_state",
-            "Read session working memory (compact summary + ids, plan, memo digest).",
+            (
+                "Inspect MCP session working memory: recent products, identifiers, compact plan, and memo digest. "
+                "Use only when the user explicitly asks about prior context/history; do not use for fresh stock availability."
+            ),
             SessionToolArgs,
             get_state,
         )
         self._register(
             "session_clear_state",
-            "Clear session working memory.",
+            "Administrative/debug tool to clear MCP session working memory. Hidden from normal MCP tool discovery.",
             SessionToolArgs,
             clear_state,
+            visible=False,
         )
 
     def _register_news(self) -> None:
@@ -766,19 +1046,25 @@ class ToolRegistry:
 
         self._register(
             "news_search",
-            "News API article search: keywords, sources, domains, dates, sort.",
+            (
+                "News API article search for external news questions. Supports keywords, source IDs, domains, ISO date "
+                "bounds, language, sort, and pagination. Do not use for inventory or stock questions."
+            ),
             NewsSearchArgs,
             search,
         )
         self._register(
             "news_headlines",
-            "Top headlines: country, category, source, or keyword.",
+            (
+                "Top headlines from News API by country, category, source, or keyword. Use for current news/headline "
+                "questions, not Harmonise inventory."
+            ),
             NewsHeadlinesArgs,
             headlines,
         )
         self._register(
             "news_sources",
-            "List News API outlets by category, language, or country.",
+            "List News API source IDs by category, language, or country so later news_search/headlines calls can use exact sources.",
             NewsSourcesArgs,
             sources,
         )
@@ -842,25 +1128,25 @@ class ToolRegistry:
 
         self._register(
             "weather_resolve",
-            "OpenWeather: geocode by place name or lat/lon.",
+            "OpenWeather geocoding for weather questions: resolve a place name or lat/lon into candidate locations.",
             WeatherResolveArgs,
             resolve,
         )
         self._register(
             "weather_current",
-            "OpenWeather current conditions for a resolved location.",
+            "OpenWeather current conditions for a place name or coordinates. Use for weather, not inventory availability.",
             WeatherCurrentArgs,
             current,
         )
         self._register(
             "weather_forecast",
-            "OpenWeather 5-day / 3-hour forecast for a location.",
+            "OpenWeather 5-day / 3-hour forecast for a place name or coordinates, with bounded forecast point count.",
             WeatherForecastArgs,
             forecast,
         )
         self._register(
             "weather_history",
-            "OpenWeather past-day conditions (if the plan allows the history endpoint).",
+            "OpenWeather historical conditions when the configured endpoint supports the requested date/window.",
             WeatherHistoryArgs,
             history,
         )
@@ -952,37 +1238,37 @@ class ToolRegistry:
 
         self._register(
             "currency_symbols",
-            "Exchange Rates API: supported currency codes.",
+            "Exchange Rates API supported currency codes. Use before FX lookups when the user gives unclear currency names.",
             CurrencySymbolsArgs,
             symbols,
         )
         self._register(
             "currency_latest",
-            "Latest FX rates: base + optional target symbols.",
+            "Latest FX rates for an optional base and comma-separated target symbols.",
             CurrencyLatestArgs,
             latest,
         )
         self._register(
             "currency_history",
-            "Historical rates for a single date.",
+            "Historical FX rates for one YYYY-MM-DD date, optional base, and optional comma-separated target symbols.",
             CurrencyHistoryArgs,
             history,
         )
         self._register(
             "currency_timeseries",
-            "Daily rate series between two dates.",
+            "Daily FX rate series between start_date and end_date for optional base/target symbols.",
             CurrencyTimeseriesArgs,
             timeseries,
         )
         self._register(
             "currency_convert",
-            "Amount conversion (optional as-of date).",
+            "Convert a positive amount from one currency to another, optionally as of a YYYY-MM-DD date.",
             CurrencyConvertArgs,
             convert,
         )
         self._register(
             "currency_fluctuation",
-            "Rate change over a date range (start vs end).",
+            "FX rate fluctuation over a YYYY-MM-DD date range, comparing start and end rates.",
             CurrencyFluctuationArgs,
             fluctuation,
         )
