@@ -5,6 +5,7 @@ import json
 import anyio
 import pytest
 
+from app.agent.engine import ValidatorEnvelope
 from app.config import Settings, UpstreamServiceError, build_container
 from app.schemas import AgentQueryRequest, ConversationTurn, MemoCache, MemoEntry, PlanStatus, PlanStep, ToolResult, ToolTrace
 
@@ -2465,3 +2466,83 @@ async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalo
         "stock.get_product",
     ]
     assert {step.args.get("sku") for step in plan.steps[1:]} == {"alto-black", "baxter-black"}
+
+
+@pytest.mark.anyio
+async def test_validate_and_record_prefers_full_stock_fallback_rows_over_partial_validator_rows() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        plan = PlanStatus(
+            goal="stock memo coverage",
+            intent_classes=["stock"],
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="inventory snapshot",
+                    tool="stock.inventory_snapshot",
+                    status="in-progress",
+                    args={"search": "chairs", "page": 1, "pageSize": 10, "departmentId": 3},
+                )
+            ],
+        )
+        step = plan.steps[0]
+        result = ToolResult(
+            tool="stock.inventory_snapshot",
+            data={
+                "rows": [
+                    {
+                        "product": "Alto Chair",
+                        "variant": "Alto Chair - Black",
+                        "sku": "alto-black",
+                        "size": "1 x 1 x 1 m",
+                        "stock": "Overall has 4 in stock.",
+                    },
+                    {
+                        "product": "Baxter Chair",
+                        "variant": "Baxter Chair - Black",
+                        "sku": "baxter-black",
+                        "size": "2 x 2 x 2 m",
+                        "stock": "Overall has 8 in stock.",
+                    },
+                ],
+                "evidence": [],
+                "coverage": {"isPartial": False, "limitations": []},
+            },
+            trace=ToolTrace(
+                thought="",
+                tool="stock.inventory_snapshot",
+                args=step.args,
+                status="ok",
+                result_count=2,
+            ),
+        )
+
+        async def fake_validator_envelope(**_kwargs):  # noqa: ANN001
+            return ValidatorEnvelope(
+                expected_rows=2,
+                actual_rows=2,
+                findings=[],
+                ambiguity=[],
+                missing_statistics=[],
+                confidence=0.9,
+                normalized_rows=[{"product": "Alto Chair", "variant": "Alto Chair - Black", "sku": "alto-black"}],
+                normalized_evidence=[],
+                aggregates={},
+            )
+
+        container.agent_engine._validator_envelope = fake_validator_envelope  # type: ignore[method-assign]
+        session_state, _ = await container.session_store.get_state("engine-stock-fallback")
+        validation, memo_entry, _ = await container.agent_engine.validate_and_record(
+            session_state=session_state,
+            plan_status=plan,
+            step=step,
+            tool_name="stock.inventory_snapshot",
+            tool_args=step.args,
+            result=result,
+        )
+    finally:
+        await container.close()
+
+    assert validation.actual_rows == 2
+    assert len(memo_entry.rows) == 2
+    assert {row["sku"] for row in memo_entry.rows} == {"alto-black", "baxter-black"}

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlencode
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Receive, Scope, Send
@@ -212,6 +213,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=resolved_settings.server_version,
         lifespan=lifespan,
     )
+
+    if resolved_settings.parsed_mcp_allowed_origins:
+        # Motivation vs Logic: browser-based MCP clients like Claude.ai must
+        # read discovery, OAuth, and 401 challenge responses cross-origin. We
+        # keep CORS narrowly scoped to the configured allowlist instead of
+        # opening the whole app.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=resolved_settings.parsed_mcp_allowed_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["*"],
+            expose_headers=["WWW-Authenticate"],
+        )
 
     mcp_manager = build_streamable_mcp_manager(resolved_settings)
     mcp_transport_app = McpTransportASGI(mcp_manager, resolved_settings)

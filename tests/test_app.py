@@ -157,6 +157,32 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
     assert token.json()["token_type"] == "Bearer"
 
 
+def test_mcp_browser_origins_receive_cors_headers() -> None:
+    with build_mcp_auth_client() as client:
+        protected = client.get(
+            "/.well-known/oauth-protected-resource",
+            headers={"Origin": "https://claude.ai"},
+        )
+        challenge = client.get(
+            "/mcp",
+            headers={"Origin": "https://claude.ai"},
+        )
+        preflight = client.options(
+            "/mcp",
+            headers={
+                "Origin": "https://claude.ai",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization, content-type",
+            },
+        )
+
+    assert protected.headers["access-control-allow-origin"] == "https://claude.ai"
+    assert challenge.headers["access-control-allow-origin"] == "https://claude.ai"
+    assert challenge.headers["access-control-expose-headers"] == "WWW-Authenticate"
+    assert preflight.headers["access-control-allow-origin"] == "https://claude.ai"
+    assert "authorization" in preflight.headers["access-control-allow-headers"].lower()
+
+
 def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     settings = Settings(
         local_harmonise=True,

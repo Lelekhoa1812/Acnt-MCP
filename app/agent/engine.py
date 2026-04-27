@@ -161,7 +161,21 @@ class AgentEngine:
         retrieval_started_at = perf_counter()
         for _ in range(self.settings.agent_max_steps):
             if self._all_plan_steps_done(plan_status):
-                if clarification is None and replan_rounds_used < self.settings.agent_replan_max_rounds:
+                # Root Cause vs Logic: once a stock-only turn already has a
+                # complete memo/snapshot path, the autonomous replan pass adds
+                # latency without improving coverage and can perturb otherwise
+                # stable answers. We skip that extra pass when the completed
+                # plan can already be rendered directly from grounded stock rows.
+                requested_domains = self._requested_domains(plan_status)
+                has_stock_snapshot_answer = self._can_use_stock_snapshot_fast_path(plan_status) and bool(
+                    self._memo_stock_rows(session_state.memo_cache)
+                )
+                if (
+                    clarification is None
+                    and replan_rounds_used < self.settings.agent_replan_max_rounds
+                    and requested_domains != {"stock"}
+                    and not has_stock_snapshot_answer
+                ):
                     replan_note = await self._append_autonomous_replan_steps(
                         request_message=request.message,
                         plan_status=plan_status,
@@ -843,8 +857,20 @@ class AgentEngine:
             confidence=validator.confidence,
         )
 
-        normalized_rows = validator.normalized_rows or self._fallback_rows(result.data)
-        normalized_evidence = validator.normalized_evidence or self._fallback_evidence(result.data)
+        fallback_rows = self._fallback_rows(result.data)
+        fallback_evidence = self._fallback_evidence(result.data)
+        # Root Cause vs Logic: the validator samples large stock payloads to fit
+        # the token budget, so trusting its partial normalized_rows can drop
+        # later chairs from the memo and from the final inventory table. Stock
+        # results therefore prefer the full deterministic fallback rows/evidence.
+        if tool_name.startswith("stock.") and fallback_rows:
+            normalized_rows = fallback_rows
+        else:
+            normalized_rows = validator.normalized_rows or fallback_rows
+        if tool_name.startswith("stock.") and fallback_evidence:
+            normalized_evidence = fallback_evidence
+        else:
+            normalized_evidence = validator.normalized_evidence or fallback_evidence
         subject_provenance = self._subject_provenance(normalized_rows, normalized_evidence, tool_args)
 
         memo_entry = MemoEntry(
