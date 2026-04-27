@@ -302,6 +302,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _oauth_authorization_server_metadata(base_url, resolved_settings)
 
     @app.post("/oauth/register")
+    @app.post("/register")
     async def oauth_register(request: Request) -> JSONResponse:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
@@ -328,6 +329,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.get("/oauth/authorize")
+    @app.get("/authorize")
     async def oauth_authorize(request: Request) -> Response:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
@@ -360,6 +362,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(f"{redirect_uri}?{urlencode(redirect_params)}", status_code=302)
 
     @app.post("/oauth/token")
+    @app.post("/token")
     async def oauth_token(request: Request) -> JSONResponse:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})

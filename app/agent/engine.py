@@ -1423,13 +1423,12 @@ class AgentEngine:
             return None
         if completed_step.name == "recursive detail retrieval":
             return None
-        if any(
-            step.status != "done" and step.tool in {"stock.get_product", "stock.extract_variant_evidence"}
-            for step in plan_status.steps
-        ):
-            return None
-        if any(step.status != "done" and step.name == "recursive detail retrieval" for step in plan_status.steps):
-            return None
+
+        # Root Cause vs Logic: the old global "any pending detail step" guard
+        # stopped later catalogue hits from scheduling their own detail fetches,
+        # so multi-item searches could only enrich the first matched product.
+        # We now dedupe exact lookup args inside the fan-out loop and allow
+        # distinct products to keep adding follow-up steps.
 
         follow_up_steps = self._derive_follow_up_steps(
             result.data,

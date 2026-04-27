@@ -2382,3 +2382,86 @@ async def test_agent_engine_derives_variant_follow_up_steps_for_all_unique_varia
     assert len(steps) == 2
     assert all(tool_name == "stock.extract_variant_evidence" for tool_name, _ in steps)
     assert {args.get("sku") for _, args in steps} == {"alto-black", "alto-white"}
+
+
+@pytest.mark.anyio
+async def test_agent_engine_appends_recursive_follow_up_for_each_distinct_catalogue_hit() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        plan = PlanStatus(
+            goal="test multi-item follow-up fan-out",
+            intent_classes=["stock"],
+            steps=[
+                PlanStep(
+                    id=1,
+                    name="catalogue search",
+                    tool="stock.search_catalogue",
+                    status="done",
+                    args={"search": "chair", "page": 1, "pageSize": 10, "departmentId": 3},
+                )
+            ],
+        )
+        search_step = plan.steps[0]
+
+        alto_result = ToolResult(
+            tool="stock.search_catalogue",
+            data={
+                "items": [
+                    {
+                        "id": "alto-id",
+                        "name": "Alto Chair",
+                        "variants": [{"id": "alto-var", "sku": "alto-black"}],
+                    }
+                ]
+            },
+            trace=ToolTrace(
+                thought="",
+                tool="stock.search_catalogue",
+                args=search_step.args,
+                status="ok",
+                result_count=1,
+            ),
+        )
+        baxter_result = ToolResult(
+            tool="stock.search_catalogue",
+            data={
+                "items": [
+                    {
+                        "id": "baxter-id",
+                        "name": "Baxter Chair",
+                        "variants": [{"id": "baxter-var", "sku": "baxter-black"}],
+                    }
+                ]
+            },
+            trace=ToolTrace(
+                thought="",
+                tool="stock.search_catalogue",
+                args=search_step.args,
+                status="ok",
+                result_count=1,
+            ),
+        )
+
+        first_note = container.agent_engine._append_recursive_follow_up(
+            request_message="List Alto and Baxter chairs",
+            plan_status=plan,
+            completed_step=search_step,
+            result=alto_result,
+        )
+        second_note = container.agent_engine._append_recursive_follow_up(
+            request_message="List Alto and Baxter chairs",
+            plan_status=plan,
+            completed_step=search_step,
+            result=baxter_result,
+        )
+    finally:
+        await container.close()
+
+    assert first_note is not None
+    assert second_note is not None
+    assert [step.tool for step in plan.steps] == [
+        "stock.search_catalogue",
+        "stock.get_product",
+        "stock.get_product",
+    ]
+    assert {step.args.get("sku") for step in plan.steps[1:]} == {"alto-black", "baxter-black"}

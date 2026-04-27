@@ -203,6 +203,35 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     assert token.json()["access_token"] == "test-mcp-token"
 
 
+def test_mcp_oauth_endpoint_aliases_remain_supported() -> None:
+    with build_mcp_auth_client() as client:
+        registered = client.post("/register", json={"client_name": "pytest"})
+        client_payload = registered.json()
+        authorized = client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": query["code"][0],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+
+    assert registered.status_code == 201
+    assert authorized.status_code == 302
+    assert token.status_code == 200
+    assert token.json()["access_token"] == "test-mcp-token"
+
+
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     with build_client() as client:
         response = client.get("/api/v1/tools")
