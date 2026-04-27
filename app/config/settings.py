@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     # process memory (never Redis) to preserve follow-up context while developing.
     local_chat_memory_enabled: bool = Field(True, alias="HTH_LOCAL_CHAT_MEMORY_ENABLED")
     local_chat_memory_turns: int = Field(6, ge=1, alias="HTH_LOCAL_CHAT_MEMORY_TURNS")
-    agent_max_steps: int = Field(8, alias="HTH_AGENT_MAX_STEPS")
+    # Root Cause vs Logic: complex stock/variant requests often need more than
+    # a handful of tool calls before the plan completes, so the default loop
+    # budget should match the documented sample config instead of the previous
+    # overly tight value that frequently triggered the max-step guard.
+    agent_max_steps: int = Field(15, alias="HTH_AGENT_MAX_STEPS")
     # Motivation vs Logic: recursive detail follow-up should be policy-driven so
     # runtime fan-out is not hard-coded in engine logic.
     agent_recursive_follow_up_max_products: int = Field(
