@@ -253,4 +253,3 @@ FURNITURE Example 6:
 User: Tell me if the Spencer chair is still available.
 Assistant: treat as another single-product availability request without variant names; use stock_inventory_snapshot so each resolved variant's stock is captured, and mention every variant's availability in the final answer before finishing.
 """.strip()
-# Motivation vs Logic: this example set now models explicit per-variant coverage when availability is requested without variant names.
