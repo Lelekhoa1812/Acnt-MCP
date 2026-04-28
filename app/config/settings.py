@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
     mcp_oauth_enabled: bool = Field(False, alias="HTH_MCP_OAUTH_ENABLED")
     mcp_oauth_token_ttl_seconds: int = Field(3600, ge=60, alias="HTH_MCP_OAUTH_TOKEN_TTL_SECONDS")
+    mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
+        "chatgpt.com,claude.ai,claude.com",
+        alias="AUTO_TRUSTED_DOMAINS",
+    )
 
     @property
     def harmonise_timeout_seconds(self) -> float | None:
@@ -304,6 +308,10 @@ class Settings(BaseSettings):
     @property
     def parsed_mcp_allowed_origins(self) -> list[str]:
         return self._split_csv(self.mcp_allowed_origins)
+
+    @property
+    def parsed_mcp_oauth_auto_trusted_redirect_domains(self) -> list[str]:
+        return [domain.lower() for domain in self._split_csv(self.mcp_oauth_auto_trusted_redirect_domains)]
 
     @property
     def mcp_browser_oauth_enabled(self) -> bool:

@@ -6,7 +6,7 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,6 +102,47 @@ def _code_challenge_matches(code_challenge: str | None, method: str | None, veri
     digest = hashlib.sha256(verifier.encode()).digest()
     encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
     return secrets.compare_digest(code_challenge, encoded)
+
+
+def _redirect_host_from_uri(uri: str | None) -> str | None:
+    if not uri:
+        return None
+    parsed = urlparse(uri)
+    return parsed.hostname.lower() if parsed.hostname else None
+
+
+def _auto_register_oauth_client(
+    request: Request,
+    client_id: str,
+    redirect_uri: str | None,
+    settings: Settings,
+    logger: logging.Logger,
+) -> bool:
+    allowed_domains = settings.parsed_mcp_oauth_auto_trusted_redirect_domains
+    host = _redirect_host_from_uri(redirect_uri)
+    if not host or not allowed_domains:
+        return False
+
+    for domain in allowed_domains:
+        if host == domain or host.endswith(f".{domain}"):
+            # Motivation vs Logic: Claude.ai/ChatGPT connectors use variable redirect URIs,
+            # so we auto-register any client_id that comes from those hosts instead of
+            # forcing a manual POST before `/oauth/authorize`.
+            request.app.state.oauth_clients[client_id] = {
+                "client_secret": secrets.token_urlsafe(32),
+                "client_name": f"auto-{host}",
+                "redirect_uris": [redirect_uri] if redirect_uri else [],
+                "auto_registered": True,
+            }
+            logger.info(
+                "auto_registered_oauth_client client_id=%s redirect_uri=%s trusted_host=%s",
+                client_id,
+                redirect_uri,
+                host,
+            )
+            return True
+
+    return False
 
 
 class McpTransportASGI:
@@ -374,7 +415,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if response_type != "code" or not client_id or not redirect_uri:
             return JSONResponse(status_code=400, content={"error": "invalid_request"})
         if client_id not in request.app.state.oauth_clients:
-            return JSONResponse(status_code=400, content={"error": "invalid_client"})
+            if not _auto_register_oauth_client(
+                request,
+                client_id,
+                redirect_uri,
+                resolved_settings,
+                logger,
+            ):
+                return JSONResponse(status_code=400, content={"error": "invalid_client"})
 
         # Motivation vs Logic: Claude.ai web connectors require a standards-shaped
         # OAuth handshake before they will send a bearer token to remote MCP.

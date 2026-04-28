@@ -199,7 +199,7 @@ The repo includes a local `.mcp.json` example for process-based MCP clients (Cla
 
 Claude.ai requires a public HTTPS MCP endpoint, so the stdio server is not directly attachable. Follow `docs/phase2/mcp.md` for Azure deployments that expose `/mcp`, trust forwarded HTTPS headers, and enable the OAuth bridge for browser connectors.
 
-For Claude.ai browser connectors, configure `HTH_MCP_BEARER_TOKEN` and keep `HTH_MCP_OAUTH_ENABLED=true` in your deployment settings. The app now keeps the OAuth bridge available whenever a bearer token is present, and it advertises `client_id_metadata_document_supported=true` so web clients can use the newer registration path.
+For Claude.ai browser connectors, configure `HTH_MCP_BEARER_TOKEN` and keep `HTH_MCP_OAUTH_ENABLED=true` in your deployment settings. The app now keeps the OAuth bridge available whenever a bearer token is present, and it advertises `client_id_metadata_document_supported=true` so web clients can use the newer registration path. When you trust public connectors from ChatGPT or Claude, also set `AUTO_TRUSTED_DOMAINS` (default `chatgpt.com,claude.ai,claude.com`) so those hosts auto-register without calling `/oauth/register` manually.
 
 ## Tests
 
