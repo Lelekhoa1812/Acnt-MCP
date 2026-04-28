@@ -347,11 +347,18 @@ class ToolTrace(BaseModel):
     normalization_notes: list[str] = Field(default_factory=list)
 
 
+class McpImageContent(BaseModel):
+    type: Literal["image"] = "image"
+    data: str
+    mimeType: str
+
+
 class ToolResult(BaseModel):
     tool: str
     status: str = "ok"
     data: Any
     llm_content: Any | None = Field(default=None, exclude=True)
+    mcp_content: list[McpImageContent] = Field(default_factory=list, exclude=True)
     normalization_notes: list[str] = Field(default_factory=list)
     trace: ToolTrace | None = None
     plan_status: PlanStatus | None = None
@@ -587,6 +594,61 @@ class StockRankVariantsByStockArgs(BaseModel):
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
     pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich before ranking.")
+
+
+class ProductAttributeFilter(BaseModel):
+    field: Literal["variationOption", "variantName", "productName", "salesNote"] = Field(
+        description="Structured product attribute supplied by the LLM to filter against."
+    )
+    value: str = Field(min_length=1, description="Prompt-derived attribute value to match, such as a colour or style.")
+    matchMode: Literal["contains", "equals"] = Field(
+        "contains",
+        description="Use contains for descriptive attributes and equals for exact structured values.",
+    )
+
+
+class ProductIntelligenceRankArgs(BaseModel):
+    search: str | None = Field(
+        None,
+        description="Prompt-supplied family, category, style, or product phrase. Omit only for deliberately broad scoped ranking.",
+    )
+    departmentId: int | None = Field(None, description="Department filter from stock_scope when known.")
+    categoryId: str | None = Field(None, description="Category UUID from stock_scope when known.")
+    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
+        "overall",
+        description="State or overall stock field for stock/hirable metrics.",
+    )
+    metric: Literal[
+        "stock",
+        "hirable",
+        "length",
+        "width",
+        "height",
+        "area",
+        "volume",
+        "cost",
+        "replacementValue",
+        "generalRate",
+        "expoRate",
+        "hireRate",
+    ] = Field(
+        "stock",
+        description="Ranking metric: stock/hirable availability, physical size, derived area/volume, or pricing.",
+    )
+    groupBy: Literal["product", "category", "department", "variant"] = Field(
+        "product",
+        description="Hierarchy grain for ranking: product family, category, department, or SKU/variant.",
+    )
+    direction: Literal["most", "least"] = Field("most", description="Rank highest values first with most, or lowest first.")
+    attributeFilters: list[ProductAttributeFilter] = Field(
+        default_factory=list,
+        description="LLM-supplied aesthetic/style filters; values are not hard-coded by the tool.",
+    )
+    limit: int = Field(10, ge=1, le=50, description="Maximum ranked groups to return.")
+    page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
+    pageSize: int = Field(100, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
+    includeImages: bool = Field(False, description="When true, attach MCP-native image content for top ranked rows when available.")
+    maxImages: int = Field(1, ge=0, le=5, description="Maximum MCP-native image blocks to attach.")
 
 
 class StockCountItemsArgs(BaseModel):

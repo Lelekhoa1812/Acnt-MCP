@@ -105,6 +105,7 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "stock_scope" in tool_names
     assert "stock_snapshot" in tool_names
     assert "stock_aggregate" in tool_names
+    assert "product_intelligence_rank" in tool_names
     assert "stock_rank_variants" in tool_names
     assert "stock_disambiguate" in tool_names
     assert "weather_current" in tool_names
@@ -127,6 +128,11 @@ async def test_mcp_initialize_and_list_tools() -> None:
     aggregate = next(tool for tool in tools.tools if tool.name == "stock_aggregate")
     assert "Grouped stock" in aggregate.description
     assert "not single-variant" in aggregate.description
+
+    intelligence = next(tool for tool in tools.tools if tool.name == "product_intelligence_rank")
+    assert "physical dimensions" in intelligence.description
+    assert "attribute" in intelligence.description
+    assert "metric" in intelligence.inputSchema["properties"]
 
     rank_tool = next(tool for tool in tools.tools if tool.name == "stock_rank_variants")
     assert "VIC" in rank_tool.description

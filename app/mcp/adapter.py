@@ -88,8 +88,19 @@ class McpToolAdapter:
         if result.validation is not None:
             envelope["validation"] = result.validation.model_dump(mode="json")
 
+        content: list[
+            types.TextContent
+            | types.ImageContent
+            | types.AudioContent
+            | types.ResourceLink
+            | types.EmbeddedResource
+        ] = [types.TextContent(type="text", text=json.dumps(envelope, ensure_ascii=False, sort_keys=True))]
+        content.extend(
+            types.ImageContent(type=item.type, data=item.data, mimeType=item.mimeType)
+            for item in result.mcp_content
+        )
         return types.CallToolResult(
-            content=[types.TextContent(type="text", text=json.dumps(envelope, ensure_ascii=False, sort_keys=True))],
+            content=content,
             structuredContent=envelope,
         )
 

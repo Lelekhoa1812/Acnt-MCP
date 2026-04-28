@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import base64
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.tool.currency import (
@@ -17,6 +19,7 @@ from app.tool.currency import (
     CurrencyTimeseriesArgs,
 )
 from app.config import ParameterMappingError, UnsupportedToolError
+from app.tool.stock.intelligence import filter_evidence_by_attributes, rank_product_intelligence
 from app.tool.stock.media import build_harmonise_image_url
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
@@ -24,7 +27,9 @@ from app.tool.news.formatter import format_news_articles, format_news_sources
 from app.resolver import ResolverService
 from app.schemas import (
     InventorySnapshotResponse,
+    McpImageContent,
     NormalizedEvidence,
+    ProductIntelligenceRankArgs,
     ProductListItemDto,
     ProductListItemDtoPagedResponse,
     ResolverDisambiguateCandidatesArgs,
@@ -368,6 +373,76 @@ class ToolRegistry:
                 data=payload,
                 llm_content=payload,
                 normalization_notes=notes + data.coverage.limitations,
+                trace=trace,
+            )
+
+        async def product_intelligence_rank(
+            validated: ProductIntelligenceRankArgs, _: str | None, thought: str
+        ) -> ToolResult:
+            snapshot_args = StockInventorySnapshotArgs(
+                page=validated.page,
+                pageSize=validated.pageSize,
+                search=validated.search,
+                departmentId=validated.departmentId,
+                categoryId=validated.categoryId,
+            )
+            data, cache_status, notes = await self.inventory_service.inventory_snapshot(snapshot_args)
+            filtered_evidence, filter_notes = filter_evidence_by_attributes(data.evidence, validated.attributeFilters)
+            ranked_rows = rank_product_intelligence(
+                filtered_evidence,
+                metric=validated.metric,
+                region=validated.region,
+                group_by=validated.groupBy,
+                direction=validated.direction,
+                limit=validated.limit,
+            )
+            image_content, image_notes = await self._build_ranked_image_content(
+                rows=ranked_rows,
+                include_images=validated.includeImages,
+                max_images=validated.maxImages,
+            )
+            limitations = list(data.coverage.limitations) + filter_notes + image_notes
+            if not ranked_rows:
+                limitations.append(
+                    "No ranked product intelligence rows were produced. Try a narrower product/category phrase, "
+                    "or call stock_scope first to pass a departmentId/categoryId filter."
+                )
+            payload = {
+                "query": validated.search,
+                "region": validated.region,
+                "metric": validated.metric,
+                "groupBy": validated.groupBy,
+                "direction": validated.direction,
+                "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
+                "rows": ranked_rows,
+                "coverage": {
+                    **data.coverage.model_dump(mode="json"),
+                    "filteredVariants": len(filtered_evidence),
+                    "limitations": limitations,
+                    "isPartial": data.coverage.isPartial or bool(limitations),
+                },
+                "guidance": (
+                    "Rows are ranked from Harmonise normalized evidence. Stock and hirable metrics are summed across "
+                    "the requested hierarchy; physical and financial metrics rank by the best contributing variant for "
+                    "the requested direction."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="product_intelligence_rank",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> inventory_snapshot.evidence[*] -> product intelligence ranking",
+                result_count=len(ranked_rows),
+                normalization_notes=notes + limitations,
+            )
+            return ToolResult(
+                tool="product_intelligence_rank",
+                data=payload,
+                llm_content=payload,
+                mcp_content=image_content,
+                normalization_notes=notes + limitations,
                 trace=trace,
             )
 
@@ -780,10 +855,21 @@ class ToolRegistry:
             (
                 "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
                 "type, product family, category, or region; product grouping answers broad wording like all inventory "
-                "or chair type. This returns summed groups, not single-variant rankings."
+                "or chair type. This returns summed groups, not single-variant rankings. Use product_intelligence_rank "
+                "when the question also needs dimensions, pricing, attribute/style filters, department grouping, or images."
             ),
             StockAggregateArgs,
             aggregate_stock,
+        )
+        self._register(
+            "product_intelligence_rank",
+            (
+                "Rank and filter Harmonise products or variants by stock, hirable availability, physical dimensions, "
+                "derived area/volume, replacement cost, hire rates, hierarchy, state, and LLM-supplied aesthetic "
+                "attributes. Use for complex stock/product intelligence questions and product image requests."
+            ),
+            ProductIntelligenceRankArgs,
+            product_intelligence_rank,
         )
         self._register(
             "stock_get_product_family_inventory",
@@ -799,7 +885,8 @@ class ToolRegistry:
             (
                 "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for best/worst "
                 "availability questions only when the user asks which variant or SKU has the most or least stock. "
-                "Use stock_aggregate for type/family/category totals."
+                "Use stock_aggregate for type/family/category totals, and product_intelligence_rank for dimensions, "
+                "pricing, attribute filters, hierarchy, or images."
             ),
             StockRankVariantsByStockArgs,
             rank_variants_by_stock,
@@ -990,6 +1077,74 @@ class ToolRegistry:
             "salesNote": evidence.salesNote,
             "media": evidence.media.model_dump(mode="json"),
         }
+
+    async def _build_ranked_image_content(
+        self,
+        *,
+        rows: list[dict[str, Any]],
+        include_images: bool,
+        max_images: int,
+    ) -> tuple[list[McpImageContent], list[str]]:
+        if not include_images or max_images <= 0:
+            return [], []
+
+        image_urls: list[str] = []
+        for row in rows:
+            for variant in row.get("variants", []):
+                image_url = variant.get("media", {}).get("imageUrl")
+                if image_url and image_url not in image_urls:
+                    image_urls.append(image_url)
+                if len(image_urls) >= max_images:
+                    break
+            if len(image_urls) >= max_images:
+                break
+
+        image_content: list[McpImageContent] = []
+        notes: list[str] = []
+        for image_url in image_urls:
+            content, note = await self._fetch_mcp_image_content(image_url)
+            if content is not None:
+                image_content.append(content)
+            elif note:
+                notes.append(note)
+        return image_content, notes
+
+    async def _fetch_mcp_image_content(self, image_url: str) -> tuple[McpImageContent | None, str | None]:
+        # Motivation vs Logic: MCP clients can render protocol-native image blocks,
+        # while structured JSON still carries imageUrl as a fallback for hosts that
+        # do not fetch binary assets from tool responses.
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                response = await client.get(image_url)
+        except httpx.HTTPError as exc:
+            return None, f"Image could not be fetched for MCP rendering ({image_url}): {exc.__class__.__name__}."
+
+        if response.status_code >= 400:
+            return None, f"Image could not be fetched for MCP rendering ({image_url}): HTTP {response.status_code}."
+
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        mime_type = content_type if content_type.startswith("image/") else self._guess_image_mime_type(image_url)
+        if not mime_type:
+            return None, f"Image response did not include a supported image content type ({image_url})."
+
+        max_bytes = 5 * 1024 * 1024
+        if len(response.content) > max_bytes:
+            return None, f"Image was too large for inline MCP rendering ({image_url})."
+
+        encoded = base64.b64encode(response.content).decode("ascii")
+        return McpImageContent(data=encoded, mimeType=mime_type), None
+
+    def _guess_image_mime_type(self, image_url: str) -> str | None:
+        lowered = image_url.split("?", 1)[0].lower()
+        if lowered.endswith((".jpg", ".jpeg")):
+            return "image/jpeg"
+        if lowered.endswith(".png"):
+            return "image/png"
+        if lowered.endswith(".gif"):
+            return "image/gif"
+        if lowered.endswith(".webp"):
+            return "image/webp"
+        return None
 
     def _rank_snapshot_evidence(
         self,
