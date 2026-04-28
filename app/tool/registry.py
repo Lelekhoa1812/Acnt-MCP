@@ -30,11 +30,13 @@ from app.schemas import (
     ResolverDisambiguateCandidatesArgs,
     SessionToolArgs,
     StockCompareVariantsArgs,
+    StockCountItemsArgs,
     StockExtractVariantEvidenceArgs,
     StockGetCategoriesArgs,
     StockGetDepartmentsArgs,
     StockGetProductArgs,
     StockGetSupportedScopeArgs,
+    StockHirableByStateArgs,
     StockInventorySnapshotArgs,
     StockProductFamilyInventoryArgs,
     StockRankVariantsByStockArgs,
@@ -468,6 +470,134 @@ class ToolRegistry:
                 trace=trace,
             )
 
+        async def count_items(validated: StockCountItemsArgs, _: str | None, thought: str) -> ToolResult:
+            cat_args = StockSearchCatalogueArgs(
+                page=1,
+                pageSize=1,
+                search=validated.search,
+                departmentId=validated.departmentId,
+                categoryId=validated.categoryId,
+            )
+            data, cache_status, notes = await self.inventory_service.search_catalogue(cat_args)
+            result: dict[str, Any] = {
+                "product_count": data.totalCount,
+                "filters": {
+                    "search": validated.search,
+                    "departmentId": validated.departmentId,
+                    "categoryId": validated.categoryId,
+                },
+            }
+            if validated.countVariants and validated.search:
+                full_args = StockSearchCatalogueArgs(
+                    page=1,
+                    pageSize=10,
+                    search=validated.search,
+                    departmentId=validated.departmentId,
+                    categoryId=validated.categoryId,
+                )
+                full_data, full_cache_status, full_notes = await self.inventory_service.search_catalogue(full_args)
+                cache_status = self.inventory_service._combine_cache_statuses([cache_status, full_cache_status])
+                notes = notes + full_notes
+                matched = self._filter_products_for_query(full_data.items, validated.search)
+                if matched:
+                    result["variant_count"] = sum(len(p.variants) for p in matched)
+                    result["matched_product_names"] = [p.name for p in matched]
+                else:
+                    result["variant_count"] = None
+                    result["matched_product_names"] = []
+            result["guidance"] = (
+                "product_count is the total catalogue products matching the applied filters. "
+                "variant_count (present when countVariants=True and search is provided) is the "
+                "total SKU variants across matched product families."
+            )
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_count_items",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> products.totalCount",
+                result_count=data.totalCount,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="stock_count_items",
+                data=result,
+                llm_content=result,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def hirable_by_state(validated: StockHirableByStateArgs, _: str | None, thought: str) -> ToolResult:
+            family_args = StockProductFamilyInventoryArgs(
+                search=validated.search,
+                departmentId=validated.departmentId,
+                categoryId=validated.categoryId,
+                pageSize=validated.pageSize,
+            )
+            evidence_items, cache_status, notes, coverage = await collect_family_evidence(family_args)
+            target_states = validated.states or ["VIC", "NSW", "QLD"]
+            state_fields: dict[str, tuple[str, str]] = {
+                "VIC": ("vicStock", "vicHirable"),
+                "NSW": ("nswStock", "nswHirable"),
+                "QLD": ("qldStock", "qldHirable"),
+            }
+            state_summary: dict[str, Any] = {}
+            for state in target_states:
+                sf, hf = state_fields[state]
+                state_summary[state] = {
+                    "total_stock": sum((getattr(e.stock, sf) or 0) for e in evidence_items),
+                    "total_hirable": sum((getattr(e.stock, hf) or 0) for e in evidence_items),
+                    "variants_with_stock": sum(1 for e in evidence_items if (getattr(e.stock, sf) or 0) > 0),
+                }
+            variant_breakdown: list[dict[str, Any]] = []
+            for ev in evidence_items:
+                row: dict[str, Any] = {
+                    "product": ev.product_name,
+                    "variant": ev.variant_name,
+                    "sku": ev.sku,
+                    "variationOptions": ev.variation_options,
+                    "isActive": ev.isActive,
+                    "overall": {"stock": ev.stock.totalStock, "hirable": ev.stock.totalHirable},
+                }
+                for state in target_states:
+                    sf, hf = state_fields[state]
+                    row[state] = {"stock": getattr(ev.stock, sf), "hirable": getattr(ev.stock, hf)}
+                variant_breakdown.append(row)
+            payload: dict[str, Any] = {
+                "query": validated.search,
+                "states_queried": target_states,
+                "state_summary": state_summary,
+                "overall": {
+                    "total_stock": sum((e.stock.totalStock or 0) for e in evidence_items),
+                    "total_hirable": sum((e.stock.totalHirable or 0) for e in evidence_items),
+                },
+                "variant_breakdown": variant_breakdown,
+                "coverage": coverage,
+                "guidance": (
+                    "state_summary aggregates stock and hirable across every resolved variant per state. "
+                    "variant_breakdown shows per-SKU numbers for each state. "
+                    "Use this to answer state-level availability questions for a named product or family."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_hirable_by_state",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> catalogue variants -> variant evidence[*] -> state stock fields",
+                result_count=len(evidence_items),
+                normalization_notes=notes + coverage["limitations"],
+            )
+            return ToolResult(
+                tool="stock_hirable_by_state",
+                data=payload,
+                llm_content=payload,
+                normalization_notes=notes + coverage["limitations"],
+                trace=trace,
+            )
+
         if self.inventory_service.settings.local_harmonise:
             # Motivation vs Logic: the cloud Harmonise contract currently exposes
             # product endpoints only, so metadata tools are local-dev only.
@@ -495,9 +625,9 @@ class ToolRegistry:
         self._register(
             "stock_get_supported_scope",
             (
-                "Supported stock scope and filter IDs. Use for questions like 'how many departments/categories do "
-                "we support?', 'which categoryId is chairs?', or before filtering furniture inventory. Returns the "
-                "canonical supported Furniture department and mapped category routes."
+                "Supported stock scope and filter IDs. Use for questions about how many departments or categories are "
+                "supported, which categoryId maps to a given category, or before filtering inventory by department or "
+                "category. Returns the canonical supported departments and mapped category routes with their IDs."
             ),
             StockGetSupportedScopeArgs,
             get_supported_scope,
@@ -564,8 +694,8 @@ class ToolRegistry:
         self._register(
             "stock_get_product_family_inventory",
             (
-                "Named product/family availability across all resolved variants. Use for questions like 'Alto chair "
-                "stock availability' when no SKU/variant is specified; returns all variant SKUs with stock, dimensions, "
+                "Named product/family availability across all resolved variants. Use when the user asks about a named "
+                "product or family and no SKU/variant is specified; returns all variant SKUs with stock, dimensions, "
                 "pricing/media, and coverage notes."
             ),
             StockProductFamilyInventoryArgs,
@@ -574,11 +704,32 @@ class ToolRegistry:
         self._register(
             "stock_rank_variants_by_stock",
             (
-                "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for 'which "
-                "Charlie chair variant is most in stock in Victoria?' and similar best/worst availability questions."
+                "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for best/worst "
+                "availability questions across regions, such as which variant of a product has the most or least stock "
+                "in a given state."
             ),
             StockRankVariantsByStockArgs,
             rank_variants_by_stock,
+        )
+        self._register(
+            "stock_count_items",
+            (
+                "Count products in a department or category, or count variants for a named product family. Use when "
+                "the user asks how many products are in a category, how many items a department has, or how many "
+                "variants a given product offers. Set countVariants=True with a search term to get variant count."
+            ),
+            StockCountItemsArgs,
+            count_items,
+        )
+        self._register(
+            "stock_hirable_by_state",
+            (
+                "Per-state hirable availability for a named product family. Aggregates and breaks out stock and "
+                "hirable counts by state across all resolved variants. Use when the user asks how many of a product "
+                "are hirable or available in a specific state, or wants a cross-state availability comparison."
+            ),
+            StockHirableByStateArgs,
+            hirable_by_state,
         )
 
     def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:

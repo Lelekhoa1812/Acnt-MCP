@@ -2,6 +2,12 @@ node_modules
 dist
 .env
 
+.github
+.vscode
+.venv
+.claude
+.cursor
+
 .pytest_cache/*
 __pycache__
 __pycache__/*

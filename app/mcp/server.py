@@ -18,14 +18,13 @@ from app.mcp.adapter import McpToolAdapter
 MCP_SERVER_INSTRUCTIONS = (
     "Protocol-compliant MCP tool server for Harmonise inventory intelligence. "
     "For supported stock scope, department counts, category counts, and categoryId routing, call "
-    "stock_get_supported_scope. For named product-family availability such as 'Alto chair stock', retrieve "
-    "all variants with stock_get_product_family_inventory or stock_inventory_snapshot; do not answer from only "
-    "the first SKU. For regional best/worst stock questions, use stock_rank_variants_by_stock with region VIC, "
-    "NSW, QLD, or overall. Use stock_extract_variant_evidence only for one exact SKU/variant, and "
-    "stock_compare_variants only for explicit 2-20 variant side-by-side comparisons. Weather, news, and currency "
-    "tools are auxiliary and should not be used for inventory questions. Tool responses may include plan_status, "
-    "memo_update, validation, and answer_ready; use them for grounding but do not present internal metadata as "
-    "user-facing prose."
+    "stock_get_supported_scope. For named product-family availability, retrieve all variants with "
+    "stock_get_product_family_inventory or stock_inventory_snapshot; do not answer from only the first SKU. "
+    "For regional best/worst stock questions, use stock_rank_variants_by_stock with region VIC, NSW, QLD, or "
+    "overall. Use stock_extract_variant_evidence only for one exact SKU/variant, and stock_compare_variants "
+    "only for explicit 2-20 variant side-by-side comparisons. Weather, news, and currency tools are auxiliary "
+    "and should not be used for inventory questions. Tool responses may include plan_status, memo_update, "
+    "validation, and answer_ready; use them for grounding but do not present internal metadata as user-facing prose."
 )
 
 

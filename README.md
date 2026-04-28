@@ -92,17 +92,141 @@ Contract boundary: the JSON schemas in `app/schemas.py` and the tools defined in
 
 ## MCP tool catalog
 
-Claude.ai and other MCP clients should treat the stock tools as a curated workflow:
+Claude.ai and other MCP clients should treat the tool registry as a curated, policy-guided workflow. Every entry below is implemented in `app/tool/registry.py` and exposed via the stdio or REST companions. Use the visible tools for normal comprehension flows and rely on the hidden metadata/administrative helpers only when explicitly requested. Each tool’s schema is available from the registry via `/api/v1/tools`, and the same payloads power MCP `list_tools` + `call_tool`.
 
-- `stock_get_supported_scope`: supported stock department/category counts, mapped furniture category routes, and filter IDs.
-- `stock_search_catalogue`: product discovery with `search`, `departmentId`, `categoryId`, and paging.
-- `stock_get_product`: exact product-family or SKU detail after an id/SKU is known.
-- `stock_get_product_family_inventory`: named product-family availability across every resolved variant/SKU.
-- `stock_inventory_snapshot`: answer-ready stock/spec rows for broader catalogue, category, or multi-variant questions.
-- `stock_rank_variants_by_stock`: rank variants by `VIC`, `NSW`, `QLD`, or `overall` stock.
-- `stock_extract_variant_evidence`: one exact variant only.
-- `stock_compare_variants`: explicit 2-20 variant side-by-side comparison.
-- `resolver_disambiguate_candidates`: use only when product search is genuinely ambiguous.
+### Stock tools
+
+This category surfaces Harmonise-backed inventory discovery, product/family detail, and scoped insights. Inputs generally accept `search`, `departmentId`, `categoryId`, and paging/filter hints, and responses include normalized inventory evidence plus optional coverage/guidance metadata (`app/tool/registry.py`, lines 186‑733).
+
+- **`stock_get_supported_scope`**
+  - **Purpose:** Returns the supported departments, category routes, and filter IDs so other stock tools know which scopes are valid. It also embeds usage guidance (`furniture_capability_summary`).
+  - **Arguments:** None (aside from session context) but the response includes `departmentId`, `categoryId`, `mapped_furniture_category_count`, and routing hints.
+  - **Example input:** `{}`.
+  - **Example output:** 
+    ```json
+    {
+      "departments": [...],
+      "category_routes": [...],
+      "filters": {...},
+      "guidance": {
+        "purpose": "...",
+        "live_inventory": "..."
+      }
+    }
+    ```
+
+- **`stock_search_catalogue`**
+  - **Purpose:** Finds families/products matching keywords, departments, categories, and paging filters. Good starting point for ambiguous requests.
+  - **Arguments:** `search`, `departmentId`, `categoryId`, `page`, `pageSize`.
+  - **Example input:** `{"search": "white gloss dance floor", "page": 1, "pageSize": 5}`.
+  - **Example output:** Catalog page with `items` (each has `id`, `name`, `departmentId`, and variants), `page`, `pageSize`, `totalCount`, `totalPages`.
+
+- **`stock_get_product`**
+  - **Purpose:** Once an exact SKU or product ID is known, this returns the family plus full variant list (dimensions, pricing`, `stock` per state).
+  - **Arguments:** `id` or `sku`.
+  - **Example input:** `{"sku": "ALTO-CH-001"}`.
+  - **Example output:** Product detail similar to the search result but with every variant’s `details` (height, width, stock, image URLs) and `llm_content` tailored for summaries.
+
+- **`stock_get_product_family_inventory`**
+  - **Purpose:** Aggregates all resolved variants for a named family/search term into one payload that includes rows, evidence, coverage, and guidance for answering family-level availability questions.
+  - **Arguments:** `search`, optional `departmentId`, `categoryId`, plus paging (`pageSize`) (`collect_family_evidence` helper enriches each variant).
+  - **Example input:** `{"search": "Alto chair", "departmentId": 3}`.
+  - **Example output:** Rows with SKU-level stock plus `coverage` (`limitations`, `matchedProducts`, `enrichedVariants`) and guidance telling the assistant to treat every row as part of the family answer.
+
+- **`stock_inventory_snapshot`**
+  - **Purpose:** Produces answer-ready snapshot rows for broad catalogue/category inquiries, including `knownSpecs`, `stock`, and `attributeEvidence`.
+  - **Arguments:** `search`, `departmentId`, `categoryId`, etc., with controls for `includeKnownSpecs`.
+  - **Example output:** `{"rows": [...], "coverage": {...}, "evidence": [...]}` where `rows` already include `stock`, `knownSpecs`, and `attributeEvidence` for downstream summarization.
+
+- **`stock_rank_variants_by_stock`**
+  - **Purpose:** Ranks resolved variants by stock in `VIC`, `NSW`, `QLD`, or `overall` depending on `region`/`direction`.
+  - **Arguments:** `search`, `region`, `direction`, optional department/category-based filters.
+  - **Example input:** `{"search": "Charlie chair", "region": "VIC", "direction": "most"}`.
+  - **Example output:** Ranked rows (`rank`, `product`, `variant`, `stock`, `totalStock`, `totalHirable`, dimensions/pricing/media, coverage/guidance).
+
+- **`stock_extract_variant_evidence`**
+  - **Purpose:** Returns normalized evidence for a single variant/SKU (including provenance path) and is only used when the user names a SKU.
+  - **Arguments:** `sku`.
+  - **Example output:** `{"sku": "...", "stock": {"vicStock": 12,...}, "provenance": {"sourcePath": "...", "sourceUpdated": "..."} }`.
+
+- **`stock_compare_variants`**
+  - **Purpose:** Side-by-side comparison of 2‑20 SKUs. Each row includes state stock, pricing, media, and coverage.
+  - **Arguments:** `identifiers` list (SKUs or IDs).
+  - **Example input:** `{"identifiers": ["CHARLIE-CH-001", "CHARLIE-CH-002"], "regions": ["VIC","NSW"]}` (regions used for guidance).
+  - **Example output:** `{"data": [{"sku": "...", "vicStock": 5, "nswStock": 10,...}, ...]}` plus `llm_content`.
+
+- **`stock_count_items`**
+  - **Purpose:** Returns product counts for departments/categories (plus optional variant counts when `countVariants=True`), helpful for “how many products do we have?” queries.
+  - **Arguments:** `search`, `departmentId`, `categoryId`, `countVariants`.
+  - **Example output:** `{"product_count": 42, "filters": {...}, "variant_count": 120}` with guidance describing the difference between product/variant counts.
+
+- **`stock_hirable_by_state`**
+  - **Purpose:** Aggregates `stock`/`hirable` counts by state for a named family and provides a per-variant breakdown.
+  - **Arguments:** `search`, `departmentId`, `categoryId`, `pageSize`, `states`.
+  - **Example output:** `{"state_summary": {"VIC": {"total_stock": ...}}, "variant_breakdown": [...], "coverage": {...}}`.
+
+Hidden stock tools (local Harmonise only or backwards-compatible aliases):
+  - `stock_get_departments` and `stock_get_categories` (`visible=False`) expose raw metadata for local Harmonise dev environments.
+  - `stock_get_variant_evidence` is a deprecated alias of `stock_extract_variant_evidence`; it remains callable but hidden.
+
+### Resolver tools
+
+- **`resolver_disambiguate_candidates`** (`app/tool/registry.py` lines 974‑1047)
+  - **Purpose:** Ranks ambiguous catalogue candidates and optionally returns a resolved family or clarification options for follow-up questions.
+  - **Arguments:** `query`, optional `departmentId`, `categoryId`, `limit`.
+  - **Example output:** Either `{"status": "resolved_product_family", "product_id": "...", "variant_count": ...}` when confident, or a clarification payload with several `options`.
+
+### Session tools
+
+- **`session_get_state`**
+  - **Purpose:** Returns the MCP session working memory (recent identifiers, plan, memo, conversation summary). Use only when the user explicitly asks about context/history.
+  - **Arguments:** `sessionId` (or relies on the MCP session context).
+  - **Example output:** Summary payload with `recent_product_names`, `plan`, `memo`, and `conversation` text plus structured details.
+
+- **`session_clear_state`** (hidden administrative tool)
+  - **Purpose:** Clears stored session memory; used in diagnostics or to reset a conversation.
+  - **Arguments:** `sessionId`.
+  - **Visibility:** Hidden from MCP discovery to prevent accidental use.
+
+### News tools
+
+These call NewsAPI via `app/tool/news.py` and include formatted summaries:
+
+- **`news_search`**
+  - **Purpose:** Keyword or source-based news search with pagination, date filters, and language options.
+  - **Example input:** `{"query": "furniture supply chain", "page": 1}`.
+  - **Example output:** API articles plus `llm_content` of formatted summaries (`format_news_articles`).
+
+- **`news_headlines`**
+  - **Purpose:** Top headlines by country/category/source; returns articles and formatted summaries.
+  - **Example output:** `{"articles": [...], "llm_content": [formatted summaries]}`.
+
+- **`news_sources`**
+  - **Purpose:** Lists available NewsAPI sources by category/language/country to seed future searches.
+  - **Example output:** `{"sources": [{"id": "...", "name": "..."}]}`.
+
+### Weather tools
+
+OpenWeather-powered helpers defined near `app/tool/weather.py`:
+
+- **`weather_resolve`** — geocodes place names or coordinates.
+- **`weather_current`** — current conditions for the resolved place.
+- **`weather_forecast`** — 5-day/3-hour forecast data.
+- **`weather_history`** — historical data when supported.
+Each tool accepts `q`/`lat`/`lon` plus date bounds where applicable, returns the OpenWeather payload, and attaches normalization notes for traceability.
+
+### Currency tools
+
+These wrap `app/tool/currency.py`/`CurrencyService` and hit exchangeratesapi:
+
+- **`currency_symbols`** — lists supported ISO currency codes.
+- **`currency_latest`** — latest FX rates for optional base/targets.
+- **`currency_history`** — single-date historical FX rates.
+- **`currency_timeseries`** — time series between `start_date` and `end_date`.
+- **`currency_convert`** — convert an amount between currencies on an optional date.
+- **`currency_fluctuation`** — compares start/end rates over a date range.
+
+All currency tools share the same pattern: validated args, normalized data/notes, and traces for auditing (`app/tool/registry.py`, lines 1305‑1425).
 
 The raw local metadata tools and deprecated aliases remain callable for compatibility but are hidden from normal MCP discovery so external models do not choose them by accident.
 

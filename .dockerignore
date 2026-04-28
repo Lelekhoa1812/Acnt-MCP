@@ -8,6 +8,8 @@ tests
 .github
 .vscode
 .venv
+.claude
+.cursor
 
 .pytest_cache
 __pycache__
