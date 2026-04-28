@@ -13,13 +13,22 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 
 from app.config import Settings
-from app.mcp.server import build_mcp_server
+from app.mcp.server import MCP_SERVER_INSTRUCTIONS, build_mcp_server
 from app.prompt.stock.furniture import furniture_capability_summary
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
 MCP_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
+    assert "Choose tools by requested operation" in MCP_SERVER_INSTRUCTIONS
+    assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_rank_variants only when" in MCP_SERVER_INSTRUCTIONS
+    assert "retry once with a shorter distinctive phrase" in MCP_SERVER_INSTRUCTIONS
+    assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 
 
 def build_mcp_settings() -> Settings:
@@ -91,32 +100,39 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert initialize.serverInfo.websiteUrl == "/api/v1/chat"
     tool_names = {tool.name for tool in tools.tools}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
-    assert "stock_search_catalogue" in tool_names
-    assert "stock_get_supported_scope" in tool_names
-    assert "stock_get_product_family_inventory" in tool_names
-    assert "stock_rank_variants_by_stock" in tool_names
-    assert "stock_inventory_snapshot" in tool_names
-    assert "resolver_disambiguate_candidates" in tool_names
+    assert all(len(name.split("_")) < 4 for name in tool_names)
+    assert "stock_search" in tool_names
+    assert "stock_scope" in tool_names
+    assert "stock_snapshot" in tool_names
+    assert "stock_aggregate" in tool_names
+    assert "stock_rank_variants" in tool_names
+    assert "stock_disambiguate" in tool_names
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
-    assert "currency_convert" in tool_names
+    assert "fx_convert" in tool_names
+    assert "weather_resolve" not in tool_names
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
     assert "stock_get_variant_evidence" not in tool_names
+    assert "stock_get_product_family_inventory" not in tool_names
+    assert "stock_rank_variants_by_stock" not in tool_names
+    assert "currency_convert" not in tool_names
     assert "session_clear_state" not in tool_names
 
-    search_catalogue = next(tool for tool in tools.tools if tool.name == "stock_search_catalogue")
+    search_catalogue = next(tool for tool in tools.tools if tool.name == "stock_search")
     assert "supported filters" in search_catalogue.description
     assert "variants" in search_catalogue.description
     assert "description" in search_catalogue.inputSchema["properties"]["departmentId"]
 
-    family_inventory = next(tool for tool in tools.tools if tool.name == "stock_get_product_family_inventory")
-    assert "all resolved variants" in family_inventory.description
+    aggregate = next(tool for tool in tools.tools if tool.name == "stock_aggregate")
+    assert "Grouped stock" in aggregate.description
+    assert "not single-variant" in aggregate.description
 
-    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_rank_variants_by_stock")
+    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_rank_variants")
     assert "VIC" in rank_tool.description
+    assert "variant or SKU" in rank_tool.description
 
-    currency_convert = next(tool for tool in tools.tools if tool.name == "currency_convert")
+    currency_convert = next(tool for tool in tools.tools if tool.name == "fx_convert")
     assert "from" in currency_convert.inputSchema["properties"]
 
 
@@ -144,8 +160,8 @@ async def test_mcp_cloud_mode_hides_metadata_tools() -> None:
     assert "stock_get_categories" not in tool_names
     assert "stock_get_variant_evidence" not in tool_names
     assert "session_clear_state" not in tool_names
-    assert "stock_get_supported_scope" in tool_names
-    assert "stock_search_catalogue" in tool_names
+    assert "stock_scope" in tool_names
+    assert "stock_search" in tool_names
 
 
 @pytest.mark.anyio
@@ -155,7 +171,7 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_search_catalogue",
+            "stock_search",
             {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
         )
 
@@ -164,7 +180,7 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     names = [item["name"] for item in result.structuredContent["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
     assert result.structuredContent["plan_status"]["status"] == "complete"
-    assert result.structuredContent["memo_update"]["tool"] == "stock_search_catalogue"
+    assert result.structuredContent["memo_update"]["tool"] == "stock_search"
     assert result.structuredContent["validation"]["actual_rows"] is not None
     assert result.structuredContent["answer_ready"]["items"]
 
@@ -176,7 +192,7 @@ async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_inventory_snapshot",
+            "stock_snapshot",
             {"page": 1, "pageSize": 100},
         )
 
@@ -197,7 +213,7 @@ async def test_mcp_supported_scope_returns_canonical_counts() -> None:
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
-        result = await client.call_tool("stock_get_supported_scope", {})
+        result = await client.call_tool("stock_scope", {})
 
     expected = furniture_capability_summary()
     assert result.isError is False
@@ -247,7 +263,7 @@ async def test_mcp_rank_variants_by_stock_orders_region_stock() -> None:
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_rank_variants_by_stock",
+            "stock_rank_variants",
             {"search": "Laminate Timber Floor", "region": "VIC", "direction": "most"},
         )
 
@@ -261,16 +277,46 @@ async def test_mcp_rank_variants_by_stock_orders_region_stock() -> None:
 
 
 @pytest.mark.anyio
+async def test_mcp_stock_aggregate_ranks_grouped_nsw_stock() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock_aggregate",
+            {
+                "page": 1,
+                "pageSize": 100,
+                "search": "Laminate Timber Floor",
+                "region": "NSW",
+                "measure": "stock",
+                "groupBy": "product",
+                "direction": "most",
+                "limit": 3,
+            },
+        )
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    rows = result.structuredContent["data"]["rows"]
+    assert rows[0]["group"].startswith("Laminate Timber Floor")
+    assert rows[0]["rankValue"] == rows[0]["stock"]["NSW"]
+    assert rows[0]["rankValue"] > max(variant["stock"] for variant in rows[0]["variants"])
+    assert rows[0]["variantCount"] >= 3
+    assert result.structuredContent["answer_ready"]["guidance"].startswith("Rows are grouped totals")
+
+
+@pytest.mark.anyio
 async def test_mcp_invalid_args_return_is_error_instead_of_crashing() -> None:
     server = build_mcp_server(build_mcp_settings())
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
-        result = await client.call_tool("stock_get_product", {})
+        result = await client.call_tool("stock_detail", {})
 
     assert result.isError is True
     assert result.structuredContent is not None
-    assert "Invalid arguments for 'stock_get_product'" in result.structuredContent["error"]["message"]
+    assert "Invalid arguments for 'stock_detail'" in result.structuredContent["error"]["message"]
 
 
 @pytest.mark.anyio
@@ -296,9 +342,9 @@ async def test_mcp_connection_scoped_session_id_persists_across_calls() -> None:
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
-        before = await client.call_tool("session_get_state", {})
+        before = await client.call_tool("session_state", {})
         cleared = await client.call_tool("session_clear_state", {})
-        after = await client.call_tool("session_get_state", {})
+        after = await client.call_tool("session_state", {})
 
     before_id = before.structuredContent["data"]["session_id"]
     cleared_id = cleared.structuredContent["data"]["session_id"]
@@ -389,7 +435,8 @@ def test_stdio_server_speaks_line_delimited_jsonrpc() -> None:
     assert initialize["result"]["serverInfo"]["websiteUrl"].endswith("/api/v1/chat")
     tool_names = {tool["name"] for tool in tools["result"]["tools"]}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
-    assert "stock_search_catalogue" in tool_names
+    assert "stock_search" in tool_names
+    assert "stock_search_catalogue" not in tool_names
     assert tool_call["result"]["isError"] is False
     assert tool_call["result"]["structuredContent"]["data"]["items"][0]["name"] == "Dance Floor - White Gloss "
 

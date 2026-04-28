@@ -457,7 +457,7 @@ class AgentQueryResponse(BaseModel):
 class StockGetDepartmentsArgs(BaseModel):
     includeInactive: bool = Field(
         False,
-        description="Include inactive Harmonise departments. Raw metadata only; use stock_get_supported_scope for supported MCP capability counts.",
+        description="Include inactive Harmonise departments. Raw metadata only; use stock_scope for supported MCP capability counts.",
     )
     includeSubDepartments: bool = Field(
         False,
@@ -483,11 +483,11 @@ class StockSearchCatalogueArgs(BaseModel):
     )
     departmentId: int | None = Field(
         None,
-        description="Supported department filter. Use stock_get_supported_scope for supported IDs.",
+        description="Supported department filter. Use stock_scope for supported IDs.",
     )
     categoryId: str | None = Field(
         None,
-        description="Optional supported category UUID from stock_get_supported_scope; omit when unsure to avoid false negatives.",
+        description="Optional supported category UUID from stock_scope; omit when unsure to avoid false negatives.",
     )
 
 
@@ -539,16 +539,41 @@ class StockInventorySnapshotArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
     pageSize: int = Field(20, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
     search: str | None = Field(None, description="Focused product, family, or category name to search for.")
-    departmentId: int | None = Field(None, description="Supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_get_supported_scope when the user's category is clear.")
+    departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when the user's category is clear.")
+
+
+class StockAggregateArgs(BaseModel):
+    page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
+    pageSize: int = Field(100, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
+    search: str | None = Field(
+        None,
+        description="Prompt-supplied product, family, or category phrase to aggregate. Omit only for deliberately broad inventory totals.",
+    )
+    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
+        "overall",
+        description="Regional stock field to rank by: VIC, NSW, QLD, or overall.",
+    )
+    measure: Literal["stock", "hirable"] = Field(
+        "stock",
+        description="Quantity type to rank by. Use stock for production/owned stock and hirable for available-to-hire counts.",
+    )
+    groupBy: Literal["product", "category", "variant"] = Field(
+        "product",
+        description="Aggregation grain. Use product for product family/type totals; use variant only when the user asks for SKU-level totals.",
+    )
+    direction: Literal["most", "least"] = Field("most", description="Rank highest totals first with most, or lowest totals first with least.")
+    limit: int = Field(10, ge=1, le=50, description="Maximum ranked groups to return.")
+    departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when the user's category is clear.")
 
 
 class StockProductFamilyInventoryArgs(BaseModel):
     search: str = Field(
         description="Named product or family text to retrieve. Retrieves every resolved variant/SKU for availability answers."
     )
-    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_get_supported_scope when known; omit when uncertain.")
+    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
     pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich, from 1 to 100.")
 
 
@@ -559,8 +584,8 @@ class StockRankVariantsByStockArgs(BaseModel):
         description="Stock field to rank by. Use VIC for Victoria, NSW, QLD, or overall for total stock.",
     )
     direction: Literal["most", "least"] = Field("most", description="Rank highest stock first with most, or lowest first with least.")
-    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_get_supported_scope when known; omit when uncertain.")
+    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
     pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich before ranking.")
 
 
@@ -569,8 +594,8 @@ class StockCountItemsArgs(BaseModel):
         None,
         description="Product or family name to count. When omitted, counts all catalogue products matching the dept/category filter.",
     )
-    departmentId: int | None = Field(None, description="Supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_get_supported_scope to count products inside.")
+    departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope to count products inside.")
     countVariants: bool = Field(
         False,
         description="When True and search is provided, also count the total SKU variants across matched product families.",
@@ -583,16 +608,16 @@ class StockHirableByStateArgs(BaseModel):
         None,
         description="States to break out. Defaults to all supported states when omitted.",
     )
-    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_get_supported_scope when known; omit when uncertain.")
+    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
     pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich, from 1 to 100.")
 
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):
     query: str = Field(description="Ambiguous user phrase or product name to rank against catalogue candidates.")
     limit: int = Field(10, ge=2, le=10, description="Number of candidate options to return, from 2 to 10.")
-    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_get_supported_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Optional supported category UUID from stock_get_supported_scope.")
+    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Optional supported category UUID from stock_scope.")
 
 
 class SessionToolArgs(BaseModel):

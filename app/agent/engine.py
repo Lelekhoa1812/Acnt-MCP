@@ -387,7 +387,7 @@ class AgentEngine:
                             thought=assistant_thought,
                         )
                         raw_outcomes.append(outcome)
-                        if outcome.tool == "stock_inventory_snapshot" and isinstance(outcome.data, dict):
+                        if outcome.tool in {"stock_snapshot", "stock_inventory_snapshot"} and isinstance(outcome.data, dict):
                             inventory_snapshot = outcome.data
                             prune_notes = self._prune_redundant_stock_steps(
                                 session_state=session_state,
@@ -461,7 +461,7 @@ class AgentEngine:
                         raise outcome
 
                     result = outcome
-                    if result.tool == "stock_inventory_snapshot" and isinstance(result.data, dict):
+                    if result.tool in {"stock_snapshot", "stock_inventory_snapshot"} and isinstance(result.data, dict):
                         inventory_snapshot = result.data
                     if result.trace:
                         traces.append(result.trace)
@@ -996,7 +996,7 @@ class AgentEngine:
         result: ToolResult,
         inventory_snapshot: dict[str, Any] | None,
     ) -> list[str]:
-        if result.tool != "stock_inventory_snapshot" or inventory_snapshot is None:
+        if result.tool not in {"stock_snapshot", "stock_inventory_snapshot"} or inventory_snapshot is None:
             return []
         return self._prune_redundant_stock_steps(
             session_state=session_state,
@@ -1180,7 +1180,7 @@ class AgentEngine:
                 if variant_id_str == "":
                     variant_id_str = None
                 # Motivation vs Logic: per-variant memo rows are used to recover
-                # `stock_get_product` / planner follow-ups. Rows previously exposed
+                # `stock_detail` / planner follow-ups. Rows previously exposed
                 # only names and optional SKU, so `id` was missing after search and
                 # the runtime could not run product detail steps without a manual SKU.
                 rows.append(
@@ -1321,7 +1321,7 @@ class AgentEngine:
         return sorted(
             prepared_calls,
             key=lambda item: (
-                0 if item["tool_name"] == "stock_inventory_snapshot" else 1,
+                0 if item["tool_name"] in {"stock_snapshot", "stock_inventory_snapshot"} else 1,
                 item["plan_step"].id,
             ),
         )
@@ -1330,11 +1330,13 @@ class AgentEngine:
         if len(prepared_calls) < 2:
             return False
         tool_names = {str(item["tool_name"]) for item in prepared_calls}
-        if "stock_inventory_snapshot" in tool_names and tool_names.intersection(
+        if tool_names.intersection({"stock_snapshot", "stock_inventory_snapshot"}) and tool_names.intersection(
             {
+                "stock_compare",
                 "stock_compare_variants",
                 "stock_extract_variant_evidence",
                 "stock_get_variant_evidence",
+                "stock_detail",
                 "stock_get_product",
             }
         ):
@@ -1351,7 +1353,7 @@ class AgentEngine:
     ) -> str | None:
         tool_name = str(item["tool_name"])
         normalized_args = item["normalized_args"]
-        if tool_name == "stock_search_catalogue":
+        if tool_name in {"stock_search", "stock_search_catalogue"}:
             search_signature = self._catalogue_search_signature(normalized_args)
             if search_signature is not None:
                 for trace in traces:
@@ -1362,12 +1364,12 @@ class AgentEngine:
                         continue
                     if trace.status == "ok":
                         return (
-                            "Skipped `stock_search_catalogue` because this semantic search was already "
+                            "Skipped `stock_search` because this semantic search was already "
                             "resolved earlier in this run."
                         )
                     if trace.status == "error":
                         return (
-                            "Skipped `stock_search_catalogue` because an equivalent semantic search already "
+                            "Skipped `stock_search` because an equivalent semantic search already "
                             "failed earlier in this run."
                         )
 
@@ -1423,17 +1425,17 @@ class AgentEngine:
         if not snapshot_identifiers:
             return None
 
-        if tool_name == "stock_compare_variants":
+        if tool_name in {"stock_compare", "stock_compare_variants"}:
             identifiers = args.get("identifiers")
             if isinstance(identifiers, list) and identifiers and all(
                 self._compact_identifier(identifier) in snapshot_identifiers for identifier in identifiers
             ):
                 return (
-                    "Skipped `stock_compare_variants` because the inventory snapshot already contains "
+                    "Skipped `stock_compare` because the inventory snapshot already contains "
                     "the requested variant evidence for this family."
                 )
 
-        if tool_name in {"stock_extract_variant_evidence", "stock_get_variant_evidence", "stock_get_product"}:
+        if tool_name in {"stock_extract_variant_evidence", "stock_get_variant_evidence", "stock_detail", "stock_get_product"}:
             requested_identifiers = [
                 self._compact_identifier(args.get("sku")),
                 self._compact_identifier(args.get("id")),
@@ -1480,7 +1482,7 @@ class AgentEngine:
     def _snapshot_duplicate_reason(self, signature: str) -> str:
         label = self._snapshot_signature_label(signature)
         return (
-            f"Skipped `stock_inventory_snapshot` because the query already covered {label}."
+            f"Skipped `stock_snapshot` because the query already covered {label}."
         )
 
     @staticmethod
@@ -1514,7 +1516,7 @@ class AgentEngine:
         completed_step: PlanStep,
         result: ToolResult,
     ) -> str | None:
-        if result.tool != "stock_search_catalogue":
+        if result.tool not in {"stock_search", "stock_search_catalogue"}:
             return None
         if completed_step.name == "recursive detail retrieval":
             return None
@@ -1594,7 +1596,7 @@ class AgentEngine:
             if not identifier or identifier in seen_identifiers:
                 continue
             seen_identifiers.add(identifier)
-            follow_up_steps.append(("stock_get_product", lookup_args))
+            follow_up_steps.append(("stock_detail", lookup_args))
             if len(follow_up_steps) >= max_products:
                 break
         return follow_up_steps
@@ -1655,10 +1657,10 @@ class AgentEngine:
             "pageSize": self.settings.agent_get_product_page_size,
         }
         return (
-            "stock_get_product",
+            "stock_detail",
             rewritten_args,
             (
-                "Rewrote a variant-evidence call with product-id-only args to `stock_get_product` "
+                "Rewrote a variant-evidence call with product-id-only args to `stock_detail` "
                 "so family-level variant coverage can continue without unsafe SKU guessing."
             ),
         )
@@ -1691,7 +1693,7 @@ class AgentEngine:
         # families. Expand and dedupe into one search call per inferred item.
         for tool_call in tool_calls:
             function = tool_call.get("function")
-            if not isinstance(function, dict) or function.get("name") != "stock_search_catalogue":
+            if not isinstance(function, dict) or function.get("name") not in {"stock_search", "stock_search_catalogue"}:
                 append_unique(tool_call)
                 continue
 
@@ -1840,7 +1842,7 @@ class AgentEngine:
         completed_step: PlanStep,
         result: ToolResult,
     ) -> str | None:
-        if result.tool != "resolver_disambiguate_candidates":
+        if result.tool not in {"stock_disambiguate", "resolver_disambiguate_candidates"}:
             return None
         if not isinstance(result.data, dict):
             return None
@@ -1850,7 +1852,7 @@ class AgentEngine:
         product_id = self._compact_identifier(result.data.get("product_id"))
         if not product_id:
             return None
-        follow_up_tool = "stock_get_product"
+        follow_up_tool = "stock_detail"
         follow_up_args: dict[str, Any] = {
             "id": product_id,
             "page": 1,
@@ -1890,7 +1892,7 @@ class AgentEngine:
         get_product_args: dict[str, Any],
     ) -> PlanStep | None:
         # Root Cause vs Logic: `_rewrite_variant_family_tool_call` turns
-        # product-id-only `stock_extract_variant_evidence` into `stock_get_product`.
+        # product-id-only `stock_extract_variant_evidence` into `stock_detail`.
         # Without binding, we matched/inserted a get_product step while the
         # original EVE plan row stayed not-done, bloating the DAG and often
         # burning `agent_max_steps` on no-op "next step 2" cycles.
@@ -1918,7 +1920,7 @@ class AgentEngine:
         # Root Cause vs Logic: bind rewritten family detail retrieval back to
         # the planner's variant-evidence row so that step can complete.
         if (
-            tool_name == "stock_get_product"
+            tool_name in {"stock_detail", "stock_get_product"}
             and binding_source_tool in {"stock_extract_variant_evidence", "stock_get_variant_evidence"}
         ):
             bound = self._pending_variant_evidence_step_for_get_product_rewrite(plan_status, args)
@@ -1930,7 +1932,7 @@ class AgentEngine:
         # Root Cause vs Logic: binding by tool name alone merged distinct
         # multi-item calls into one pending step and overwrote earlier args.
         # We now bind by exact args first, then only reuse empty placeholders.
-        if tool_name == "stock_search_catalogue":
+        if tool_name in {"stock_search", "stock_search_catalogue"}:
             incoming_signature = self._catalogue_search_signature(args)
             if incoming_signature is not None:
                 for step in plan_status.steps:
@@ -2027,7 +2029,7 @@ class AgentEngine:
         session_state: SessionState,
     ) -> tuple[dict[str, Any] | None, str | None]:
         args = dict(step.args or {})
-        if step.tool == "stock_get_product":
+        if step.tool in {"stock_detail", "stock_get_product"}:
             return self._resolve_product_lookup_args(step_id=step.id, args=args, session_state=session_state)
         if step.tool in {"stock_extract_variant_evidence", "stock_get_variant_evidence"}:
             return self._resolve_variant_lookup_args(step_id=step.id, args=args, session_state=session_state)
@@ -2053,7 +2055,7 @@ class AgentEngine:
             return (
                 None,
                 (
-                    f"Planned step `{step_id}` could not run because `stock_get_product` "
+                    f"Planned step `{step_id}` could not run because `stock_detail` "
                     "requires an `id` or `sku`, and no reusable identifier was present in session evidence."
                 ),
             )
@@ -2453,7 +2455,7 @@ class AgentEngine:
 
     def _fallback_plan(self, request: str, session_state: SessionState) -> PlanStatus:
         tool_names = [tool.name for tool in self.tool_registry.list_tools()]
-        default_tool = tool_names[0] if tool_names else "session_get_state"
+        default_tool = tool_names[0] if tool_names else "session_state"
         plan = PlanStatus(
             goal=request,
             steps=[
@@ -2836,7 +2838,7 @@ class AgentEngine:
         rows: list[dict[str, Any]] = []
         for entry in entries:
             tool_name = getattr(entry, "tool", "")
-            if tool_name not in {"stock_get_product", "stock_inventory_snapshot"}:
+            if tool_name not in {"stock_detail", "stock_get_product", "stock_snapshot", "stock_inventory_snapshot"}:
                 continue
             candidate_rows = getattr(entry, "rows", [])
             if not isinstance(candidate_rows, list):
@@ -2890,7 +2892,7 @@ class AgentEngine:
             return "stock"
         if tool_name.startswith("news_"):
             return "news"
-        if tool_name.startswith("currency_"):
+        if tool_name.startswith(("currency_", "fx_")):
             return "currency"
         if tool_name.startswith("weather_"):
             return "weather"
@@ -3064,8 +3066,8 @@ class AgentEngine:
 
     def _next_hop_rules(self, plan_status: PlanStatus) -> list[str]:
         rules = [
-            "Use stock_search_catalogue to resolve candidate products before exact detail lookups.",
-            "If catalogue search returns identifiers without enough user-facing detail, follow with stock_get_product for each unresolved family.",
+            "Use stock_search to resolve candidate products before exact detail lookups.",
+            "If catalogue search returns identifiers without enough user-facing detail, follow with stock_detail for each unresolved family.",
             "Do not call stock_extract_variant_evidence with variantId alone; supplement it with sku or id.",
         ]
         pending_recursive = [
@@ -3113,7 +3115,7 @@ class AgentEngine:
                         "You are a strict JSON replan controller. "
                         "Reason from the request, current plan context, memoized evidence, and limitations. "
                         "Do not use hard-coded keyword routing. "
-                        "When a stock_search_catalogue call with a multi-word product phrase returns zero rows, "
+                        "When a stock_search call with a multi-word product phrase returns zero rows, "
                         "retry with a shorter distinctive product/model term inferred from the user's phrase or "
                         "prior evidence (example: if `charlie chair` returns no rows, try `charlie`). "
                         "If requested evidence is still missing but retrievable, return additional tool steps."

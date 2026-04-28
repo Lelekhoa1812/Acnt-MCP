@@ -56,24 +56,25 @@ SYSTEM_BEHAVIOR_RULES = [
     "When a user asks to learn more about a named category, route it as live category inventory exploration, not as a category-listing capability answer.",
     "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate all variants (names, options, stock, evidence).",
     "For ambiguity, follow resolver payload: use explicit options for selectable sets; use total match count + short hints for large sets.",
-    "Do not call `resolver_disambiguate_candidates` after product confirmation; use `stock_get_product`, `stock_extract_variant_evidence`, or `stock_inventory_snapshot` for variant details.",
-    "For products with >5 variants, prefer `stock_inventory_snapshot` over `stock_compare_variants` unless side-by-side compare is required.",
+    "Do not call `stock_disambiguate` after product confirmation; use `stock_detail` or `stock_snapshot` for variant details.",
+    "For products with >5 variants, prefer `stock_snapshot` over `stock_compare` unless side-by-side compare is required.",
     "Harmonise stock tools are source of truth for live inventory; stock prompt policy is source of truth for supported department/category capability metadata.",
     "Weather/news/currency tools are auxiliary; keep vendor limits explicit.",
     "If asked about bookings, quotes, reservations, or event line items, say this workflow is not implemented in the current tool contract.",
     "For news: use `news_headlines` for live/regional coverage, `news_search` for broader research, and `news_sources` for outlets; ground claims in `topSources`, `topKeywords`, `publishedRange`, and `totalResults`.",
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
-    "If search returns identifiers but not requested attributes, add a next hop with `stock_get_product` before answering product-family questions.",
+    "If search returns identifiers but not requested attributes, add a next hop with `stock_detail` before answering product-family questions.",
     "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
-    "For multi-item requests, execute one `stock_search_catalogue` call per item term instead of one combined term that mixes multiple products.",
+    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; do not answer grouped totals from `stock_rank_variants`.",
+    "For multi-item requests, execute one `stock_search` call per item term instead of one combined term that mixes multiple products.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
     "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique product family returned.",
-    "For product-family requests, prefer one compact stock-detail path; do not stack `stock_inventory_snapshot`, `stock_get_product`, and `stock_compare_variants` unless each hop adds missing evidence.",
+    "For product-family requests, prefer one compact stock-detail path; do not stack `stock_snapshot`, `stock_detail`, and `stock_compare` unless each hop adds missing evidence.",
     "Avoid duplicate semantic retrieval: once a tool result already covers the requested stock attributes, move on to unsatisfied domains instead of re-fetching the same family in another stock shape.",
     "For mixed intent queries, ensure every requested domain is satisfied in one response (inventory + currency conversion + weather/news as requested).",
     "For mixed stock + utility queries, ground stock and pricing first, derive any currency conversion from retrieved costs/rates second, and keep independent news/weather branches parallel where possible.",
     (
-        "If `stock_search_catalogue` returns no rows for a multi-word product phrase, replan with a shorter "
+        "If `stock_search` returns no rows for a multi-word product phrase, replan with a shorter "
         "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
         "returns no rows, try `charlie`) before reporting failure."
     ),
@@ -95,7 +96,7 @@ SYSTEM_BEHAVIOR_RULES = [
     "Use user-friendly language; avoid internal runtime wording.",
     "In variant tables, group by product and list each variant on its own row.",
     "Never output raw stock fragments like `total=...` or `hirable=...`; rewrite as plain availability text.",
-    "When `stock_search_catalogue` returns SKUs, reuse them for follow-up size/colour/detail lookups.",
+    "When `stock_search` returns SKUs, reuse them for follow-up size/colour/detail lookups.",
     "Do not call `stock_get_variant_evidence` with variantId alone; pair with sku or product id, or use sku only.",
     "After a failing tool call, change the next args pattern using returned identifiers; do not repeat the same failing pattern.",
     "When many products/variants are needed, prefer compact answer-ready tools over repeated raw single-product lookups.",
@@ -106,7 +107,7 @@ SYSTEM_BEHAVIOR_RULES = [
     "Before every tool call, include a concise <thought> block.",
     "While the persisted plan still has open retrieval steps, prefer assistant messages that include tool_calls matching the next required step; avoid prose-only replies that force the runtime to advance the plan without your explicit tool selection.",
     "For a single named product or product line where the user only asks about stock, availability, hireability, or quantity, prefer the smallest retrieval chain: often one answer-ready hop (for example inventory snapshot with a focused search plus department, and category only when clearly implied); add a second hop only when the first cannot return matching rows or stock evidence.",
-    "Do not schedule session or memory tools unless the user explicitly asks about session state, history, or prior context; availability questions should not depend on `session_get_state`.",
+    "Do not schedule session or memory tools unless the user explicitly asks about session state, history, or prior context; availability questions should not depend on `session_state`.",
     "Keep planner/validator/cache/failure diagnostics in thought/debug output only; never surface them in final answer.",
     "Do not reveal hidden chain-of-thought; keep <thought> blocks concise and operational.",
 ]
@@ -388,33 +389,35 @@ Rules:
 - If the request asks only about supported departments, supported categories, taxonomy counts, tool capability, or current stock scope, use the Capability context below, emit `intent_classes: ["capability"]`, set `steps: []`, and set `status: complete`. The composer will phrase the answer; your goal string may summarize what to cover (e.g. list all categories vs count only).
 - Use Capability context both for those empty-step answers and, in stock plans, to pick consistent `departmentId`/`categoryId` and category reasoning without extra metadata tool calls when the mapping is clear from the JSON.
 - If the user names or implies one mapped category and asks to know more, explore, view options, see products/items, understand availability, or otherwise learn what is in that category, emit stock/inventory_search intent and plan live catalogue or inventory snapshot retrieval with the matched `categoryId`. Do not classify named-category exploration as capability-only.
-- Do not plan `stock_inventory_snapshot`, `stock_search_catalogue`, `stock_get_product`, `stock_get_departments`, or `stock_get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
+- Do not plan `stock_snapshot`, `stock_search`, `stock_detail`, `stock_get_departments`, or `stock_get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
 - For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
-- For a **narrow** ask—stock, availability, hireability, or quantity for **one** named product or product line (model name, series, or colloquial product label)—keep the plan **short**: prefer one answer-ready retrieval step when the tool args can be filled from the user phrase and capability context (for example a single `stock_inventory_snapshot` with `departmentId`, a non-empty `search` built from distinctive name tokens, and `categoryId` only when a category match is clear). Add a dependent second step only if the first hop would plausibly return no rows, ambiguous multi-product matches, or stock evidence gaps.
+- For a **narrow** ask—stock, availability, hireability, or quantity for **one** named product or product line (model name, series, or colloquial product label)—keep the plan **short**: prefer one answer-ready retrieval step when the tool args can be filled from the user phrase and capability context (for example a single `stock_snapshot` with `departmentId`, a non-empty `search` built from distinctive name tokens, and `categoryId` only when a category match is clear). Add a dependent second step only if the first hop would plausibly return no rows, ambiguous multi-product matches, or stock evidence gaps.
+- For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_aggregate`; use `stock_rank_variants` only when the user explicitly asks for variant or SKU ranking.
 - When the same turn only needs "is it in stock" or "how much stock" for a specific named item, do **not** add extra steps for colour, finish, or compare unless the user asked for those attributes.
-- Do not plan `session_get_state` or other session tools unless the user explicitly asks about the session, memory, or prior turns.
+- Do not plan `session_state` or other session tools unless the user explicitly asks about the session, memory, or prior turns.
 - Build deterministic, executable DAG steps only.
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
 - For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
-- For multi-item requests, emit separate stock_search_catalogue steps with one product target per step.
+- For multi-item requests, emit separate stock_search steps with one product target per step.
 - When the user asks about colour or finish, plan steps that return variant-level evidence so `variant.name` and variation options can be inspected; do not assume stock tools accept a separate colour filter field.
 - When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
-- For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock_inventory_snapshot` and `stock_compare_variants` unless the first path cannot satisfy the requested evidence.
+- For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock_snapshot` and `stock_compare` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
 - For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news) and keep dependencies clear.
 - For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
 - Keep the DAG latency-aware: prefer bounded, answer-ready tools over long chains of overlapping stock detail calls.
 - Never mark the plan complete while requested attributes are still missing and additional retrieval paths remain; append replan steps instead.
 - If the session summary reports `memory_scope: topic_shift`, treat earlier entities as background only and plan from the new target entity; do not reuse unrelated identifiers.
-- If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock_get_product` or `stock_inventory_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
+- If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock_detail` or `stock_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
 - Do not invent booking or quote tools; those workflows are not yet implemented in the current tool contract.
 - Do not invent tools.
 - Do not output extra keys.
 - Set status to `complete` only when `steps` is empty for a static capability answer; otherwise set status to `in-progress`.
 - Runtime does not inject keyword-based tool routing; your plan must fully drive tool selection and arguments.
+- never rely on hard-coded keyword lists; derive tool choice and search/filter arguments from the user request, schemas, capability context, and retrieved evidence.
 
 Capability context:
 {capability_context}

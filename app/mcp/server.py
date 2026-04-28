@@ -16,15 +16,16 @@ from app.mcp.adapter import McpToolAdapter
 
 
 MCP_SERVER_INSTRUCTIONS = (
-    "Protocol-compliant MCP tool server for Harmonise inventory intelligence. "
-    "For supported stock scope, department counts, category counts, and categoryId routing, call "
-    "stock_get_supported_scope. For named product-family availability, retrieve all variants with "
-    "stock_get_product_family_inventory or stock_inventory_snapshot; do not answer from only the first SKU. "
-    "For regional best/worst stock questions, use stock_rank_variants_by_stock with region VIC, NSW, QLD, or "
-    "overall. Use stock_extract_variant_evidence only for one exact SKU/variant, and stock_compare_variants "
-    "only for explicit 2-20 variant side-by-side comparisons. Weather, news, and currency tools are auxiliary "
-    "and should not be used for inventory questions. Tool responses may include plan_status, memo_update, "
-    "validation, and answer_ready; use them for grounding but do not present internal metadata as user-facing prose."
+    "Harmonise inventory MCP server. Choose tools by requested operation, not by hard-coded product keywords. "
+    "Use stock_scope for supported departments/categories and categoryId routing. Use stock_snapshot for named "
+    "family availability or broad variant tables. Use stock_aggregate for most/least totals by type, product "
+    "family, category, region, or all inventory; it returns summed groups. Use stock_rank_variants only when the "
+    "user asks which variant or SKU ranks highest/lowest. Use stock_detail for exact product/SKU detail and "
+    "stock_compare only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no "
+    "rows or partial coverage, retry once with a shorter distinctive phrase or broader stock_scope filter, then "
+    "state any limitation plainly. Weather, news, and FX tools are auxiliary and must not answer inventory "
+    "questions. Answer directly without preambles, tool names, or internal keys; use answer_ready or structured "
+    "totals for grounding."
 )
 
 

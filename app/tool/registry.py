@@ -29,6 +29,7 @@ from app.schemas import (
     ProductListItemDtoPagedResponse,
     ResolverDisambiguateCandidatesArgs,
     SessionToolArgs,
+    StockAggregateArgs,
     StockCompareVariantsArgs,
     StockCountItemsArgs,
     StockExtractVariantEvidenceArgs,
@@ -226,7 +227,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_search_catalogue",
+                tool="stock_search",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -235,7 +236,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock_search_catalogue",
+                tool="stock_search",
                 data=data.model_dump(mode="json"),
                 llm_content=self._catalogue_model_view(data),
                 normalization_notes=notes,
@@ -246,7 +247,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.get_product(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_get_product",
+                tool="stock_detail",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -255,7 +256,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock_get_product",
+                tool="stock_detail",
                 data=data.model_dump(mode="json"),
                 llm_content=self._product_model_view(data),
                 normalization_notes=notes,
@@ -286,7 +287,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.compare_variants(validated.identifiers)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_compare_variants",
+                tool="stock_compare",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -295,7 +296,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="stock_compare_variants",
+                tool="stock_compare",
                 data=[item.model_dump(mode="json") for item in data],
                 llm_content=[self._evidence_model_view(item) for item in data],
                 normalization_notes=notes,
@@ -306,7 +307,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.inventory_service.inventory_snapshot(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_inventory_snapshot",
+                tool="stock_snapshot",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -315,9 +316,57 @@ class ToolRegistry:
                 normalization_notes=notes + data.coverage.limitations,
             )
             return ToolResult(
-                tool="stock_inventory_snapshot",
+                tool="stock_snapshot",
                 data=data.model_dump(mode="json"),
                 llm_content=self._inventory_snapshot_model_view(data),
+                normalization_notes=notes + data.coverage.limitations,
+                trace=trace,
+            )
+
+        async def aggregate_stock(validated: StockAggregateArgs, _: str | None, thought: str) -> ToolResult:
+            snapshot_args = StockInventorySnapshotArgs(
+                page=validated.page,
+                pageSize=validated.pageSize,
+                search=validated.search,
+                departmentId=validated.departmentId,
+                categoryId=validated.categoryId,
+            )
+            data, cache_status, notes = await self.inventory_service.inventory_snapshot(snapshot_args)
+            ranked_groups = self._aggregate_snapshot_evidence(
+                data.evidence,
+                region=validated.region,
+                measure=validated.measure,
+                group_by=validated.groupBy,
+                direction=validated.direction,
+                limit=validated.limit,
+            )
+            payload = {
+                "query": validated.search,
+                "region": validated.region,
+                "measure": validated.measure,
+                "groupBy": validated.groupBy,
+                "direction": validated.direction,
+                "rows": ranked_groups,
+                "coverage": data.coverage.model_dump(mode="json"),
+                "guidance": (
+                    "Rows are grouped totals, not individual variant rankings. Use product grouping for user wording "
+                    "such as type, family, line, or all inventory unless the user explicitly asks for SKU/variant grain."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_aggregate",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise -> inventory_snapshot.evidence[*] -> grouped regional stock totals",
+                result_count=len(ranked_groups),
+                normalization_notes=notes + data.coverage.limitations,
+            )
+            return ToolResult(
+                tool="stock_aggregate",
+                data=payload,
+                llm_content=payload,
                 normalization_notes=notes + data.coverage.limitations,
                 trace=trace,
             )
@@ -334,21 +383,21 @@ class ToolRegistry:
                         "routing. It is the MCP-visible source of truth for supported inventory capability."
                     ),
                     "live_inventory": (
-                        "For products, variants, or availability inside a category, use stock_inventory_snapshot "
-                        "or stock_get_product_family_inventory with the returned department/category ids."
+                        "For products, variants, or availability inside a category, use stock_snapshot or "
+                        "stock_aggregate with the returned department/category ids."
                     ),
                 },
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_get_supported_scope",
+                tool="stock_scope",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status="policy",
                 source_data="prompt_policy -> furniture_capability_summary",
                 result_count=int(summary.get("mapped_furniture_category_count", 0)),
             )
-            return ToolResult(tool="stock_get_supported_scope", data=data, llm_content=data, trace=trace)
+            return ToolResult(tool="stock_scope", data=data, llm_content=data, trace=trace)
 
         async def collect_family_evidence(
             validated: StockProductFamilyInventoryArgs | StockRankVariantsByStockArgs,
@@ -454,7 +503,7 @@ class ToolRegistry:
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_rank_variants_by_stock",
+                tool="stock_rank_variants",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -463,7 +512,7 @@ class ToolRegistry:
                 normalization_notes=notes + coverage["limitations"],
             )
             return ToolResult(
-                tool="stock_rank_variants_by_stock",
+                tool="stock_rank_variants",
                 data=payload,
                 llm_content=payload,
                 normalization_notes=notes + coverage["limitations"],
@@ -623,7 +672,7 @@ class ToolRegistry:
                 visible=False,
             )
         self._register(
-            "stock_get_supported_scope",
+            "stock_scope",
             (
                 "Supported stock scope and filter IDs. Use for questions about how many departments or categories are "
                 "supported, which categoryId maps to a given category, or before filtering inventory by department or "
@@ -633,17 +682,31 @@ class ToolRegistry:
             get_supported_scope,
         )
         self._register(
-            "stock_search_catalogue",
+            "stock_get_supported_scope",
+            "Deprecated alias for stock_scope. Hidden from normal MCP discovery.",
+            StockGetSupportedScopeArgs,
+            get_supported_scope,
+            visible=False,
+        )
+        self._register(
+            "stock_search",
             (
                 "Harmonise catalogue discovery by product/family text plus supported filters: page, pageSize, "
                 "search, departmentId, categoryId. Use to find product ids/SKUs and variants; for availability of a "
-                "named family, follow with stock_inventory_snapshot or stock_get_product_family_inventory so every variant is covered."
+                "named family, follow with stock_snapshot so every variant is covered."
             ),
             StockSearchCatalogueArgs,
             search_catalogue,
         )
         self._register(
-            "stock_get_product",
+            "stock_search_catalogue",
+            "Deprecated alias for stock_search. Hidden from normal MCP discovery.",
+            StockSearchCatalogueArgs,
+            search_catalogue,
+            visible=False,
+        )
+        self._register(
+            "stock_detail",
             (
                 "Exact product-family or SKU detail. Use when a product id or SKU is already known. Detail includes "
                 "variants, dimensions, pricing, image metadata, and VIC/NSW/QLD stock fields; generic family "
@@ -653,14 +716,21 @@ class ToolRegistry:
             get_product,
         )
         self._register(
+            "stock_get_product",
+            "Deprecated alias for stock_detail. Hidden from normal MCP discovery.",
+            StockGetProductArgs,
+            get_product,
+            visible=False,
+        )
+        self._register(
             "stock_extract_variant_evidence",
             (
-                "One exact variant -> answer-ready evidence. Use only when the user names a SKU/specific variant or "
-                "after catalogue/detail resolution. For product-family stock questions, use stock_get_product_family_inventory "
-                "or stock_inventory_snapshot instead."
+                "Deprecated exact-variant evidence alias. Hidden from normal MCP discovery; use stock_detail for exact SKU "
+                "detail or stock_snapshot for product-family stock questions."
             ),
             StockExtractVariantEvidenceArgs,
             extract_variant,
+            visible=False,
         )
         self._register(
             "stock_get_variant_evidence",
@@ -673,16 +743,23 @@ class ToolRegistry:
             visible=False,
         )
         self._register(
-            "stock_compare_variants",
+            "stock_compare",
             (
                 "Side-by-side comparison of 2-20 already-resolved variant SKUs/identifiers. Use for explicit compare "
-                "requests, not broad family availability; for many variants or stock tables use stock_inventory_snapshot."
+                "requests, not broad family availability; for many variants or stock tables use stock_snapshot."
             ),
             StockCompareVariantsArgs,
             compare_variants,
         )
         self._register(
-            "stock_inventory_snapshot",
+            "stock_compare_variants",
+            "Deprecated alias for stock_compare. Hidden from normal MCP discovery.",
+            StockCompareVariantsArgs,
+            compare_variants,
+            visible=False,
+        )
+        self._register(
+            "stock_snapshot",
             (
                 "Answer-ready inventory snapshot: enriches catalogue matches into variant rows with size, known specs, "
                 "overall stock, and VIC/NSW/QLD availability text. Best default for broad/multi-variant stock, category "
@@ -692,44 +769,67 @@ class ToolRegistry:
             inventory_snapshot,
         )
         self._register(
+            "stock_inventory_snapshot",
+            "Deprecated alias for stock_snapshot. Hidden from normal MCP discovery.",
+            StockInventorySnapshotArgs,
+            inventory_snapshot,
+            visible=False,
+        )
+        self._register(
+            "stock_aggregate",
+            (
+                "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
+                "type, product family, category, or region; product grouping answers broad wording like all inventory "
+                "or chair type. This returns summed groups, not single-variant rankings."
+            ),
+            StockAggregateArgs,
+            aggregate_stock,
+        )
+        self._register(
             "stock_get_product_family_inventory",
             (
-                "Named product/family availability across all resolved variants. Use when the user asks about a named "
-                "product or family and no SKU/variant is specified; returns all variant SKUs with stock, dimensions, "
-                "pricing/media, and coverage notes."
+                "Deprecated alias for stock_snapshot with a required search phrase. Hidden from normal MCP discovery."
             ),
             StockProductFamilyInventoryArgs,
             product_family_inventory,
+            visible=False,
         )
         self._register(
-            "stock_rank_variants_by_stock",
+            "stock_rank_variants",
             (
                 "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for best/worst "
-                "availability questions across regions, such as which variant of a product has the most or least stock "
-                "in a given state."
+                "availability questions only when the user asks which variant or SKU has the most or least stock. "
+                "Use stock_aggregate for type/family/category totals."
             ),
             StockRankVariantsByStockArgs,
             rank_variants_by_stock,
         )
         self._register(
+            "stock_rank_variants_by_stock",
+            "Deprecated alias for stock_rank_variants. Hidden from normal MCP discovery.",
+            StockRankVariantsByStockArgs,
+            rank_variants_by_stock,
+            visible=False,
+        )
+        self._register(
             "stock_count_items",
             (
-                "Count products in a department or category, or count variants for a named product family. Use when "
-                "the user asks how many products are in a category, how many items a department has, or how many "
-                "variants a given product offers. Set countVariants=True with a search term to get variant count."
+                "Deprecated count helper. Hidden from normal MCP discovery; use stock_scope for supported counts and "
+                "stock_aggregate for grouped inventory totals."
             ),
             StockCountItemsArgs,
             count_items,
+            visible=False,
         )
         self._register(
             "stock_hirable_by_state",
             (
-                "Per-state hirable availability for a named product family. Aggregates and breaks out stock and "
-                "hirable counts by state across all resolved variants. Use when the user asks how many of a product "
-                "are hirable or available in a specific state, or wants a cross-state availability comparison."
+                "Deprecated per-state family helper. Hidden from normal MCP discovery; use stock_aggregate for grouped "
+                "stock or hirable totals by state."
             ),
             StockHirableByStateArgs,
             hirable_by_state,
+            visible=False,
         )
 
     def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
@@ -932,6 +1032,114 @@ class ToolRegistry:
             )
         return rows
 
+    def _aggregate_snapshot_evidence(
+        self,
+        evidence_items: list[NormalizedEvidence],
+        *,
+        region: str,
+        measure: str,
+        group_by: str,
+        direction: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        stock_fields = {
+            "VIC": ("vicStock", "vicHirable"),
+            "NSW": ("nswStock", "nswHirable"),
+            "QLD": ("qldStock", "qldHirable"),
+            "overall": ("totalStock", "totalHirable"),
+        }
+        stock_field, hirable_field = stock_fields[region]
+
+        groups: dict[str, dict[str, Any]] = {}
+        for evidence in evidence_items:
+            key, label = self._aggregate_group_key(evidence, group_by)
+            if key not in groups:
+                groups[key] = {
+                    "group": label,
+                    "groupBy": group_by,
+                    "productIds": set(),
+                    "categoryIds": set(),
+                    "variantCount": 0,
+                    "stock": {"overall": 0, "VIC": 0, "NSW": 0, "QLD": 0},
+                    "hirable": {"overall": 0, "VIC": 0, "NSW": 0, "QLD": 0},
+                    "missingStockFields": [],
+                    "variants": [],
+                }
+            group = groups[key]
+            if evidence.product_id:
+                group["productIds"].add(evidence.product_id)
+            if evidence.categoryId:
+                group["categoryIds"].add(evidence.categoryId)
+            group["variantCount"] += 1
+            self._add_aggregate_quantity(group["stock"], evidence, "overall", "totalStock", group["missingStockFields"])
+            self._add_aggregate_quantity(group["stock"], evidence, "VIC", "vicStock", group["missingStockFields"])
+            self._add_aggregate_quantity(group["stock"], evidence, "NSW", "nswStock", group["missingStockFields"])
+            self._add_aggregate_quantity(group["stock"], evidence, "QLD", "qldStock", group["missingStockFields"])
+            self._add_aggregate_quantity(group["hirable"], evidence, "overall", "totalHirable", group["missingStockFields"])
+            self._add_aggregate_quantity(group["hirable"], evidence, "VIC", "vicHirable", group["missingStockFields"])
+            self._add_aggregate_quantity(group["hirable"], evidence, "NSW", "nswHirable", group["missingStockFields"])
+            self._add_aggregate_quantity(group["hirable"], evidence, "QLD", "qldHirable", group["missingStockFields"])
+            group["variants"].append(
+                {
+                    "product": evidence.product_name,
+                    "variant": evidence.variant_name,
+                    "sku": evidence.sku,
+                    "stock": getattr(evidence.stock, stock_field),
+                    "hirable": getattr(evidence.stock, hirable_field),
+                }
+            )
+
+        reverse = direction == "most"
+        ranked_groups = sorted(
+            groups.values(),
+            key=lambda group: group[measure][region],
+            reverse=reverse,
+        )
+        rows: list[dict[str, Any]] = []
+        for rank, group in enumerate(ranked_groups[:limit], start=1):
+            rows.append(
+                {
+                    "rank": rank,
+                    "group": group["group"],
+                    "groupBy": group["groupBy"],
+                    "region": region,
+                    "measure": measure,
+                    "rankValue": group[measure][region],
+                    "stock": group["stock"],
+                    "hirable": group["hirable"],
+                    "variantCount": group["variantCount"],
+                    "productIds": sorted(group["productIds"]),
+                    "categoryIds": sorted(group["categoryIds"]),
+                    "variants": group["variants"],
+                    "missingStockFields": sorted(set(group["missingStockFields"])),
+                }
+            )
+        return rows
+
+    def _aggregate_group_key(self, evidence: NormalizedEvidence, group_by: str) -> tuple[str, str]:
+        if group_by == "category":
+            label = evidence.categoryId or "Uncategorised"
+            return f"category:{label}", label
+        if group_by == "variant":
+            label = evidence.variant_name or evidence.sku or "Unnamed variant"
+            return f"variant:{evidence.variant_id or evidence.sku or label}", label
+        label = evidence.product_name or "Unnamed product"
+        return f"product:{evidence.product_id or label}", label
+
+    def _add_aggregate_quantity(
+        self,
+        totals: dict[str, int],
+        evidence: NormalizedEvidence,
+        label: str,
+        stock_field: str,
+        missing_fields: list[str],
+    ) -> None:
+        value = getattr(evidence.stock, stock_field)
+        if value is None:
+            missing_fields.append(f"{evidence.sku or evidence.variant_name or 'unknown'}:{stock_field}")
+            return
+        totals[label] += value
+
     def _compact_attribute_evidence(self, row: dict[str, Any]) -> list[str]:
         product = (row.get("product") or "").strip()
         variant = (row.get("variant") or "").strip()
@@ -995,7 +1203,7 @@ class ToolRegistry:
                 }
                 trace = ToolTrace(
                     thought=thought,
-                    tool="resolver_disambiguate_candidates",
+                    tool="stock_disambiguate",
                     args=validated.model_dump(exclude_none=True),
                     status="ok",
                     cache_status="resolver",
@@ -1004,7 +1212,7 @@ class ToolRegistry:
                     normalization_notes=notes,
                 )
                 return ToolResult(
-                    tool="resolver_disambiguate_candidates",
+                    tool="stock_disambiguate",
                     data=payload,
                     llm_content=payload,
                     normalization_notes=notes,
@@ -1020,7 +1228,7 @@ class ToolRegistry:
             )
             trace = ToolTrace(
                 thought=thought,
-                tool="resolver_disambiguate_candidates",
+                tool="stock_disambiguate",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status="resolver",
@@ -1029,21 +1237,28 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="resolver_disambiguate_candidates",
+                tool="stock_disambiguate",
                 data=clarification.model_dump(mode="json"),
                 normalization_notes=notes,
                 trace=trace,
             )
 
         self._register(
-            "resolver_disambiguate_candidates",
+            "stock_disambiguate",
             (
                 "Rank ambiguous catalogue candidates for a user phrase and return either a resolved product family or "
                 "clarification options. Use only when search results could mean several products; if the family is "
-                "already known, use stock_get_product_family_inventory, stock_inventory_snapshot, or stock_get_product."
+                "already known, use stock_snapshot or stock_detail."
             ),
             ResolverDisambiguateCandidatesArgs,
             disambiguate,
+        )
+        self._register(
+            "resolver_disambiguate_candidates",
+            "Deprecated alias for stock_disambiguate. Hidden from normal MCP discovery.",
+            ResolverDisambiguateCandidatesArgs,
+            disambiguate,
+            visible=False,
         )
 
     def _register_session(self) -> None:
@@ -1051,17 +1266,17 @@ class ToolRegistry:
             state, cache_status = await self.session_store.get_state(session_id or validated.sessionId)
             trace = ToolTrace(
                 thought=thought,
-                tool="session_get_state",
+                tool="session_state",
                 args={"sessionId": session_id or validated.sessionId},
                 status="ok",
                 cache_status=cache_status,
                 source_data="session -> state",
                 result_count=1,
             )
-            summary = summarize_session_state(state, f"session_get_state {session_id or validated.sessionId}", mode="compact")
+            summary = summarize_session_state(state, f"session_state {session_id or validated.sessionId}", mode="compact")
             rendered_summary = render_session_context(
                 state,
-                f"session_get_state {session_id or validated.sessionId}",
+                f"session_state {session_id or validated.sessionId}",
                 mode="compact",
             )
             # Motivation vs Logic: the API response can keep the full structured
@@ -1090,7 +1305,7 @@ class ToolRegistry:
                 "conversation": summary.get("conversation"),
                 "summary": rendered_summary,
             }
-            return ToolResult(tool="session_get_state", data=data, llm_content=summary_payload, trace=trace)
+            return ToolResult(tool="session_state", data=data, llm_content=summary_payload, trace=trace)
 
         async def clear_state(validated: SessionToolArgs, session_id: str | None, thought: str) -> ToolResult:
             state, cache_status = await self.session_store.clear_state(session_id or validated.sessionId)
@@ -1106,13 +1321,20 @@ class ToolRegistry:
             return ToolResult(tool="session_clear_state", data=state.model_dump(mode="json"), trace=trace)
 
         self._register(
-            "session_get_state",
+            "session_state",
             (
                 "Inspect MCP session working memory: recent products, identifiers, compact plan, and memo digest. "
                 "Use only when the user explicitly asks about prior context/history; do not use for fresh stock availability."
             ),
             SessionToolArgs,
             get_state,
+        )
+        self._register(
+            "session_get_state",
+            "Deprecated alias for session_state. Hidden from normal MCP discovery.",
+            SessionToolArgs,
+            get_state,
+            visible=False,
         )
         self._register(
             "session_clear_state",
@@ -1282,6 +1504,7 @@ class ToolRegistry:
             "OpenWeather geocoding for weather questions: resolve a place name or lat/lon into candidate locations.",
             WeatherResolveArgs,
             resolve,
+            visible=False,
         )
         self._register(
             "weather_current",
@@ -1307,7 +1530,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.currency_service.symbols(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_symbols",
+                tool="fx_symbols",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1315,13 +1538,13 @@ class ToolRegistry:
                 result_count=len(data.get("symbols", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_symbols", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_symbols", data=data, normalization_notes=notes, trace=trace)
 
         async def latest(validated: CurrencyLatestArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.latest(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_latest",
+                tool="fx_latest",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1329,13 +1552,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_latest", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_latest", data=data, normalization_notes=notes, trace=trace)
 
         async def history(validated: CurrencyHistoryArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.history(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_history",
+                tool="fx_history",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1343,13 +1566,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_history", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_history", data=data, normalization_notes=notes, trace=trace)
 
         async def timeseries(validated: CurrencyTimeseriesArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.timeseries(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_timeseries",
+                tool="fx_series",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1357,13 +1580,13 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_timeseries", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_series", data=data, normalization_notes=notes, trace=trace)
 
         async def convert(validated: CurrencyConvertArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.convert(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_convert",
+                tool="fx_convert",
                 args=validated.model_dump(by_alias=True, exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1371,13 +1594,13 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_convert", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_convert", data=data, normalization_notes=notes, trace=trace)
 
         async def fluctuation(validated: CurrencyFluctuationArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.fluctuation(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="currency_fluctuation",
+                tool="fx_fluctuation",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -1385,41 +1608,83 @@ class ToolRegistry:
                 result_count=len(data.get("rates", {})),
                 normalization_notes=notes,
             )
-            return ToolResult(tool="currency_fluctuation", data=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="fx_fluctuation", data=data, normalization_notes=notes, trace=trace)
 
         self._register(
-            "currency_symbols",
+            "fx_symbols",
             "Exchange Rates API supported currency codes. Use before FX lookups when the user gives unclear currency names.",
             CurrencySymbolsArgs,
             symbols,
         )
         self._register(
-            "currency_latest",
+            "currency_symbols",
+            "Deprecated alias for fx_symbols. Hidden from normal MCP discovery.",
+            CurrencySymbolsArgs,
+            symbols,
+            visible=False,
+        )
+        self._register(
+            "fx_latest",
             "Latest FX rates for an optional base and comma-separated target symbols.",
             CurrencyLatestArgs,
             latest,
         )
         self._register(
-            "currency_history",
+            "currency_latest",
+            "Deprecated alias for fx_latest. Hidden from normal MCP discovery.",
+            CurrencyLatestArgs,
+            latest,
+            visible=False,
+        )
+        self._register(
+            "fx_history",
             "Historical FX rates for one YYYY-MM-DD date, optional base, and optional comma-separated target symbols.",
             CurrencyHistoryArgs,
             history,
         )
         self._register(
-            "currency_timeseries",
+            "currency_history",
+            "Deprecated alias for fx_history. Hidden from normal MCP discovery.",
+            CurrencyHistoryArgs,
+            history,
+            visible=False,
+        )
+        self._register(
+            "fx_series",
             "Daily FX rate series between start_date and end_date for optional base/target symbols.",
             CurrencyTimeseriesArgs,
             timeseries,
         )
         self._register(
-            "currency_convert",
+            "currency_timeseries",
+            "Deprecated alias for fx_series. Hidden from normal MCP discovery.",
+            CurrencyTimeseriesArgs,
+            timeseries,
+            visible=False,
+        )
+        self._register(
+            "fx_convert",
             "Convert a positive amount from one currency to another, optionally as of a YYYY-MM-DD date.",
             CurrencyConvertArgs,
             convert,
         )
         self._register(
-            "currency_fluctuation",
+            "currency_convert",
+            "Deprecated alias for fx_convert. Hidden from normal MCP discovery.",
+            CurrencyConvertArgs,
+            convert,
+            visible=False,
+        )
+        self._register(
+            "fx_fluctuation",
             "FX rate fluctuation over a YYYY-MM-DD date range, comparing start and end rates.",
             CurrencyFluctuationArgs,
             fluctuation,
+        )
+        self._register(
+            "currency_fluctuation",
+            "Deprecated alias for fx_fluctuation. Hidden from normal MCP discovery.",
+            CurrencyFluctuationArgs,
+            fluctuation,
+            visible=False,
         )

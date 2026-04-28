@@ -49,9 +49,13 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "do not add redundant stock steps."
         ),
         (
-            "Single-product availability: prefer one `stock_inventory_snapshot` (departmentId, search from "
+            "Single-product availability: prefer one `stock_snapshot` (departmentId, search from "
             "name tokens; categoryId only if FURNITURE_CATEGORY_ROUTES match is clear). Add search or a second "
             "hop only if the first hop cannot identify the product or stock."
+        ),
+        (
+            "Grouped most/least questions by type, family, category, state, or all inventory: use `stock_aggregate` "
+            "with prompt-supplied search/filter arguments; do not answer grouped totals from variant ranking."
         ),
         (
             "If a single-product search with a multi-word phrase returns no rows, retry with a shorter "
@@ -64,7 +68,7 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "covers each resolved variant and state their availability before concluding."
         ),
         (
-            "Do not use `session_get_state` for availability; resolve ids from user text, prompt memo, or prior tools."
+            "Do not use `session_state` for availability; resolve ids from user text, prompt memo, or prior tools."
         ),
         (
             "Colour/finish live in variant `name` or options only—no separate field; never invent one."

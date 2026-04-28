@@ -98,7 +98,7 @@ Claude.ai and other MCP clients should treat the tool registry as a curated, pol
 
 This category surfaces Harmonise-backed inventory discovery, product/family detail, and scoped insights. Inputs generally accept `search`, `departmentId`, `categoryId`, and paging/filter hints, and responses include normalized inventory evidence plus optional coverage/guidance metadata (`app/tool/registry.py`, lines 186‑733).
 
-- **`stock_get_supported_scope`**
+- **`stock_scope`**
   - **Purpose:** Returns the supported departments, category routes, and filter IDs so other stock tools know which scopes are valid. It also embeds usage guidance (`furniture_capability_summary`).
   - **Arguments:** None (aside from session context) but the response includes `departmentId`, `categoryId`, `mapped_furniture_category_count`, and routing hints.
   - **Example input:** `{}`.
@@ -115,70 +115,56 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
     }
     ```
 
-- **`stock_search_catalogue`**
+- **`stock_search`**
   - **Purpose:** Finds families/products matching keywords, departments, categories, and paging filters. Good starting point for ambiguous requests.
   - **Arguments:** `search`, `departmentId`, `categoryId`, `page`, `pageSize`.
   - **Example input:** `{"search": "white gloss dance floor", "page": 1, "pageSize": 5}`.
   - **Example output:** Catalog page with `items` (each has `id`, `name`, `departmentId`, and variants), `page`, `pageSize`, `totalCount`, `totalPages`.
 
-- **`stock_get_product`**
+- **`stock_detail`**
   - **Purpose:** Once an exact SKU or product ID is known, this returns the family plus full variant list (dimensions, pricing`, `stock` per state).
   - **Arguments:** `id` or `sku`.
   - **Example input:** `{"sku": "ALTO-CH-001"}`.
   - **Example output:** Product detail similar to the search result but with every variant’s `details` (height, width, stock, image URLs) and `llm_content` tailored for summaries.
 
-- **`stock_get_product_family_inventory`**
-  - **Purpose:** Aggregates all resolved variants for a named family/search term into one payload that includes rows, evidence, coverage, and guidance for answering family-level availability questions.
-  - **Arguments:** `search`, optional `departmentId`, `categoryId`, plus paging (`pageSize`) (`collect_family_evidence` helper enriches each variant).
-  - **Example input:** `{"search": "Alto chair", "departmentId": 3}`.
-  - **Example output:** Rows with SKU-level stock plus `coverage` (`limitations`, `matchedProducts`, `enrichedVariants`) and guidance telling the assistant to treat every row as part of the family answer.
-
-- **`stock_inventory_snapshot`**
+- **`stock_snapshot`**
   - **Purpose:** Produces answer-ready snapshot rows for broad catalogue/category inquiries, including `knownSpecs`, `stock`, and `attributeEvidence`.
   - **Arguments:** `search`, `departmentId`, `categoryId`, etc., with controls for `includeKnownSpecs`.
   - **Example output:** `{"rows": [...], "coverage": {...}, "evidence": [...]}` where `rows` already include `stock`, `knownSpecs`, and `attributeEvidence` for downstream summarization.
 
-- **`stock_rank_variants_by_stock`**
-  - **Purpose:** Ranks resolved variants by stock in `VIC`, `NSW`, `QLD`, or `overall` depending on `region`/`direction`.
+- **`stock_aggregate`**
+  - **Purpose:** Sums stock or hirable counts across all resolved inventory rows and ranks grouped totals. Use for “most/least by type/family/category/state/all inventory” questions.
+  - **Arguments:** `search`, `region`, `measure`, `groupBy`, `direction`, `limit`, optional `departmentId`/`categoryId`.
+  - **Example input:** `{"search": "chair", "region": "NSW", "measure": "stock", "groupBy": "product", "direction": "most"}`.
+  - **Example output:** Ranked groups with `rankValue`, summed `stock`/`hirable` totals, contributing variants, and coverage notes.
+
+- **`stock_rank_variants`**
+  - **Purpose:** Ranks resolved variants by stock in `VIC`, `NSW`, `QLD`, or `overall` depending on `region`/`direction`. Use only for variant/SKU ranking, not grouped type totals.
   - **Arguments:** `search`, `region`, `direction`, optional department/category-based filters.
   - **Example input:** `{"search": "Charlie chair", "region": "VIC", "direction": "most"}`.
   - **Example output:** Ranked rows (`rank`, `product`, `variant`, `stock`, `totalStock`, `totalHirable`, dimensions/pricing/media, coverage/guidance).
 
-- **`stock_extract_variant_evidence`**
-  - **Purpose:** Returns normalized evidence for a single variant/SKU (including provenance path) and is only used when the user names a SKU.
-  - **Arguments:** `sku`.
-  - **Example output:** `{"sku": "...", "stock": {"vicStock": 12,...}, "provenance": {"sourcePath": "...", "sourceUpdated": "..."} }`.
-
-- **`stock_compare_variants`**
+- **`stock_compare`**
   - **Purpose:** Side-by-side comparison of 2‑20 SKUs. Each row includes state stock, pricing, media, and coverage.
   - **Arguments:** `identifiers` list (SKUs or IDs).
   - **Example input:** `{"identifiers": ["CHARLIE-CH-001", "CHARLIE-CH-002"], "regions": ["VIC","NSW"]}` (regions used for guidance).
   - **Example output:** `{"data": [{"sku": "...", "vicStock": 5, "nswStock": 10,...}, ...]}` plus `llm_content`.
 
-- **`stock_count_items`**
-  - **Purpose:** Returns product counts for departments/categories (plus optional variant counts when `countVariants=True`), helpful for “how many products do we have?” queries.
-  - **Arguments:** `search`, `departmentId`, `categoryId`, `countVariants`.
-  - **Example output:** `{"product_count": 42, "filters": {...}, "variant_count": 120}` with guidance describing the difference between product/variant counts.
-
-- **`stock_hirable_by_state`**
-  - **Purpose:** Aggregates `stock`/`hirable` counts by state for a named family and provides a per-variant breakdown.
-  - **Arguments:** `search`, `departmentId`, `categoryId`, `pageSize`, `states`.
-  - **Example output:** `{"state_summary": {"VIC": {"total_stock": ...}}, "variant_breakdown": [...], "coverage": {...}}`.
-
 Hidden stock tools (local Harmonise only or backwards-compatible aliases):
   - `stock_get_departments` and `stock_get_categories` (`visible=False`) expose raw metadata for local Harmonise dev environments.
-  - `stock_get_variant_evidence` is a deprecated alias of `stock_extract_variant_evidence`; it remains callable but hidden.
+  - Old names such as `stock_inventory_snapshot`, `stock_get_product_family_inventory`, `stock_rank_variants_by_stock`, `stock_count_items`, and `stock_hirable_by_state` remain callable but hidden.
+  - `stock_get_variant_evidence` and `stock_extract_variant_evidence` remain hidden exact-variant evidence helpers.
 
 ### Resolver tools
 
-- **`resolver_disambiguate_candidates`** (`app/tool/registry.py` lines 974‑1047)
+- **`stock_disambiguate`**
   - **Purpose:** Ranks ambiguous catalogue candidates and optionally returns a resolved family or clarification options for follow-up questions.
   - **Arguments:** `query`, optional `departmentId`, `categoryId`, `limit`.
   - **Example output:** Either `{"status": "resolved_product_family", "product_id": "...", "variant_count": ...}` when confident, or a clarification payload with several `options`.
 
 ### Session tools
 
-- **`session_get_state`**
+- **`session_state`**
   - **Purpose:** Returns the MCP session working memory (recent identifiers, plan, memo, conversation summary). Use only when the user explicitly asks about context/history.
   - **Arguments:** `sessionId` (or relies on the MCP session context).
   - **Example output:** Summary payload with `recent_product_names`, `plan`, `memo`, and `conversation` text plus structured details.
@@ -209,32 +195,32 @@ These call NewsAPI via `app/tool/news.py` and include formatted summaries:
 
 OpenWeather-powered helpers defined near `app/tool/weather.py`:
 
-- **`weather_resolve`** — geocodes place names or coordinates.
 - **`weather_current`** — current conditions for the resolved place.
 - **`weather_forecast`** — 5-day/3-hour forecast data.
 - **`weather_history`** — historical data when supported.
-Each tool accepts `q`/`lat`/`lon` plus date bounds where applicable, returns the OpenWeather payload, and attaches normalization notes for traceability.
+Each visible weather tool accepts `q`/`lat`/`lon` plus date bounds where applicable, returns the OpenWeather payload, and attaches normalization notes for traceability. `weather_resolve` remains hidden for geocoding-only diagnostics.
 
 ### Currency tools
 
 These wrap `app/tool/currency.py`/`CurrencyService` and hit exchangeratesapi:
 
-- **`currency_symbols`** — lists supported ISO currency codes.
-- **`currency_latest`** — latest FX rates for optional base/targets.
-- **`currency_history`** — single-date historical FX rates.
-- **`currency_timeseries`** — time series between `start_date` and `end_date`.
-- **`currency_convert`** — convert an amount between currencies on an optional date.
-- **`currency_fluctuation`** — compares start/end rates over a date range.
+- **`fx_symbols`** — lists supported ISO currency codes.
+- **`fx_latest`** — latest FX rates for optional base/targets.
+- **`fx_history`** — single-date historical FX rates.
+- **`fx_series`** — time series between `start_date` and `end_date`.
+- **`fx_convert`** — convert an amount between currencies on an optional date.
+- **`fx_fluctuation`** — compares start/end rates over a date range.
 
-All currency tools share the same pattern: validated args, normalized data/notes, and traces for auditing (`app/tool/registry.py`, lines 1305‑1425).
+All FX tools share the same pattern: validated args, normalized data/notes, and traces for auditing. The old `currency_*` names remain hidden aliases.
 
 The raw local metadata tools and deprecated aliases remain callable for compatibility but are hidden from normal MCP discovery so external models do not choose them by accident.
 
 Example Claude.ai tool routing:
 
-- “How many department and category of stock do we have?” -> `stock_get_supported_scope`.
-- “Let me know about our Alto chair stock availability.” -> `stock_get_product_family_inventory` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
-- “Which Charlie chair variant is most in stock in Victoria?” -> `stock_rank_variants_by_stock` with `search="Charlie chair"`, `region="VIC"`, and `direction="most"`.
+- “How many department and category of stock do we have?” -> `stock_scope`.
+- “Let me know about our Alto chair stock availability.” -> `stock_snapshot` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
+- “Which type of chair has the most stock in NSW production-wise?” -> `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`.
+- “Which Charlie chair variant is most in stock in Victoria?” -> `stock_rank_variants` with `search="Charlie chair"`, `region="VIC"`, and `direction="most"`.
 
 ## Local setup
 
@@ -304,7 +290,7 @@ curl http://localhost:80/api/v1/tools
 
 ```bash
 curl -X POST http://localhost:80/api/v1/tools/call   -H "Content-Type: application/json"   -d '{
-    "tool": "stock_search_catalogue",
+    "tool": "stock_search",
     "args": {
       "page": 1,
       "pageSize": 5,

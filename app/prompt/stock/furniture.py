@@ -174,7 +174,7 @@ def furniture_capability_rules() -> list[str]:
             "`categoryId` and to reason about category names; prefer explicit ids from the reference when the match is clear."
         ),
         (
-            "`stock_inventory_snapshot` is for live product/variant inventory evidence only; do not use it for "
+            "`stock_snapshot` is for live product/variant inventory evidence only; do not use it for "
             "department/category capability listing or counts."
         ),
     ]
@@ -231,11 +231,11 @@ def furniture_category_rules() -> list[str]:
 FURNITURE_EXAMPLES = """
 FURNITURE Example 1:
 User: Show me chairs in stock.
-Assistant: classify this as a furniture stock request, then call stock_search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
+Assistant: classify this as a furniture stock request, then call stock_search with departmentId=3 and categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
 
 FURNITURE Example 2:
 User: What lounge options do we have?
-Assistant: call stock_search_catalogue with departmentId=3 and categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e, then summarize returned variants.
+Assistant: call stock_search with departmentId=3 and categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e, then summarize returned variants.
 
 FURNITURE Example 3:
 User: Show me stools and electronics.
@@ -243,13 +243,13 @@ Assistant: handle stools via furniture stock tools with departmentId=3 and categ
 
 FURNITURE Example 4:
 User: Let me know more about the coffee table category.
-Assistant: classify this as live category inventory exploration, then call stock_inventory_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
+Assistant: classify this as live category inventory exploration, then call stock_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
 
 FURNITURE Example 5:
 User: Is the Arc lounge chair in stock?
-Assistant: treat as a single-product availability check; call stock_inventory_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include every returned variant (with colours/sizes) and state their availability before concluding.
+Assistant: treat as a single-product availability check; call stock_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include every returned variant (with colours/sizes) and state their availability before concluding.
 
 FURNITURE Example 6:
 User: Tell me if the Spencer chair is still available.
-Assistant: treat as another single-product availability request without variant names; use stock_inventory_snapshot so each resolved variant's stock is captured, and mention every variant's availability in the final answer before finishing.
+Assistant: treat as another single-product availability request without variant names; use stock_snapshot so each resolved variant's stock is captured, and mention every variant's availability in the final answer before finishing.
 """.strip()

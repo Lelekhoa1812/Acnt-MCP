@@ -43,12 +43,12 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
         session=SessionState(session_id="planner-policy"),
         tools=[
             ToolDefinition(
-                name="stock_search_catalogue",
+                name="stock_search",
                 description="Search the catalogue.",
                 input_schema={"type": "object", "properties": {"page": {}, "pageSize": {}, "search": {}}},
             ),
             ToolDefinition(
-                name="stock_get_product",
+                name="stock_detail",
                 description="Get product detail.",
                 input_schema={"type": "object", "properties": {"sku": {}, "id": {}}},
             ),
@@ -67,7 +67,7 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "distinctive product/model token" in planner_prompt
     assert "never rely on hard-coded keyword lists" in planner_prompt
     assert "Do not classify named-category exploration as capability-only" in planner_prompt
-    assert "avoid planning both `stock_inventory_snapshot` and `stock_compare_variants`" in planner_prompt
+    assert "avoid planning both `stock_snapshot` and `stock_compare`" in planner_prompt
     assert "latency-aware" in planner_prompt
     assert "not yet implemented in the current tool contract" in planner_prompt
 
@@ -82,7 +82,7 @@ def test_render_system_uses_compact_memory_and_tool_roster() -> None:
                 PlanStep(
                     id=1,
                     name="search catalogue",
-                    tool="stock_search_catalogue",
+                    tool="stock_search",
                     status="in-progress",
                     args={"page": 1, "pageSize": 20, "search": "floor"},
                     hypotheses=["Search the catalogue first."],
@@ -92,7 +92,7 @@ def test_render_system_uses_compact_memory_and_tool_roster() -> None:
                 entries=[
                     MemoEntry(
                         step_id=1,
-                        tool="stock_search_catalogue",
+                        tool="stock_search",
                         args={"page": 1, "pageSize": 20, "search": "floor"},
                         rows=[
                             {
@@ -119,7 +119,7 @@ def test_render_system_uses_compact_memory_and_tool_roster() -> None:
         session=session,
         tools=[
             ToolDefinition(
-                name="stock_search_catalogue",
+                name="stock_search",
                 description="Search the catalogue.",
                 input_schema={"type": "object", "properties": {"page": {}, "pageSize": {}, "search": {}}},
             )
@@ -131,7 +131,7 @@ def test_render_system_uses_compact_memory_and_tool_roster() -> None:
     assert "memo_cache" not in prompt
     assert "conversation_history" not in prompt
     assert "\"input_schema\"" not in prompt
-    assert "- stock_search_catalogue: Search the catalogue." in prompt
+    assert "- stock_search: Search the catalogue." in prompt
 
 
 def test_render_session_context_chunks_tables_without_breaking_headers() -> None:
@@ -182,7 +182,7 @@ def test_render_system_routes_named_category_exploration_to_live_inventory() -> 
     )
 
     assert "live category inventory exploration" in prompt
-    assert "stock_inventory_snapshot" in prompt
+    assert "stock_snapshot" in prompt
     assert "b7d70000-eacf-fc4c-f320-08de7f19d96e" in prompt
 
 
