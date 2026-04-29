@@ -608,6 +608,195 @@ async def test_agent_engine_uses_compact_snapshot_payload_for_follow_up_model_tu
 
 
 @pytest.mark.anyio
+async def test_agent_engine_retries_initial_query_with_compact_context_on_invalid_prompt_error() -> None:
+    container = await build_container(build_engine_settings())
+    system_lengths: list[int] = []
+    query_attempts = {"count": 0}
+    invalid_prompt_detail = (
+        "{"
+        '"error": {"message": "Invalid prompt: your prompt was flagged as potentially violating our usage policy.", '
+        '"type": "invalid_request_error", "param": null, "code": "invalid_prompt"}'
+        "}"
+    )
+
+    async def fake_post_chat_completion(payload, endpoint_name):  # noqa: ANN001
+        if endpoint_name == "/api/v1/query/planner":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "goal": "List catalogue items",
+                                    "steps": [
+                                        {
+                                            "id": 1,
+                                            "name": "catalogue search",
+                                            "tool": "stock_search_catalogue",
+                                            "status": "planned",
+                                            "args": {"page": 1, "pageSize": 5, "search": "floor"},
+                                            "hypotheses": ["Search the catalogue first."],
+                                            "validation": None,
+                                        }
+                                    ],
+                                    "memo": {"entries": [], "aggregates": {}},
+                                    "status": "in-progress",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/search-split":
+            return {"choices": [{"message": {"content": json.dumps({"items": ["floor"]})}}]}
+        if endpoint_name == "/api/v1/query" and not payload.get("response_format"):
+            query_attempts["count"] += 1
+            system_message = next(message["content"] for message in payload["messages"] if message["role"] == "system")
+            system_lengths.append(len(system_message))
+            if query_attempts["count"] == 1:
+                raise UpstreamServiceError(400, invalid_prompt_detail)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                "<thought>\n"
+                                "goal: collect catalogue results\n"
+                                "entity_guess: product\n"
+                                "strategy: catalogue search\n"
+                                "tool: stock_search_catalogue\n"
+                                "args_draft: {\"page\":1,\"pageSize\":5,\"search\":\"floor\"}\n"
+                                "risk: none\n"
+                                "</thought>"
+                            ),
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "stock_search_catalogue",
+                                        "arguments": "{\"page\":1,\"pageSize\":5,\"search\":\"floor\"}",
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query" and payload.get("response_format"):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "status": "answered",
+                                    "answer": "Retrieved the requested catalogue items.",
+                                    "limitations": [],
+                                    "clarification": None,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/validator":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "expected_rows": 5,
+                                    "actual_rows": 5,
+                                    "findings": [],
+                                    "ambiguity": [],
+                                    "missing_statistics": [],
+                                    "confidence": 0.9,
+                                    "normalized_rows": [],
+                                    "normalized_evidence": [],
+                                    "aggregates": {},
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        if endpoint_name == "/api/v1/query/composer":
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Retrieved the requested catalogue items."
+                        }
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected endpoint call: {endpoint_name}")
+
+    container.agent_engine._post_chat_completion = fake_post_chat_completion  # type: ignore[method-assign]
+
+    try:
+        session_state, _ = await container.session_store.get_state("engine-invalid-prompt-retry")
+        session_state.recent_product_names = [f"Product {index}" for index in range(5)]
+        session_state.conversation_history = [
+            ConversationTurn(
+                role="assistant",
+                content=(
+                    "| Product | Variant | SKU | Size | Stock |\n"
+                    "| --- | --- | --- | --- | --- |\n"
+                    + "\n".join(
+                        f"| Product {index} | Variant {index} | sku-{index} | 1 x 1 m | {index} in stock |"
+                        for index in range(40)
+                    )
+                ),
+            )
+        ]
+        session_state.memo_cache = MemoCache(
+            entries=[
+                MemoEntry(
+                    step_id=1,
+                    tool="stock_search_catalogue",
+                    args={"page": 1, "pageSize": 5, "search": "floor"},
+                    rows=[
+                        {
+                            "product": f"Product {index}",
+                            "variant": f"Variant {index}",
+                            "sku": f"sku-{index}",
+                            "size": "1 x 1 m",
+                            "stock": f"Overall: {index} in stock",
+                            "knownSpecs": ["compact row"],
+                        }
+                        for index in range(20)
+                    ],
+                    evidence=[],
+                    aggregates={},
+                    provenance={},
+                )
+            ],
+            aggregates={},
+        )
+
+        result = await container.agent_engine.run(
+            AgentQueryRequest(
+                message="List all stock with sizes and specs in a table.",
+                sessionId="engine-invalid-prompt-retry",
+                includeThoughts=False,
+            ),
+            session_state,
+        )
+    finally:
+        await container.close()
+
+    assert result.status == "answered"
+    assert result.debug is None
+    assert query_attempts["count"] >= 2
+    assert len(system_lengths) >= 2
+    assert system_lengths[1] <= system_lengths[0]
+    assert "Retrieved the requested catalogue items." in result.answer
+
+
+@pytest.mark.anyio
 async def test_agent_engine_retries_initial_query_with_compact_context_on_context_length_error() -> None:
     container = await build_container(build_engine_settings())
     system_lengths: list[int] = []
@@ -648,6 +837,8 @@ async def test_agent_engine_retries_initial_query_with_compact_context_on_contex
                     }
                 ]
             }
+        if endpoint_name == "/api/v1/query/search-split":
+            return {"choices": [{"message": {"content": json.dumps({"items": ["floor"]})}}]}
         if endpoint_name == "/api/v1/query" and not payload.get("response_format"):
             query_attempts["count"] += 1
             system_message = next(message["content"] for message in payload["messages"] if message["role"] == "system")

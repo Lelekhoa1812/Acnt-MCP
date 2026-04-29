@@ -83,27 +83,25 @@ def _oauth_authorization_server_metadata(base_url: str, settings: Settings) -> d
     if service_documentation.startswith("/"):
         service_documentation = f"{base_url}{service_documentation}"
 
-    scopes_supported = ["openid", "profile", "email", "offline_access"]
-    oauth_scope = settings.resolved_oauth_scope()
-    if oauth_scope and oauth_scope not in scopes_supported:
-        scopes_supported.append(oauth_scope)
-
     return {
         "issuer": base_url,
-        "authorization_endpoint": f"{base_url}/oauth/login",
-        "token_endpoint": f"{base_url}/oauth/callback",
+        # Root Cause vs Logic: GPT, Cursor, and Claude.ai MCP connectors expect
+        # the phase-2 authorization-code bridge here, not the optional direct
+        # Entra browser login callback. Advertising the bridge endpoints keeps
+        # every connector on the same register/authorize/token contract.
+        "authorization_endpoint": f"{base_url}/oauth/authorize",
+        "token_endpoint": f"{base_url}/oauth/token",
         "token_validation_endpoint": f"{base_url}/oauth/token/validate",
         "registration_endpoint": f"{base_url}/oauth/register",
-        # Motivation vs Logic: Claude's browser login now uses a static client
-        # registration, so discovery should advertise the login/callback flow and
-        # keep the client-metadata document path disabled. The server still
-        # supports DCR for clients like Cursor that expect a registration step.
+        # Motivation vs Logic: the bridge is the public connector surface, so we
+        # keep client-metadata documents disabled and drive all clients through
+        # DCR/manual registration with the returned client credentials.
         "client_id_metadata_document_supported": False,
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "client_credentials"],
         "code_challenge_methods_supported": ["S256", "plain"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post"],
-        "scopes_supported": scopes_supported,
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+        "scopes_supported": ["mcp"],
         "service_documentation": service_documentation,
     }
 

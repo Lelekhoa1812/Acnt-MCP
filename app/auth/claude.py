@@ -24,8 +24,9 @@ class ClaudeOAuthError(Exception):
 class ClaudeOAuthService:
     # Motivation vs Logic: Claude needs a dedicated OAuth client flow that uses
     # the project's static client credentials, while the MCP transport keeps
-    # using the server-side JWT validation path. This service owns the browser
-    # redirect, code exchange, and token validation concerns in one place.
+    # using the phase-2 bridge as the default public connector contract. This
+    # service owns the optional direct Entra browser redirect, code exchange,
+    # and token validation concerns in one place.
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         jwks_url = settings.resolved_oauth_jwks_url
@@ -118,9 +119,11 @@ class ClaudeOAuthService:
                 status_code=500,
             )
 
+        # Root Cause vs Logic: this Entra app is configured as a public client
+        # for PKCE-based code redemption, so the token request must not send a
+        # client secret or Azure rejects it as a confidential-client exchange.
         data = {
             "client_id": self.settings.oauth_client_id,
-            "client_secret": self.settings.oauth_client_secret,
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": self._require_redirect_uri(base_url),
@@ -129,8 +132,14 @@ class ClaudeOAuthService:
         if code_verifier:
             data["code_verifier"] = code_verifier
 
+        headers = {
+            # Root Cause vs Logic: Entra treats this app registration as SPA-
+            # style redemption, so the token request must present a browser
+            # origin even though the exchange is orchestrated server-side.
+            "Origin": base_url.rstrip("/"),
+        }
         async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(token_url, data=data)
+            response = await client.post(token_url, data=data, headers=headers)
 
         if response.status_code >= 400:
             try:
@@ -155,8 +164,8 @@ class ClaudeOAuthService:
     def validate_access_token(self, token: str) -> dict[str, Any]:
         self._require_enabled()
         issuer = self.settings.resolved_oauth_issuer
-        audience = self.settings.resolved_oauth_audience()
-        if not issuer or not audience:
+        audiences = self.settings.resolved_oauth_audience_variants()
+        if not issuer or not audiences:
             raise ClaudeOAuthError(
                 code="oauth_validation_config_missing",
                 message="Claude OAuth validation settings are incomplete.",
@@ -175,7 +184,7 @@ class ClaudeOAuthService:
                 token,
                 signing_key,
                 algorithms=["RS256", "RS384", "RS512"],
-                audience=audience,
+                audience=audiences,
                 issuer=issuer,
                 options={"require": ["exp"]},
             )

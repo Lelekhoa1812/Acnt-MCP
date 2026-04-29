@@ -365,7 +365,23 @@ class Settings(BaseSettings):
 
     @property
     def parsed_mcp_allowed_origins(self) -> list[str]:
-        return self._split_csv(self.mcp_allowed_origins)
+        configured = self._split_csv(self.mcp_allowed_origins)
+        if not self.mcp_browser_oauth_enabled:
+            return configured
+
+        # Motivation vs Logic: browser MCP connectors need discovery and OAuth
+        # responses to be readable cross-origin, so we automatically include the
+        # known ChatGPT/Claude web origins unless the deployment overrides them.
+        recommended_origins = [
+            "https://chatgpt.com",
+            "https://claude.ai",
+            "https://claude.com",
+        ]
+        merged = list(configured)
+        for origin in recommended_origins:
+            if origin not in merged:
+                merged.append(origin)
+        return merged
 
     @property
     def parsed_mcp_oauth_auto_trusted_redirect_domains(self) -> list[str]:
@@ -450,18 +466,41 @@ class Settings(BaseSettings):
             return None
         return f"{authority}/discovery/v2.0/keys"
 
+    def _normalize_oauth_resource_id(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        cleaned = value.strip()
+        if cleaned.startswith("api://"):
+            cleaned = cleaned[6:]
+        if "/" in cleaned:
+            cleaned = cleaned.rsplit("/", 1)[-1]
+        return cleaned or None
+
     def resolved_oauth_audience(self) -> str | None:
-        if self.oauth_audience:
-            return self.oauth_audience
-        if self.auth_audience:
-            return self.auth_audience
-        if self.oauth_client_id:
-            return f"api://{self.oauth_client_id.strip()}"
-        return None
+        return self._normalize_oauth_resource_id(self.oauth_audience or self.oauth_client_id)
+
+    def resolved_oauth_audience_variants(self) -> list[str]:
+        audience = self.resolved_oauth_audience()
+        if not audience:
+            return []
+        variants = [audience]
+        api_uri = f"api://{audience}"
+        if api_uri not in variants:
+            variants.append(api_uri)
+        if self.oauth_tenant_id:
+            tenant_uri = f"api://{self.oauth_tenant_id.strip().strip('/')}/{audience}"
+            if tenant_uri not in variants:
+                variants.append(tenant_uri)
+        return variants
 
     def resolved_oauth_scope(self) -> str | None:
         if self.oauth_scope:
-            return self.oauth_scope
+            scope = self.oauth_scope.strip()
+            if scope.endswith("/.default"):
+                resource = self._normalize_oauth_resource_id(scope[: -len("/.default")])
+                if resource:
+                    return f"{resource}/.default"
+            return scope
         audience = self.resolved_oauth_audience()
         if audience:
             return f"{audience}/.default"

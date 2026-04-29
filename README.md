@@ -320,9 +320,9 @@ The repo includes a local `.mcp.json` example for process-based MCP clients (Cla
 
 Claude.ai requires a public HTTPS MCP endpoint, so the stdio server is not directly attachable. Follow `docs/phase2/mcp.md` for Azure deployments that expose `/mcp`, trust forwarded HTTPS headers, and enable the OAuth bridge for browser connectors.
 
-For connector-style OAuth setup, configure `HTH_MCP_BEARER_TOKEN`. That keeps the OAuth bridge available and exposes the registration, authorize, and token endpoints that connector UIs expect. The project uses the manual/DCR path for client registration, so the connector should read the `client_id` and `client_secret` returned by `POST /oauth/register`. The bridge now returns a JWT access token, signed by `HTH_MCP_OAUTH_JWT_SECRET` when set or `HTH_MCP_BEARER_TOKEN` as a fallback.
+For connector-style OAuth setup, configure `HTH_MCP_BEARER_TOKEN`. That keeps the OAuth bridge available and exposes the registration, authorize, and token endpoints that GPT, Cursor, and Claude.ai expect. The project uses the manual/DCR path for client registration, so the connector should read the `client_id` and `client_secret` returned by `POST /oauth/register`. The bridge now returns a JWT access token, signed by `HTH_MCP_OAUTH_JWT_SECRET` when set or `HTH_MCP_BEARER_TOKEN` as a fallback.
 
-If you trust public connectors from ChatGPT or Claude, set `AUTO_TRUSTED_DOMAINS=chatgpt.com,claude.ai,claude.com` so those hosts can auto-register without a manual pre-registration step.
+If you trust public connectors from ChatGPT or Claude, set `AUTO_TRUSTED_DOMAINS=chatgpt.com,claude.ai,claude.com` so those hosts can auto-register without a manual pre-registration step. Also allow the same browser origins in `HTH_MCP_ALLOWED_ORIGINS` when you want cross-origin discovery and OAuth responses to work from hosted connector UIs.
 
 OAuth recovery rule of thumb:
 
@@ -331,7 +331,7 @@ OAuth recovery rule of thumb:
 3. If you ever lose the values, call `GET /oauth/register/{client_id}` with the registration access token
 4. If identity validation is enabled, use the JWT access token returned by `/oauth/token` when calling `/mcp`
 
-Identity enforcement is separate from the OAuth bridge. Read `docs/phase2/auth.md` for the Entra/JWT resource-server rules and `docs/phase2/oauth.md` for the connector registration flow.
+Identity enforcement is separate from the OAuth bridge. Read `docs/phase2/auth.md` for the Entra/JWT resource-server rules and `docs/phase2/oauth.md` for the connector registration flow. The optional `OAUTH_*` settings are only for the separate direct Entra login helper endpoints and are not required for standard MCP connector OAuth.
 
 ## Tests
 

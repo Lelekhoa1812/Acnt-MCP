@@ -2657,17 +2657,29 @@ class AgentEngine:
         try:
             return await builder("normal")
         except UpstreamServiceError as exc:
-            if not self._is_context_length_error(exc):
+            if not self._should_retry_with_compact_context(exc):
                 raise
-            # Root Cause vs Logic: the upstream `context_length_exceeded` error
-            # means the prompt assembly is too large, so we retry with compacted
-            # context instead of treating the visible chat as the culprit.
-            self.logger.warning("Context length exceeded during %s; retrying with compact prompt.", operation_name)
+            # Root Cause vs Logic: upstream prompt rejections can come from
+            # either oversized context or policy-sensitive prompt assembly.
+            # Retrying with the compact prompt trims non-essential context and
+            # gives us a second chance before surfacing a hard backend failure.
+            self.logger.warning("Prompt rejected during %s; retrying with compact prompt.", operation_name)
             return await builder("compact")
 
     def _is_context_length_error(self, exc: UpstreamServiceError) -> bool:
         detail = exc.detail.lower()
         return "context_length_exceeded" in detail or "input tokens exceed" in detail or "messages resulted in" in detail
+
+    def _is_invalid_prompt_error(self, exc: UpstreamServiceError) -> bool:
+        detail = exc.detail.lower()
+        return (
+            "invalid_prompt" in detail
+            or "flagged as potentially violating" in detail
+            or "usage policy" in detail
+        )
+
+    def _should_retry_with_compact_context(self, exc: UpstreamServiceError) -> bool:
+        return self._is_context_length_error(exc) or self._is_invalid_prompt_error(exc)
 
     async def complete_with_model(
         self,

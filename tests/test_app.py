@@ -346,11 +346,11 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
                 "url": "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
                 "data": {
                     "client_id": self.settings.oauth_client_id,
-                    "client_secret": self.settings.oauth_client_secret,
                     "code": code,
                     "code_verifier": code_verifier,
                     "redirect_uri": f"{base_url.rstrip('/')}/oauth/callback",
                 },
+                "headers": {"Origin": base_url.rstrip("/")},
             }
         )
         return {
@@ -379,6 +379,15 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
             "/oauth/callback",
             params={"code": "auth-code", "state": "state-1"},
         )
+        client.get(
+            "/oauth/login",
+            params={"state": "state-2"},
+            follow_redirects=False,
+        )
+        callback_json = client.get(
+            "/oauth/callback",
+            params={"code": "auth-code-2", "state": "state-2", "format": "json"},
+        )
         validation = client.post(
             "/oauth/token/validate",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -388,11 +397,14 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     assert protected.json()["resource"] == "https://hth.example.test/mcp"
     metadata = authorization_server.json()
     assert authorization_server.status_code == 200
-    assert metadata["authorization_endpoint"] == "https://hth.example.test/oauth/login"
-    assert metadata["token_endpoint"] == "https://hth.example.test/oauth/callback"
+    assert metadata["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
+    assert metadata["token_endpoint"] == "https://hth.example.test/oauth/token"
     assert metadata["token_validation_endpoint"] == "https://hth.example.test/oauth/token/validate"
     assert metadata["registration_endpoint"] == "https://hth.example.test/oauth/register"
     assert metadata["client_id_metadata_document_supported"] is False
+    assert metadata["grant_types_supported"] == ["authorization_code", "client_credentials"]
+    assert metadata["token_endpoint_auth_methods_supported"] == ["none", "client_secret_post"]
+    assert metadata["scopes_supported"] == ["mcp"]
     assert authorized.status_code == 302
     assert query["client_id"] == ["claude-client-id"]
     assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
@@ -400,17 +412,66 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     assert query["code_challenge_method"] == ["S256"]
     assert query["code_challenge"][0]
     assert callback.status_code == 200
-    callback_payload = callback.json()
+    assert callback.headers["content-type"].startswith("text/html")
+    assert "access_token" not in callback.text
+    assert "refresh_token" not in callback.text
+    assert "OAuth login complete" in callback.text
+    callback_payload = callback_json.json()
     assert callback_payload["status"] == "ok"
     assert callback_payload["claims"]["oid"] == "user-1"
     assert callback_payload["claims"]["aud"] == "api://claude-client-id"
+    assert "access_token" not in callback_payload
     assert validation.status_code == 200
     assert validation.json()["active"] is True
     assert validation.json()["claims"]["oid"] == "user-1"
     assert posted_requests[0]["url"] == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token"
     assert posted_requests[0]["data"]["client_id"] == "claude-client-id"
-    assert posted_requests[0]["data"]["client_secret"] == "claude-client-secret"
     assert posted_requests[0]["data"]["code_verifier"]
+    assert posted_requests[1]["data"]["code_verifier"]
+
+
+def test_claude_oauth_defaults_to_guid_resource_identifier() -> None:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        oauth_client_id="73371819-b9f4-4bec-95f5-3303f3a3b0de",
+        oauth_client_secret="secret",
+        oauth_tenant_id="tenant-1",
+        oauth_authority="https://login.microsoftonline.com/tenant-1",
+    )
+
+    assert settings.resolved_oauth_audience() == "73371819-b9f4-4bec-95f5-3303f3a3b0de"
+    assert settings.resolved_oauth_scope() == "73371819-b9f4-4bec-95f5-3303f3a3b0de/.default"
+
+
+def test_claude_callback_errors_render_safe_browser_page() -> None:
+    with build_claude_oauth_client() as client:
+        response = client.get(
+            "/oauth/callback",
+            params={"error": "invalid_grant", "error_description": "Code verifier mismatch."},
+        )
+        diagnostic = client.get(
+            "/oauth/callback",
+            params={"error": "invalid_grant", "error_description": "Code verifier mismatch.", "format": "json"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Code verifier mismatch." in response.text
+    assert "access_token" not in response.text
+    assert diagnostic.status_code == 400
+    assert diagnostic.json()["error"] == "invalid_grant"
 
 
 def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:
@@ -485,6 +546,25 @@ def test_mcp_browser_origins_receive_cors_headers() -> None:
     assert "authorization" in preflight.headers["access-control-allow-headers"].lower()
 
 
+def test_chatgpt_browser_origin_receives_cors_headers_without_manual_allowlist_entry() -> None:
+    with build_mcp_auth_client() as client:
+        protected = client.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"Origin": "https://chatgpt.com"},
+        )
+        preflight = client.options(
+            "/oauth/token",
+            headers={
+                "Origin": "https://chatgpt.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+
+    assert protected.headers["access-control-allow-origin"] == "https://chatgpt.com"
+    assert preflight.headers["access-control-allow-origin"] == "https://chatgpt.com"
+
+
 def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     settings = Settings(
         local_harmonise=True,
@@ -537,6 +617,115 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     )
     assert decoded["token_origin"] == "mcp_oauth_bridge"
     assert token_payload["token_type"] == "Bearer"
+
+
+def test_cursor_pkce_authorization_code_exchange_succeeds() -> None:
+    verifier = "cursor-pkce-verifier-123"
+    with build_mcp_auth_client() as client:
+        registered = client.post(
+            "/oauth/register",
+            json={
+                "client_name": "Cursor",
+                "redirect_uris": ["https://cursor.sh/oauth/callback"],
+            },
+        )
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://cursor.sh/oauth/callback",
+                "code_challenge": verifier,
+                "code_challenge_method": "plain",
+                "state": "cursor-state",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_payload["client_id"],
+                "code": query["code"][0],
+                "redirect_uri": "https://cursor.sh/oauth/callback",
+                "code_verifier": verifier,
+            },
+        )
+
+    assert registered.status_code == 201
+    assert authorized.status_code == 302
+    assert query["state"] == ["cursor-state"]
+    assert token.status_code == 200
+    assert token.json()["token_type"] == "Bearer"
+
+
+def test_chatgpt_connector_flow_uses_bridge_endpoints_not_callback() -> None:
+    with build_mcp_auth_client() as client:
+        metadata = client.get(
+            "/.well-known/oauth-authorization-server",
+            headers={"Origin": "https://chatgpt.com"},
+        )
+        registered = client.post(
+            "/oauth/register",
+            json={
+                "client_name": "ChatGPT",
+                "redirect_uris": ["https://chatgpt.com/connector/oauth/callback"],
+            },
+        )
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://chatgpt.com/connector/oauth/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": query["code"][0],
+                "redirect_uri": "https://chatgpt.com/connector/oauth/callback",
+            },
+        )
+
+    assert metadata.json()["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
+    assert metadata.json()["token_endpoint"] == "https://hth.example.test/oauth/token"
+    assert metadata.json()["token_endpoint"] != "https://hth.example.test/oauth/callback"
+    assert authorized.status_code == 302
+    assert token.status_code == 200
+
+
+def test_claude_trusted_domain_auto_registration_uses_bridge_flow() -> None:
+    with build_mcp_auth_client() as client:
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "claude-auto-client",
+                "redirect_uri": "https://claude.ai/api/mcp/auth/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "claude-auto-client",
+                "code": query["code"][0],
+                "redirect_uri": "https://claude.ai/api/mcp/auth/callback",
+            },
+        )
+
+    assert authorized.status_code == 302
+    assert token.status_code == 200
+    assert token.json()["token_type"] == "Bearer"
 
 
 def test_oauth_ui_page_is_served_from_the_api_namespace() -> None:

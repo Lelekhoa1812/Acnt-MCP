@@ -34,8 +34,8 @@ Important fields:
 
 | Field | Meaning |
 | --- | --- |
-| `authorization_endpoint` | Where the client sends the browser for the code step |
-| `token_endpoint` | Where the client exchanges the code for a token |
+| `authorization_endpoint` | Where the client sends the browser for the bridge code step (`/oauth/authorize`) |
+| `token_endpoint` | Where the client exchanges the code for a token (`/oauth/token`) |
 | `registration_endpoint` | Where the client creates a registration record |
 | `client_id_metadata_document_supported` | `false` in this project, so connector UIs should use the manual/DCR path instead of CIMD |
 | `token_endpoint_auth_methods_supported` | The bridge supports `none` and `client_secret_post` |
@@ -97,6 +97,7 @@ So:
 - The connector owns the callback page.
 - This server only redirects to the `redirect_uri` that the connector provides.
 - You do not need to create a `/auth/callback` route on this server for the connector flow to work.
+- The optional `/oauth/callback` route in this project is a separate direct Entra login helper and is not the MCP connector token endpoint.
 
 If you are building your own browser app, then your browser app should host its own callback route and exchange the authorization code there.
 
@@ -160,6 +161,8 @@ The OAuth bridge and the identity layer solve different problems.
 - The OAuth bridge helps a connector get a valid client registration and a bearer token.
 - The identity layer validates the actual caller identity when `HTH_IDENTITY_AUTH_ENABLED=true`.
 
+The optional `OAUTH_*` settings are separate from the bridge. They only configure the direct Microsoft Entra login helper endpoints (`/oauth/login`, `/oauth/callback`, `/oauth/token/validate`) and are not required for GPT, Cursor, or Claude.ai MCP connector registration.
+
 If you are using Entra JWT enforcement, follow `auth.md` for the resource-server validation rules.
 
 If you are configuring a connector UI and need the client ID and secret, follow this file.
@@ -171,7 +174,7 @@ If the connector cannot start OAuth:
 1. Confirm `HTH_MCP_BEARER_TOKEN` is set.
 2. Confirm the public MCP URL is HTTPS.
 3. Confirm `/.well-known/oauth-protected-resource` returns the MCP resource URL.
-4. Confirm `/.well-known/oauth-authorization-server` returns the registration and token endpoints.
+4. Confirm `/.well-known/oauth-authorization-server` returns `/oauth/authorize` and `/oauth/token` as the authorization and token endpoints.
 5. Confirm the registered `redirect_uri` matches the connector callback exactly.
 6. Confirm the connector is using the `client_id` and `client_secret` returned by `/oauth/register`.
 
@@ -193,7 +196,8 @@ If the connector sees `invalid_grant`:
 2. Prefer setting `HTH_MCP_OAUTH_JWT_SECRET` so the bridge has a dedicated signing key.
 3. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
 4. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
-5. Register the client with `POST /oauth/register`.
-6. Paste the returned `client_id` and `client_secret` into the connector UI.
-7. Save `registration_client_uri` and `registration_access_token`.
-8. Test one authorize redirect and one token exchange.
+5. Allow `https://chatgpt.com`, `https://claude.ai`, and `https://claude.com` in `HTH_MCP_ALLOWED_ORIGINS` when hosted browser clients need CORS access to discovery or OAuth responses.
+6. Register the client with `POST /oauth/register`.
+7. Paste the returned `client_id` and `client_secret` into the connector UI.
+8. Save `registration_client_uri` and `registration_access_token`.
+9. Test one authorize redirect and one token exchange.
