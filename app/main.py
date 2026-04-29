@@ -93,9 +93,11 @@ def _oauth_authorization_server_metadata(base_url: str, settings: Settings) -> d
         "authorization_endpoint": f"{base_url}/oauth/login",
         "token_endpoint": f"{base_url}/oauth/callback",
         "token_validation_endpoint": f"{base_url}/oauth/token/validate",
+        "registration_endpoint": f"{base_url}/oauth/register",
         # Motivation vs Logic: Claude's browser login now uses a static client
         # registration, so discovery should advertise the login/callback flow and
-        # keep the client-metadata document path disabled.
+        # keep the client-metadata document path disabled. The server still
+        # supports DCR for clients like Cursor that expect a registration step.
         "client_id_metadata_document_supported": False,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],

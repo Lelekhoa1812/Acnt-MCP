@@ -391,8 +391,8 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     assert metadata["authorization_endpoint"] == "https://hth.example.test/oauth/login"
     assert metadata["token_endpoint"] == "https://hth.example.test/oauth/callback"
     assert metadata["token_validation_endpoint"] == "https://hth.example.test/oauth/token/validate"
+    assert metadata["registration_endpoint"] == "https://hth.example.test/oauth/register"
     assert metadata["client_id_metadata_document_supported"] is False
-    assert "registration_endpoint" not in metadata
     assert authorized.status_code == 302
     assert query["client_id"] == ["claude-client-id"]
     assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
