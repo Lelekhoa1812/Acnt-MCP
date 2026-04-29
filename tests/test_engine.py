@@ -56,6 +56,70 @@ async def test_search_split_prompt_requests_distinctive_fallback_without_hardcod
 
 
 @pytest.mark.anyio
+async def test_search_split_heuristic_expands_shared_suffix_multi_item_queries() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        terms = await container.agent_engine._split_search_terms_for_single_item_search(
+            request_message="Let me know how many Baxter, Charlie, and Alto chair do we have?",
+            search_term="Baxter, Charlie, and Alto chair",
+        )
+    finally:
+        await container.close()
+
+    assert terms == [
+        "Baxter chair",
+        "Baxter",
+        "Charlie chair",
+        "Charlie",
+        "Alto chair",
+        "Alto",
+    ]
+
+
+@pytest.mark.anyio
+async def test_expand_single_item_search_calls_splits_stock_aggregate_multi_item_queries() -> None:
+    container = await build_container(build_engine_settings())
+    try:
+        expanded = await container.agent_engine._expand_single_item_search_calls(
+            tool_calls=[
+                {
+                    "id": "aggregate_1",
+                    "type": "function",
+                    "function": {
+                        "name": "stock_aggregate",
+                        "arguments": json.dumps(
+                            {
+                                "search": "Baxter, Charlie, and Alto chair",
+                                "region": "NSW",
+                                "measure": "stock",
+                                "groupBy": "product",
+                                "direction": "most",
+                                "limit": 5,
+                            }
+                        ),
+                    },
+                }
+            ],
+            request_message="Let me know how many Baxter, Charlie, and Alto chair do we have? Rank their availability we have in NSW.",
+        )
+    finally:
+        await container.close()
+
+    searches = [
+        json.loads(call["function"]["arguments"])["search"]
+        for call in expanded
+    ]
+    assert searches == [
+        "Baxter chair",
+        "Baxter",
+        "Charlie chair",
+        "Charlie",
+        "Alto chair",
+        "Alto",
+    ]
+
+
+@pytest.mark.anyio
 async def test_agent_engine_answers_supported_taxonomy_counts_without_tools() -> None:
     container = await build_container(build_engine_settings())
     endpoint_calls: list[str] = []

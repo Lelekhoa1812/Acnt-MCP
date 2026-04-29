@@ -38,12 +38,23 @@ from app.schemas import (
     ToolResult,
     ToolTrace,
 )
-from app.text.utils import lexical_overlap
+from app.text.utils import lexical_overlap, significant_tokens
 from app.tool.registry import ToolRegistry
 
 
 THOUGHT_BLOCK_PATTERN = re.compile(r"<thought>.*?</thought>", re.IGNORECASE | re.DOTALL)
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+_SEARCH_SPLITTABLE_TOOLS: frozenset[str] = frozenset(
+    {
+        "stock_search",
+        "stock_search_catalogue",
+        "stock_snapshot",
+        "stock_inventory_snapshot",
+        "stock_aggregate",
+        "stock_specs_rank",
+        "stock_variant_rank",
+    }
+)
 
 
 class AgentEnvelope(BaseModel):
@@ -1693,7 +1704,16 @@ class AgentEngine:
         # families. Expand and dedupe into one search call per inferred item.
         for tool_call in tool_calls:
             function = tool_call.get("function")
-            if not isinstance(function, dict) or function.get("name") not in {"stock_search", "stock_search_catalogue"}:
+            if not isinstance(function, dict):
+                append_unique(tool_call)
+                continue
+            function_name = str(function.get("name") or "")
+            try:
+                resolved_tool_name = self.tool_registry.resolve_tool_name(function_name)
+            except Exception:
+                append_unique(tool_call)
+                continue
+            if resolved_tool_name not in _SEARCH_SPLITTABLE_TOOLS:
                 append_unique(tool_call)
                 continue
 
@@ -1742,6 +1762,10 @@ class AgentEngine:
         request_message: str,
         search_term: str,
     ) -> list[str]:
+        heuristic_terms = self._heuristic_multi_item_search_terms(search_term)
+        if len(heuristic_terms) > 1:
+            return heuristic_terms[: self.settings.agent_search_split_max_items]
+
         if self._client is None:
             return [search_term]
         payload = {
@@ -1804,6 +1828,58 @@ class AgentEngine:
             if len(cleaned) >= self.settings.agent_search_split_max_items:
                 break
         return cleaned or [search_term]
+
+    def _heuristic_multi_item_search_terms(self, search_term: str) -> list[str]:
+        normalized_search = " ".join(str(search_term or "").split()).strip()
+        if not normalized_search:
+            return [search_term]
+
+        candidate = re.sub(r"\s*,\s*(?:and|&)\s+", ", ", normalized_search, flags=re.IGNORECASE)
+        candidate = re.sub(r"\s+(?:and|&)\s+", ", ", candidate, flags=re.IGNORECASE)
+        parts = [part.strip(" ,") for part in candidate.split(",") if part.strip(" ,")]
+        if len(parts) <= 1:
+            return [search_term]
+
+        # Root Cause vs Logic: list-style requests such as "Baxter, Charlie, and
+        # Alto chair" were routed into one combined stock search, so upstream
+        # search could fail every family at once. Build one term per product and
+        # preserve the shared suffix from the final item before any LLM fallback.
+        last_tokens = self._case_preserving_tokens(parts[-1])
+        shared_suffix = last_tokens[1:] if len(last_tokens) > 1 else []
+
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for index, part in enumerate(parts):
+            tokens = self._case_preserving_tokens(part)
+            normalized_part = " ".join(part.split())
+            if index < len(parts) - 1 and shared_suffix and len(tokens) == 1:
+                normalized_part = " ".join([tokens[0], *shared_suffix])
+            self._append_unique_search_term(expanded, seen, normalized_part)
+            if index < len(parts) - 1:
+                self._append_shorter_search_fallback(expanded, seen, normalized_part)
+        self._append_shorter_search_fallback(expanded, seen, parts[-1])
+        return expanded or [search_term]
+
+    def _append_shorter_search_fallback(self, values: list[str], seen: set[str], term: str) -> None:
+        tokens = self._case_preserving_tokens(term)
+        if len(tokens) < 2:
+            return
+        fallback = " ".join(tokens[:-1]).strip()
+        if fallback:
+            self._append_unique_search_term(values, seen, fallback)
+
+    def _append_unique_search_term(self, values: list[str], seen: set[str], term: str) -> None:
+        normalized = " ".join(str(term or "").split()).strip()
+        if not normalized:
+            return
+        lowered = normalized.casefold()
+        if lowered in seen:
+            return
+        seen.add(lowered)
+        values.append(normalized)
+
+    def _case_preserving_tokens(self, value: str) -> list[str]:
+        return [token for token in re.findall(r"[A-Za-z0-9]+", value or "") if token]
 
     def _derive_variant_follow_up_steps(self, items: list[Any], max_variants: int = 20) -> list[tuple[str, dict[str, str]]]:
         steps: list[tuple[str, dict[str, str]]] = []
