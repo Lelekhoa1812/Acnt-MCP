@@ -9,6 +9,8 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.auth.models import UserContext
+from app.auth.gateway import IdentityAuthError
 from app.tool.currency import (
     CurrencyConvertArgs,
     CurrencyFluctuationArgs,
@@ -19,7 +21,7 @@ from app.tool.currency import (
     CurrencyTimeseriesArgs,
 )
 from app.config import ParameterMappingError, UnsupportedToolError
-from app.tool.stock.intelligence import filter_evidence_by_attributes, rank_product_intelligence
+from app.tool.stock.intelligence import rank_evidence_with_filters
 from app.tool.stock.media import build_harmonise_image_url
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
@@ -29,7 +31,6 @@ from app.schemas import (
     InventorySnapshotResponse,
     McpImageContent,
     NormalizedEvidence,
-    ProductIntelligenceRankArgs,
     ProductListItemDto,
     ProductListItemDtoPagedResponse,
     ResolverDisambiguateCandidatesArgs,
@@ -43,10 +44,12 @@ from app.schemas import (
     StockGetProductArgs,
     StockGetSupportedScopeArgs,
     StockHirableByStateArgs,
+    StockImageArgs,
     StockInventorySnapshotArgs,
     StockProductFamilyInventoryArgs,
-    StockRankVariantsByStockArgs,
     StockSearchCatalogueArgs,
+    StockSpecsRankArgs,
+    StockVariantRankArgs,
     ToolDefinition,
     ToolResult,
     ToolTrace,
@@ -66,6 +69,7 @@ class ToolSpec:
     model: type[BaseModel]
     handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
     visible: bool = True
+    required_roles: tuple[str, ...] = ()
 
 
 # Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
@@ -104,10 +108,17 @@ class ToolRegistry:
         self._register_currency()
         self._tool_name_map = McpToolNameMap(list(self._tools))
 
-    def list_tools(self, *, include_hidden: bool = True) -> list[ToolDefinition]:
+    def list_tools(
+        self,
+        *,
+        include_hidden: bool = True,
+        user_context: UserContext | None = None,
+    ) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
+                continue
+            if user_context is not None and not self._is_role_authorized(spec, user_context):
                 continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we
@@ -122,14 +133,22 @@ class ToolRegistry:
                     name=public_name,
                     description=spec.description,
                     input_schema=spec.model.model_json_schema(),
+                    required_roles=list(spec.required_roles),
                 )
             )
         return tools
 
-    def tool_payloads(self, *, include_hidden: bool = True) -> list[dict[str, Any]]:
+    def tool_payloads(
+        self,
+        *,
+        include_hidden: bool = True,
+        user_context: UserContext | None = None,
+    ) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
+                continue
+            if user_context is not None and not self._is_role_authorized(spec, user_context):
                 continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: keep the REST function payload signature aligned with
@@ -154,12 +173,15 @@ class ToolRegistry:
         raw_args: dict[str, Any],
         session_id: str | None = None,
         thought: str = "",
+        user_context: UserContext | None = None,
     ) -> ToolResult:
         tool_name = self.resolve_tool_name(tool_name)
         self.logger.debug("tool_call tool=%s args=%s", tool_name, _redact_args_for_tool_log(raw_args))
         spec = self._tools.get(tool_name)
         if spec is None:
             raise UnsupportedToolError(f"Unsupported tool '{tool_name}'.")
+        if user_context is not None:
+            self._authorize_tool_access(spec, raw_args, user_context)
         try:
             validated = spec.model.model_validate(raw_args)
         except ValidationError as exc:
@@ -186,8 +208,61 @@ class ToolRegistry:
         rendered = "; ".join(parts) if parts else "Invalid arguments."
         return f"Invalid arguments for '{tool_name}': {rendered}"
 
-    def _register(self, name: str, description: str, model: type[BaseModel], handler, *, visible: bool = True) -> None:
-        self._tools[name] = ToolSpec(name=name, description=description, model=model, handler=handler, visible=visible)
+    def _register(
+        self,
+        name: str,
+        description: str,
+        model: type[BaseModel],
+        handler,
+        *,
+        visible: bool = True,
+        required_roles: tuple[str, ...] = ("Tool.Viewer",),
+    ) -> None:
+        self._tools[name] = ToolSpec(
+            name=name,
+            description=description,
+            model=model,
+            handler=handler,
+            visible=visible,
+            required_roles=required_roles,
+        )
+
+    def _is_role_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
+        if not spec.required_roles:
+            return True
+        roles = set(user_context.roles)
+        return any(role in roles for role in spec.required_roles)
+
+    def _authorize_tool_access(self, spec: ToolSpec, raw_args: dict[str, Any], user_context: UserContext) -> None:
+        if not self._is_role_authorized(spec, user_context):
+            raise IdentityAuthError(
+                code="tool_access_denied",
+                message=(
+                    f"Tool '{spec.name}' requires one of roles {list(spec.required_roles)}; "
+                    f"user roles were {user_context.roles}."
+                ),
+                status_code=403,
+            )
+
+        department_id = raw_args.get("departmentId")
+        if department_id is None:
+            return
+        if not user_context.department_claim:
+            raise IdentityAuthError(
+                code="missing_claims",
+                message="departmentId was supplied but no department claim is present in the token.",
+                status_code=403,
+                missing_claims=["extension_departmentId|extension_department|officeLocation"],
+            )
+        if str(department_id).strip().lower() != str(user_context.department_claim).strip().lower():
+            raise IdentityAuthError(
+                code="department_access_denied",
+                message=(
+                    f"departmentId '{department_id}' does not match token department claim "
+                    f"'{user_context.department_claim}'."
+                ),
+                status_code=403,
+            )
 
     def _register_stock(self) -> None:
         async def get_departments(validated: StockGetDepartmentsArgs, _: str | None, thought: str) -> ToolResult:
@@ -376,8 +451,8 @@ class ToolRegistry:
                 trace=trace,
             )
 
-        async def product_intelligence_rank(
-            validated: ProductIntelligenceRankArgs, _: str | None, thought: str
+        async def stock_specs_rank(
+            validated: StockSpecsRankArgs, _: str | None, thought: str
         ) -> ToolResult:
             snapshot_args = StockInventorySnapshotArgs(
                 page=validated.page,
@@ -387,24 +462,19 @@ class ToolRegistry:
                 categoryId=validated.categoryId,
             )
             data, cache_status, notes = await self.inventory_service.inventory_snapshot(snapshot_args)
-            filtered_evidence, filter_notes = filter_evidence_by_attributes(data.evidence, validated.attributeFilters)
-            ranked_rows = rank_product_intelligence(
-                filtered_evidence,
+            filtered_evidence, ranked_rows, filter_notes = rank_evidence_with_filters(
+                data.evidence,
                 metric=validated.metric,
                 region=validated.region,
                 group_by=validated.groupBy,
                 direction=validated.direction,
                 limit=validated.limit,
+                attribute_filters=validated.attributeFilters,
             )
-            image_content, image_notes = await self._build_ranked_image_content(
-                rows=ranked_rows,
-                include_images=validated.includeImages,
-                max_images=validated.maxImages,
-            )
-            limitations = list(data.coverage.limitations) + filter_notes + image_notes
+            limitations = list(data.coverage.limitations) + filter_notes
             if not ranked_rows:
                 limitations.append(
-                    "No ranked product intelligence rows were produced. Try a narrower product/category phrase, "
+                    "No ranked stock specs rows were produced. Try a narrower product/category phrase, "
                     "or call stock_scope first to pass a departmentId/categoryId filter."
                 )
             payload = {
@@ -429,20 +499,155 @@ class ToolRegistry:
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="product_intelligence_rank",
+                tool="stock_specs_rank",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="harmonise -> inventory_snapshot.evidence[*] -> product intelligence ranking",
+                source_data="harmonise -> inventory_snapshot.evidence[*] -> stock specs ranking",
                 result_count=len(ranked_rows),
                 normalization_notes=notes + limitations,
             )
             return ToolResult(
-                tool="product_intelligence_rank",
+                tool="stock_specs_rank",
+                data=payload,
+                llm_content=payload,
+                normalization_notes=notes + limitations,
+                trace=trace,
+            )
+
+        async def stock_image(validated: StockImageArgs, _: str | None, thought: str) -> ToolResult:
+            image_file_name = validated.imageFileName
+            resolved_source = "imageFileName" if image_file_name else None
+            resolved_product: ProductListItemDto | None = None
+            resolved_variant = None
+            cache_statuses: list[str] = []
+            notes: list[str] = []
+            coverage_limitations: list[str] = []
+
+            # Motivation vs Logic: image retrieval now lives in its own MCP tool so
+            # specs ranking stays focused on ranking evidence while image-specific
+            # resolution and binary rendering happen in one explicit place.
+            if validated.sku and not image_file_name:
+                product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
+                    StockGetProductArgs(sku=validated.sku, page=1, pageSize=20)
+                )
+                cache_statuses.append(product_cache_status)
+                notes.extend(product_notes)
+                if product_response.items:
+                    resolved_product = product_response.items[0]
+                    for variant in resolved_product.variants:
+                        if variant.sku == validated.sku:
+                            resolved_variant = variant
+                            break
+                    if resolved_variant is None and resolved_product.variants:
+                        resolved_variant = resolved_product.variants[0]
+                    if resolved_variant and resolved_variant.details:
+                        image_file_name = resolved_variant.details.imageFileName
+                        resolved_source = "sku"
+                else:
+                    coverage_limitations.append(f"No product detail payload was returned for sku {validated.sku}.")
+
+            if validated.search and not image_file_name:
+                catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
+                    StockSearchCatalogueArgs(
+                        page=validated.page,
+                        pageSize=validated.pageSize,
+                        search=validated.search,
+                        departmentId=validated.departmentId,
+                        categoryId=validated.categoryId,
+                    )
+                )
+                cache_statuses.extend(catalogue_scan.cache_statuses)
+                notes.extend(catalogue_scan.notes)
+                matched_products = self._filter_products_for_query(catalogue_scan.items, validated.search)
+                if not matched_products:
+                    matched_products = list(catalogue_scan.items)
+
+                for product in matched_products:
+                    for variant in product.variants:
+                        if not variant.sku:
+                            continue
+                        product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
+                            StockGetProductArgs(sku=variant.sku, page=1, pageSize=20)
+                        )
+                        cache_statuses.append(product_cache_status)
+                        notes.extend(product_notes)
+                        if not product_response.items:
+                            continue
+                        detail_product = product_response.items[0]
+                        detail_variant = next(
+                            (candidate for candidate in detail_product.variants if candidate.sku == variant.sku),
+                            detail_product.variants[0] if detail_product.variants else None,
+                        )
+                        if detail_variant and detail_variant.details and detail_variant.details.imageFileName:
+                            resolved_product = detail_product
+                            resolved_variant = detail_variant
+                            image_file_name = detail_variant.details.imageFileName
+                            resolved_source = "search"
+                            break
+                    if image_file_name:
+                        break
+
+                if not image_file_name:
+                    coverage_limitations.append(
+                        "No imageFileName was resolved from the matched Harmonise product variants for the supplied search."
+                    )
+
+            image_url = build_harmonise_image_url(
+                self.inventory_service.settings.cloud_harmonise_image,
+                image_file_name,
+            )
+            if image_file_name and not image_url:
+                coverage_limitations.append(
+                    "An imageFileName was resolved, but a renderable Harmonise HTTP image URL could not be built."
+                )
+
+            image_content: list[McpImageContent] = []
+            if image_url:
+                content, note = await self._fetch_mcp_image_content(image_url)
+                if content is not None:
+                    image_content.append(content)
+                elif note:
+                    coverage_limitations.append(note)
+
+            cache_status = self.inventory_service._combine_cache_statuses(cache_statuses) if cache_statuses else "not_applicable"
+            payload = {
+                "source": resolved_source or "unresolved",
+                "query": validated.search,
+                "sku": getattr(resolved_variant, "sku", None) or validated.sku,
+                "product": resolved_product.name if resolved_product else None,
+                "variant": resolved_variant.name if resolved_variant else None,
+                "imageFileName": image_file_name,
+                "imageUrl": image_url,
+                "resolutionNotes": notes,
+                "coverage": {
+                    "requestedPage": validated.page,
+                    "requestedPageSize": validated.pageSize,
+                    "isPartial": bool(coverage_limitations),
+                    "limitations": coverage_limitations,
+                },
+                "guidance": (
+                    "Use this tool when the user explicitly needs a Harmonise product image. It can resolve from an "
+                    "exact image path, exact SKU, or a product-family search, and it returns both the HTTP image URL "
+                    "and MCP-native image content when binary fetch succeeds."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_image",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="harmonise image path resolution -> optional MCP image fetch",
+                result_count=len(image_content),
+                normalization_notes=notes + coverage_limitations,
+            )
+            return ToolResult(
+                tool="stock_image",
                 data=payload,
                 llm_content=payload,
                 mcp_content=image_content,
-                normalization_notes=notes + limitations,
+                normalization_notes=notes + coverage_limitations,
                 trace=trace,
             )
 
@@ -475,22 +680,30 @@ class ToolRegistry:
             return ToolResult(tool="stock_scope", data=data, llm_content=data, trace=trace)
 
         async def collect_family_evidence(
-            validated: StockProductFamilyInventoryArgs | StockRankVariantsByStockArgs,
+            validated: StockProductFamilyInventoryArgs | StockVariantRankArgs,
         ) -> tuple[list[NormalizedEvidence], str, list[str], dict[str, Any]]:
-            catalogue_args = StockSearchCatalogueArgs(
-                page=1,
-                pageSize=validated.pageSize,
-                search=validated.search,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
+            catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
+                StockSearchCatalogueArgs(
+                    page=validated.page,
+                    pageSize=validated.pageSize,
+                    search=validated.search,
+                    departmentId=validated.departmentId,
+                    categoryId=validated.categoryId,
+                )
             )
-            catalogue, catalogue_cache_status, notes = await self.inventory_service.search_catalogue(catalogue_args)
-            matched_products = self._filter_products_for_query(catalogue.items, validated.search)
-            if not matched_products and catalogue.items:
-                matched_products = list(catalogue.items)
+            matched_products = self._filter_products_for_query(catalogue_scan.items, validated.search)
+            if not matched_products and catalogue_scan.items:
+                matched_products = list(catalogue_scan.items)
+
+            recovery_limitations = [
+                note
+                for note in catalogue_scan.notes
+                if "recovery" in note.casefold() or "pagesize" in note.casefold()
+            ]
 
             evidence_items: list[NormalizedEvidence] = []
-            cache_statuses = [catalogue_cache_status]
+            cache_statuses = list(catalogue_scan.cache_statuses)
+            notes = list(catalogue_scan.notes)
             skipped_variants = 0
             for product in matched_products:
                 for variant in product.variants:
@@ -507,19 +720,19 @@ class ToolRegistry:
                     cache_statuses.append(cache_status)
                     notes.extend(extract_notes)
 
-            limitations: list[str] = []
+            limitations: list[str] = list(recovery_limitations)
             if skipped_variants:
                 limitations.append(f"Skipped {skipped_variants} catalogue variant(s) without SKU identifiers.")
             if not evidence_items:
                 limitations.append("No variant-level stock evidence was returned for the requested family.")
             coverage = {
-                "requestedPage": 1,
+                "requestedPage": validated.page,
                 "requestedPageSize": validated.pageSize,
                 "matchedProducts": len(matched_products),
-                "matchedPages": catalogue.totalPages,
+                "matchedPages": catalogue_scan.matched_pages,
                 "enrichedProducts": len({item.product_id for item in evidence_items if item.product_id}),
                 "enrichedVariants": len(evidence_items),
-                "isPartial": bool(limitations),
+                "isPartial": catalogue_scan.is_partial or bool(limitations),
                 "limitations": limitations,
             }
             return evidence_items, self.inventory_service._combine_cache_statuses(cache_statuses), notes, coverage
@@ -556,41 +769,57 @@ class ToolRegistry:
                 trace=trace,
             )
 
-        async def rank_variants_by_stock(
-            validated: StockRankVariantsByStockArgs, _: str | None, thought: str
+        async def stock_variant_rank(
+            validated: StockVariantRankArgs, _: str | None, thought: str
         ) -> ToolResult:
             evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
-            ranked = self._rank_snapshot_evidence(
+            filtered_evidence, ranked, filter_notes = rank_evidence_with_filters(
                 evidence_items,
+                metric=validated.metric,
                 region=validated.region,
+                group_by="variant",
                 direction=validated.direction,
+                limit=validated.limit,
+                attribute_filters=validated.attributeFilters,
             )
+            limitations = list(coverage["limitations"]) + filter_notes
+            if not ranked:
+                limitations.append(
+                    "No variant ranking rows were produced. Try a narrower family phrase or resolve the family with stock_search first."
+                )
             payload = {
                 "query": validated.search,
                 "region": validated.region,
+                "metric": validated.metric,
                 "direction": validated.direction,
+                "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
                 "rows": ranked,
-                "coverage": coverage,
+                "coverage": {
+                    **coverage,
+                    "filteredVariants": len(filtered_evidence),
+                    "limitations": limitations,
+                    "isPartial": coverage["isPartial"] or bool(limitations),
+                },
                 "guidance": (
-                    "Rows are sorted for most/least stock questions. Use the first row as the best match when "
-                    "coverage is not partial."
+                    "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
+                    "to resolve which variant best matches the requested stock/spec metric after the family is known."
                 ),
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_rank_variants",
+                tool="stock_variant_rank",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="harmonise -> normalized variant evidence[*]",
+                source_data="harmonise -> family variant evidence[*] -> variant-only ranking",
                 result_count=len(ranked),
-                normalization_notes=notes + coverage["limitations"],
+                normalization_notes=notes + limitations,
             )
             return ToolResult(
-                tool="stock_rank_variants",
+                tool="stock_variant_rank",
                 data=payload,
                 llm_content=payload,
-                normalization_notes=notes + coverage["limitations"],
+                normalization_notes=notes + limitations,
                 trace=trace,
             )
 
@@ -855,21 +1084,30 @@ class ToolRegistry:
             (
                 "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
                 "type, product family, category, or region; product grouping answers broad wording like all inventory "
-                "or chair type. This returns summed groups, not single-variant rankings. Use product_intelligence_rank "
-                "when the question also needs dimensions, pricing, attribute/style filters, department grouping, or images."
+                "or chair type. This returns summed groups, not single-variant rankings. Use stock_specs_rank "
+                "when the question also needs dimensions, pricing, attribute/style filters, or department grouping."
             ),
             StockAggregateArgs,
             aggregate_stock,
         )
         self._register(
-            "product_intelligence_rank",
+            "stock_specs_rank",
             (
                 "Rank and filter Harmonise products or variants by stock, hirable availability, physical dimensions, "
                 "derived area/volume, replacement cost, hire rates, hierarchy, state, and LLM-supplied aesthetic "
-                "attributes. Use for complex stock/product intelligence questions and product image requests."
+                "attributes. Use for complex stock/spec ranking questions; use stock_image for Harmonise image retrieval and rendering."
             ),
-            ProductIntelligenceRankArgs,
-            product_intelligence_rank,
+            StockSpecsRankArgs,
+            stock_specs_rank,
+        )
+        self._register(
+            "stock_image",
+            (
+                "Resolve a Harmonise product image from an exact image path, exact SKU, or product-family search, "
+                "then return the HTTP image URL plus MCP-native image content when it can be fetched and rendered."
+            ),
+            StockImageArgs,
+            stock_image,
         )
         self._register(
             "stock_get_product_family_inventory",
@@ -881,22 +1119,14 @@ class ToolRegistry:
             visible=False,
         )
         self._register(
-            "stock_rank_variants",
+            "stock_variant_rank",
             (
-                "Rank variants in a named product/family by stock for VIC, NSW, QLD, or overall. Use for best/worst "
-                "availability questions only when the user asks which variant or SKU has the most or least stock. "
-                "Use stock_aggregate for type/family/category totals, and product_intelligence_rank for dimensions, "
-                "pricing, attribute filters, hierarchy, or images."
+                "Rank variants within a named product/family by stock, hirable, dimensions, derived area/volume, or "
+                "pricing metrics. Use only for intra-family variant or SKU resolution once the question is about which "
+                "specific variant best matches the requested metric."
             ),
-            StockRankVariantsByStockArgs,
-            rank_variants_by_stock,
-        )
-        self._register(
-            "stock_rank_variants_by_stock",
-            "Deprecated alias for stock_rank_variants. Hidden from normal MCP discovery.",
-            StockRankVariantsByStockArgs,
-            rank_variants_by_stock,
-            visible=False,
+            StockVariantRankArgs,
+            stock_variant_rank,
         )
         self._register(
             "stock_count_items",
@@ -1078,37 +1308,6 @@ class ToolRegistry:
             "media": evidence.media.model_dump(mode="json"),
         }
 
-    async def _build_ranked_image_content(
-        self,
-        *,
-        rows: list[dict[str, Any]],
-        include_images: bool,
-        max_images: int,
-    ) -> tuple[list[McpImageContent], list[str]]:
-        if not include_images or max_images <= 0:
-            return [], []
-
-        image_urls: list[str] = []
-        for row in rows:
-            for variant in row.get("variants", []):
-                image_url = variant.get("media", {}).get("imageUrl")
-                if image_url and image_url not in image_urls:
-                    image_urls.append(image_url)
-                if len(image_urls) >= max_images:
-                    break
-            if len(image_urls) >= max_images:
-                break
-
-        image_content: list[McpImageContent] = []
-        notes: list[str] = []
-        for image_url in image_urls:
-            content, note = await self._fetch_mcp_image_content(image_url)
-            if content is not None:
-                image_content.append(content)
-            elif note:
-                notes.append(note)
-        return image_content, notes
-
     async def _fetch_mcp_image_content(self, image_url: str) -> tuple[McpImageContent | None, str | None]:
         # Motivation vs Logic: MCP clients can render protocol-native image blocks,
         # while structured JSON still carries imageUrl as a fallback for hosts that
@@ -1145,47 +1344,6 @@ class ToolRegistry:
         if lowered.endswith(".webp"):
             return "image/webp"
         return None
-
-    def _rank_snapshot_evidence(
-        self,
-        evidence_items: list[NormalizedEvidence],
-        *,
-        region: str,
-        direction: str,
-    ) -> list[dict[str, Any]]:
-        stock_fields = {
-            "VIC": ("vicStock", "vicHirable"),
-            "NSW": ("nswStock", "nswHirable"),
-            "QLD": ("qldStock", "qldHirable"),
-            "overall": ("totalStock", "totalHirable"),
-        }
-        stock_field, hirable_field = stock_fields[region]
-
-        def stock_value(evidence: NormalizedEvidence) -> int:
-            value = getattr(evidence.stock, stock_field)
-            return value if value is not None else -1
-
-        reverse = direction == "most"
-        ranked = sorted(evidence_items, key=stock_value, reverse=reverse)
-        rows: list[dict[str, Any]] = []
-        for rank, evidence in enumerate(ranked, start=1):
-            rows.append(
-                {
-                    "rank": rank,
-                    "product": evidence.product_name,
-                    "variant": evidence.variant_name,
-                    "sku": evidence.sku,
-                    "region": region,
-                    "stock": getattr(evidence.stock, stock_field),
-                    "hirable": getattr(evidence.stock, hirable_field),
-                    "totalStock": evidence.stock.totalStock,
-                    "totalHirable": evidence.stock.totalHirable,
-                    "dimensions": evidence.dimensions.model_dump(mode="json"),
-                    "pricing": evidence.pricing.model_dump(mode="json"),
-                    "media": evidence.media.model_dump(mode="json"),
-                }
-            )
-        return rows
 
     def _aggregate_snapshot_evidence(
         self,
@@ -1497,6 +1655,7 @@ class ToolRegistry:
             SessionToolArgs,
             clear_state,
             visible=False,
+            required_roles=("Tool.Admin",),
         )
 
     def _register_news(self) -> None:

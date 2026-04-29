@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import anyio
@@ -44,6 +45,15 @@ from app.store import AppKeyValueStore
 
 
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+@dataclass
+class AdaptiveCatalogueScan:
+    items: list[ProductListItemDto]
+    cache_statuses: list[str]
+    notes: list[str]
+    matched_pages: int
+    is_partial: bool
 
 
 class InventoryService:
@@ -107,6 +117,18 @@ class InventoryService:
             ),
         )
         return ProductListItemDtoPagedResponse.model_validate(raw), cache_status, notes
+
+    async def scan_catalogue_with_recovery(
+        self,
+        args: StockSearchCatalogueArgs,
+    ) -> AdaptiveCatalogueScan:
+        return await self._scan_catalogue_with_recovery(
+            page=args.page,
+            page_size=args.pageSize,
+            search=args.search,
+            department_id=args.departmentId,
+            category_id=args.categoryId,
+        )
 
     async def get_product(
         self,
@@ -208,32 +230,16 @@ class InventoryService:
         # context window and often ended with an empty synthesis turn. This
         # composition path keeps tool choice LLM-driven while returning a single
         # compact, answer-ready evidence bundle for large table requests.
-        catalogue_args = StockSearchCatalogueArgs(
+        catalogue_scan = await self._scan_catalogue_with_recovery(
             page=args.page,
-            pageSize=args.pageSize,
+            page_size=args.pageSize,
             search=args.search,
-            departmentId=args.departmentId,
-            categoryId=args.categoryId,
+            department_id=args.departmentId,
+            category_id=args.categoryId,
         )
-        catalogue_response, catalogue_cache_status, notes = await self.search_catalogue(catalogue_args)
-
-        # Motivation vs Logic: broad inventory questions often need complete
-        # coverage, and relying on a single page caused under-counted snapshots.
-        # We now continue scanning remaining matched pages so enrichment can
-        # include every matched catalogue product in the requested slice.
-        catalogue_items = list(catalogue_response.items)
-        cache_statuses = [catalogue_cache_status]
-        if catalogue_response.totalPages > args.page:
-            extra_items, extra_cache_statuses, extra_notes = await self._fetch_catalogue_pages(
-                page_numbers=list(range(args.page + 1, catalogue_response.totalPages + 1)),
-                page_size=args.pageSize,
-                search=args.search,
-                department_id=args.departmentId,
-                category_id=args.categoryId,
-            )
-            cache_statuses.extend(extra_cache_statuses)
-            notes.extend(extra_notes)
-            catalogue_items.extend(extra_items)
+        catalogue_items = list(catalogue_scan.items)
+        cache_statuses = list(catalogue_scan.cache_statuses)
+        notes = list(catalogue_scan.notes)
 
         # Root Cause vs Logic: cloud catalogue search can under-return broad
         # family queries such as "chair" even though additional matching
@@ -248,14 +254,14 @@ class InventoryService:
         ) = await self._expand_catalogue_matches_for_snapshot(
             args=args,
             initial_items=catalogue_items,
-            initial_total_pages=catalogue_response.totalPages,
+            initial_total_pages=catalogue_scan.matched_pages,
         )
         cache_statuses.extend(expansion_cache_statuses)
         notes.extend(expansion_notes)
         catalogue_items = self._dedupe_products(catalogue_items)
 
         evidence_items: list[NormalizedEvidence] = []
-        coverage_limitations: list[str] = []
+        coverage_limitations: list[str] = self._recovery_limitations_from_notes(notes)
         enriched_products = 0
         detail_lookup_failures: list[str] = []
         # Motivation vs Logic: enriching snapshot variants requires many product
@@ -411,7 +417,7 @@ class InventoryService:
                 matchedPages=matched_pages,
                 enrichedProducts=enriched_products,
                 enrichedVariants=len(evidence_items),
-                isPartial=bool(coverage_limitations),
+                isPartial=catalogue_scan.is_partial or bool(coverage_limitations),
                 limitations=coverage_limitations,
             ),
         )
@@ -733,6 +739,117 @@ class InventoryService:
             items.extend(page_response.items)
         return items, cache_statuses, notes
 
+    def _adaptive_catalogue_page_sizes(self, requested_page_size: int) -> list[int]:
+        # Root Cause vs Logic: Harmonise list endpoints frequently time out on
+        # page sizes near 100, so recovery starts at a safer ceiling of 50 and
+        # then steps down through smaller checkpoints instead of repeating the
+        # same oversized request shape.
+        capped = max(1, min(requested_page_size, 50))
+        ladder = [capped, 25, 10, 5]
+        ordered: list[int] = []
+        for page_size in ladder:
+            if page_size not in ordered:
+                ordered.append(page_size)
+        return ordered
+
+    async def _scan_catalogue_with_recovery(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> AdaptiveCatalogueScan:
+        normalized_filters = {
+            "page": page,
+            "search": search,
+            "departmentId": department_id,
+            "categoryId": category_id,
+        }
+        page_sizes = self._adaptive_catalogue_page_sizes(page_size)
+        cache_statuses: list[str] = []
+        notes: list[str] = []
+        items_by_id: dict[str, ProductListItemDto] = {}
+        seen_skus: set[str] = set()
+        matched_pages = 0
+        last_error: UpstreamServiceError | None = None
+        is_partial = False
+
+        for page_size_index, candidate_page_size in enumerate(page_sizes):
+            next_page = page
+            while True:
+                page_args = StockSearchCatalogueArgs(
+                    page=next_page,
+                    pageSize=candidate_page_size,
+                    search=search,
+                    departmentId=department_id,
+                    categoryId=category_id,
+                )
+                try:
+                    page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
+                except UpstreamServiceError as exc:
+                    last_error = exc
+                    recovery_scope = (
+                        "partial results were preserved"
+                        if items_by_id
+                        else "no catalogue rows were preserved yet"
+                    )
+                    notes.append(
+                        "Adaptive catalogue recovery hit an upstream error for "
+                        f"{normalized_filters} at pageSize={candidate_page_size}, page={next_page} "
+                        f"({exc.status_code}: {exc.detail}); {recovery_scope}."
+                    )
+                    if page_size_index < len(page_sizes) - 1:
+                        notes.append(
+                            "Retrying catalogue retrieval with a smaller pageSize while keeping a checkpoint of "
+                            "already-seen product ids and SKUs."
+                        )
+                        is_partial = True
+                        break
+                    if items_by_id:
+                        is_partial = True
+                        break
+                    raise
+
+                cache_statuses.append(page_cache_status)
+                notes.extend(page_notes)
+                matched_pages = max(matched_pages, page_response.totalPages)
+                for item in page_response.items:
+                    items_by_id[item.id] = item
+                    for variant in item.variants:
+                        if variant.sku:
+                            seen_skus.add(variant.sku)
+
+                if next_page >= page_response.totalPages:
+                    return AdaptiveCatalogueScan(
+                        items=list(items_by_id.values()),
+                        cache_statuses=cache_statuses,
+                        notes=notes,
+                        matched_pages=matched_pages,
+                        is_partial=is_partial,
+                    )
+                next_page += 1
+
+            continue
+
+        if items_by_id:
+            notes.append(
+                "Catalogue recovery returned partial coverage after exhausting smaller pageSize retries; downstream "
+                "ranking and snapshot tools should continue with the resolved checkpoint items."
+            )
+            return AdaptiveCatalogueScan(
+                items=list(items_by_id.values()),
+                cache_statuses=cache_statuses,
+                notes=notes,
+                matched_pages=matched_pages,
+                is_partial=True,
+            )
+
+        if last_error is not None:
+            raise last_error
+        return AdaptiveCatalogueScan(items=[], cache_statuses=cache_statuses, notes=notes, matched_pages=matched_pages, is_partial=False)
+
     async def _expand_catalogue_matches_for_snapshot(
         self,
         *,
@@ -757,25 +874,21 @@ class InventoryService:
 
         broadened_args = StockSearchCatalogueArgs(
             page=1,
-            pageSize=max(args.pageSize, 100),
+            pageSize=50,
             search=None,
             departmentId=department_id,
             categoryId=args.categoryId,
         )
-        broadened_response, broadened_cache_status, broadened_notes = await self.search_catalogue(broadened_args)
-        broadened_items = list(broadened_response.items)
-        broadened_cache_statuses = [broadened_cache_status]
-        if broadened_response.totalPages > 1:
-            extra_items, extra_cache_statuses, extra_notes = await self._fetch_catalogue_pages(
-                page_numbers=list(range(2, broadened_response.totalPages + 1)),
-                page_size=broadened_args.pageSize,
-                search=None,
-                department_id=department_id,
-                category_id=args.categoryId,
-            )
-            broadened_cache_statuses.extend(extra_cache_statuses)
-            broadened_notes.extend(extra_notes)
-            broadened_items.extend(extra_items)
+        broadened_scan = await self._scan_catalogue_with_recovery(
+            page=broadened_args.page,
+            page_size=broadened_args.pageSize,
+            search=None,
+            department_id=department_id,
+            category_id=args.categoryId,
+        )
+        broadened_items = list(broadened_scan.items)
+        broadened_cache_statuses = list(broadened_scan.cache_statuses)
+        broadened_notes = list(broadened_scan.notes)
 
         filtered_broadened = [
             product
@@ -792,7 +905,7 @@ class InventoryService:
             )
         )
         merged_items = self._dedupe_products([*initial_items, *filtered_broadened])
-        return merged_items, broadened_cache_statuses, broadened_notes, max(initial_total_pages, broadened_response.totalPages)
+        return merged_items, broadened_cache_statuses, broadened_notes, max(initial_total_pages, broadened_scan.matched_pages)
 
     def _query_specificity_score(self, query: str | None, products: list[ProductListItemDto]) -> float:
         if not query or not products:
@@ -858,6 +971,13 @@ class InventoryService:
             seen.add(normalized)
             deduped.append(normalized)
         return deduped
+
+    def _recovery_limitations_from_notes(self, notes: list[str]) -> list[str]:
+        return [
+            note
+            for note in notes
+            if "recovery" in note.casefold() or "pagesize" in note.casefold()
+        ]
 
     @staticmethod
     def _describe_activation(is_active: bool | None) -> str | None:

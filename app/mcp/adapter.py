@@ -7,6 +7,7 @@ from typing import Any
 from mcp import types
 from mcp.shared.context import RequestContext
 
+from app.auth import IdentityAuthError, get_user_context
 from app.config import (
     InventoryNotFoundError,
     ParameterMappingError,
@@ -27,13 +28,17 @@ class McpToolAdapter:
         self.logger = logger
 
     def list_tools(self) -> list[types.Tool]:
+        user_context = get_user_context()
         return [
             types.Tool(
                 name=tool.name,
                 description=tool.description,
                 inputSchema=tool.input_schema,
             )
-            for tool in self.orchestrator_service.tool_registry.list_tools(include_hidden=False)
+            for tool in self.orchestrator_service.tool_registry.list_tools(
+                include_hidden=False,
+                user_context=user_context,
+            )
         ]
 
     async def call_tool(
@@ -45,16 +50,18 @@ class McpToolAdapter:
         session_id = self._resolve_session_id(request_context)
         payload = arguments or {}
         tool_name = self.orchestrator_service.tool_registry.resolve_tool_name(name)
+        user_context = get_user_context()
 
         try:
             result = await self.orchestrator_service.call_tool_with_orchestration(
                 tool_name=tool_name,
                 args=payload,
                 session_id=session_id,
+                user_context=user_context,
             )
             self._log_success(result=result, session_id=session_id)
             return self._success_result(result)
-        except (UnsupportedToolError, ParameterMappingError, InventoryNotFoundError, UpstreamServiceError) as exc:
+        except (UnsupportedToolError, ParameterMappingError, InventoryNotFoundError, UpstreamServiceError, IdentityAuthError) as exc:
             self._log_error(name=name, arguments=payload, session_id=session_id, exc=exc)
             return self._error_result(exc)
         except Exception as exc:  # pragma: no cover - defensive fallback
@@ -62,6 +69,10 @@ class McpToolAdapter:
             return self._error_result(RuntimeError(f"Unhandled MCP tool failure: {exc}"))
 
     def _resolve_session_id(self, request_context: RequestContext[Any, Any, Any] | None) -> str:
+        user_context = get_user_context()
+        if user_context is not None:
+            return user_context.session_key
+
         if request_context is None:
             return self.default_session_id
 
@@ -111,6 +122,9 @@ class McpToolAdapter:
         }
         if isinstance(exc, UpstreamServiceError):
             error["status_code"] = exc.status_code
+        if isinstance(exc, IdentityAuthError):
+            payload = exc.to_response_payload()["error"]
+            error.update(payload)
 
         envelope = {"error": error}
         return types.CallToolResult(
@@ -120,15 +134,27 @@ class McpToolAdapter:
         )
 
     def _log_success(self, result: ToolResult, session_id: str) -> None:
+        user_context = get_user_context()
+        user_id = user_context.user_id if user_context else "anonymous"
+        department = user_context.department_claim if user_context else "unknown"
         trace = result.trace
         if trace is None:
-            self.logger.debug("mcp_tool_result tool=%s session_id=%s status=%s", result.tool, session_id, result.status)
+            self.logger.debug(
+                "mcp_tool_result tool=%s session_id=%s user_id=%s department=%s status=%s",
+                result.tool,
+                session_id,
+                user_id,
+                department,
+                result.status,
+            )
             return
 
         self.logger.debug(
-            "mcp_tool_result tool=%s session_id=%s status=%s cache_status=%s result_count=%s notes=%s",
+            "mcp_tool_result tool=%s session_id=%s user_id=%s department=%s status=%s cache_status=%s result_count=%s notes=%s",
             result.tool,
             session_id,
+            user_id,
+            department,
             result.status,
             trace.cache_status,
             trace.result_count,
@@ -136,10 +162,15 @@ class McpToolAdapter:
         )
 
     def _log_error(self, name: str, arguments: dict[str, Any], session_id: str, exc: Exception) -> None:
+        user_context = get_user_context()
+        user_id = user_context.user_id if user_context else "anonymous"
+        department = user_context.department_claim if user_context else "unknown"
         self.logger.warning(
-            "mcp_tool_error tool=%s session_id=%s args=%s error=%s",
+            "mcp_tool_error tool=%s session_id=%s user_id=%s department=%s args=%s error=%s",
             name,
             session_id,
+            user_id,
+            department,
             arguments,
             exc,
         )

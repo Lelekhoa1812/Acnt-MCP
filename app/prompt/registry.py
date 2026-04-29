@@ -65,7 +65,8 @@ SYSTEM_BEHAVIOR_RULES = [
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
     "If search returns identifiers but not requested attributes, add a next hop with `stock_detail` before answering product-family questions.",
     "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
-    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; do not answer grouped totals from `stock_rank_variants`.",
+    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; do not answer grouped totals from `stock_variant_rank`.",
+    "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering.",
     "For multi-item requests, execute one `stock_search` call per item term instead of one combined term that mixes multiple products.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
     "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique product family returned.",
@@ -78,6 +79,7 @@ SYSTEM_BEHAVIOR_RULES = [
         "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
         "returns no rows, try `charlie`) before reporting failure."
     ),
+    "If stock retrieval times out or returns incomplete coverage, retry with a smaller pageSize and continue from the last successful catalogue checkpoint before concluding it failed.",
     "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over long raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
@@ -392,13 +394,15 @@ Rules:
 - Do not plan `stock_snapshot`, `stock_search`, `stock_detail`, `stock_get_departments`, or `stock_get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
 - For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
 - For a **narrow** ask—stock, availability, hireability, or quantity for **one** named product or product line (model name, series, or colloquial product label)—keep the plan **short**: prefer one answer-ready retrieval step when the tool args can be filled from the user phrase and capability context (for example a single `stock_snapshot` with `departmentId`, a non-empty `search` built from distinctive name tokens, and `categoryId` only when a category match is clear). Add a dependent second step only if the first hop would plausibly return no rows, ambiguous multi-product matches, or stock evidence gaps.
-- For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_aggregate`; use `stock_rank_variants` only when the user explicitly asks for variant or SKU ranking.
+- For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_aggregate`; use `stock_variant_rank` only when the user explicitly asks for variant or SKU ranking inside a resolved family.
+- Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions and `stock_image` when the user explicitly needs a Harmonise image.
 - When the same turn only needs "is it in stock" or "how much stock" for a specific named item, do **not** add extra steps for colour, finish, or compare unless the user asked for those attributes.
 - Do not plan `session_state` or other session tools unless the user explicitly asks about the session, memory, or prior turns.
 - Build deterministic, executable DAG steps only.
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
+- If stock retrieval hits timeouts or partial coverage, add a dependent fallback step that retries with a smaller `pageSize` before concluding the upstream could not be resolved.
 - For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock_search steps with one product target per step.

@@ -5,3 +5,4 @@ pydantic-settings>=2.3,<3.0
 redis>=5.0,<6.0
 uvicorn[standard]>=0.30,<1.0
 pytest>=8.2,<9.0
+PyJWT[crypto]>=2.8,<3.0

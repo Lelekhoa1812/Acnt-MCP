@@ -17,6 +17,7 @@ from starlette.types import Receive, Scope, Send
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
+from app.auth import IdentityAuthError, IdentityGateway, reset_user_context, set_user_context
 from app.mcp.server import build_mcp_server
 
 from app.api.routes.agent import router as agent_router
@@ -146,9 +147,15 @@ def _auto_register_oauth_client(
 
 
 class McpTransportASGI:
-    def __init__(self, manager: StreamableHTTPSessionManager, settings: Settings) -> None:
+    def __init__(
+        self,
+        manager: StreamableHTTPSessionManager,
+        settings: Settings,
+        identity_gateway: IdentityGateway,
+    ) -> None:
         self.manager = manager
         self.settings = settings
+        self.identity_gateway = identity_gateway
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -159,25 +166,20 @@ class McpTransportASGI:
             await response(scope, receive, send)
             return
 
-        if not self.settings.mcp_require_bearer_token:
-            await self.manager.handle_request(scope, receive, send)
-            return
-
-        if not self._is_authorized(scope):
-            base_url = _base_url_from_scope(scope, self.settings)
-            response = JSONResponse(
-                status_code=401,
-                content={"detail": "Missing or invalid HTH_MCP_BEARER_TOKEN."},
-                headers={
-                    "WWW-Authenticate": (
-                        'Bearer realm="mcp", resource_metadata="'
-                        f'{base_url}/.well-known/oauth-protected-resource"'
-                    )
-                },
-            )
+        user_context = None
+        if self.identity_gateway.enabled:
+            try:
+                user_context = self.identity_gateway.authenticate_headers(self._scope_headers(scope))
+            except IdentityAuthError as exc:
+                response = self._auth_error_response(scope, exc)
+                await response(scope, receive, send)
+                return
+        elif self.settings.mcp_require_bearer_token and not self._is_authorized(scope):
+            response = self._legacy_bearer_auth_error_response(scope)
             await response(scope, receive, send)
             return
 
+        context_token = set_user_context(user_context) if user_context is not None else None
         try:
             await self.manager.handle_request(scope, receive, send)
         except RuntimeError as exc:
@@ -193,6 +195,9 @@ class McpTransportASGI:
                 content={"detail": "Not Found"},
             )
             await response(scope, receive, send)
+        finally:
+            if context_token is not None:
+                reset_user_context(context_token)
 
     def _is_authorized(self, scope: Scope) -> bool:
         bearer = self.settings.mcp_bearer_token
@@ -206,6 +211,39 @@ class McpTransportASGI:
                     token = token[7:].strip()
                 return token == bearer
         return False
+
+    def _scope_headers(self, scope: Scope) -> dict[str, str]:
+        return {
+            header_name.decode(errors="ignore").lower(): header_value.decode(errors="ignore")
+            for header_name, header_value in scope.get("headers", [])
+        }
+
+    def _legacy_bearer_auth_error_response(self, scope: Scope) -> JSONResponse:
+        base_url = _base_url_from_scope(scope, self.settings)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Missing or invalid HTH_MCP_BEARER_TOKEN."},
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer realm="mcp", resource_metadata="'
+                    f'{base_url}/.well-known/oauth-protected-resource"'
+                )
+            },
+        )
+
+    def _auth_error_response(self, scope: Scope, exc: IdentityAuthError) -> JSONResponse:
+        base_url = _base_url_from_scope(scope, self.settings)
+        headers: dict[str, str] = {}
+        if exc.payload.status_code == 401:
+            headers["WWW-Authenticate"] = (
+                'Bearer realm="mcp", error="invalid_token", resource_metadata="'
+                f'{base_url}/.well-known/oauth-protected-resource"'
+            )
+        return JSONResponse(
+            status_code=exc.payload.status_code,
+            content=exc.to_response_payload(),
+            headers=headers,
+        )
 
 
 def build_streamable_mcp_manager(settings: Settings) -> StreamableHTTPSessionManager:
@@ -235,6 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or get_settings()
     configure_logging(resolved_settings.log_level)
     logger = logging.getLogger("hth")
+    identity_gateway = IdentityGateway(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -244,6 +283,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.container = container
         app.state.oauth_clients = {}
         app.state.oauth_codes = {}
+        app.state.identity_gateway = identity_gateway
         mcp_context = mcp_manager.run()
         app.state.mcp_session_manager_context = mcp_context
         await mcp_context.__aenter__()
@@ -279,9 +319,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     mcp_manager = build_streamable_mcp_manager(resolved_settings)
-    mcp_transport_app = McpTransportASGI(mcp_manager, resolved_settings)
+    mcp_transport_app = McpTransportASGI(mcp_manager, resolved_settings, identity_gateway)
 
-    api_tools_router = build_tools_router()
+    api_tools_router = build_tools_router(resolved_settings)
 
     app.include_router(system_router, prefix=resolved_settings.api_prefix, tags=["system"])
     app.include_router(agent_router, prefix=resolved_settings.api_prefix, tags=["agent"])
@@ -360,6 +400,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_entrypoint": "uvicorn app.main:app (StreamableHTTPSessionManager at /mcp)",
             "mcp_auth_required": resolved_settings.mcp_require_bearer_token,
             "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
+            "identity_auth_enabled": resolved_settings.identity_auth_enabled,
             "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,
         }

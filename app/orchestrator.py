@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from app.agent import AgentEngine
+from app.auth.models import UserContext
 from app.config import Settings, UpstreamServiceError
 from app.text.stopwords import STOPWORDS
 from app.schemas import (
@@ -111,6 +112,7 @@ class OrchestratorService:
         args: dict[str, Any],
         session_id: str | None,
         thought: str = "",
+        user_context: UserContext | None = None,
     ) -> ToolResult:
         # Motivation vs Logic: direct REST/MCP tool calls now flow through the
         # same session-scoped plan+memo+validation lifecycle as `/query`, so the
@@ -127,6 +129,7 @@ class OrchestratorService:
                 args,
                 session_id=session_state.session_id,
                 thought=thought,
+                user_context=user_context,
             )
         except Exception:
             await self.session_store.save_state(session_state)

@@ -26,8 +26,8 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Choose tools by requested operation" in MCP_SERVER_INSTRUCTIONS
     assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
-    assert "Use stock_rank_variants only when" in MCP_SERVER_INSTRUCTIONS
-    assert "retry once with a shorter distinctive phrase" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
+    assert "smaller pageSize before giving up" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 
 
@@ -105,8 +105,9 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "stock_scope" in tool_names
     assert "stock_snapshot" in tool_names
     assert "stock_aggregate" in tool_names
-    assert "product_intelligence_rank" in tool_names
-    assert "stock_rank_variants" in tool_names
+    assert "stock_specs_rank" in tool_names
+    assert "stock_variant_rank" in tool_names
+    assert "stock_image" in tool_names
     assert "stock_disambiguate" in tool_names
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
@@ -116,6 +117,8 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "stock_get_categories" not in tool_names
     assert "stock_get_variant_evidence" not in tool_names
     assert "stock_get_product_family_inventory" not in tool_names
+    assert "product_intelligence_rank" not in tool_names
+    assert "stock_rank_variants" not in tool_names
     assert "stock_rank_variants_by_stock" not in tool_names
     assert "currency_convert" not in tool_names
     assert "session_clear_state" not in tool_names
@@ -129,14 +132,18 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "Grouped stock" in aggregate.description
     assert "not single-variant" in aggregate.description
 
-    intelligence = next(tool for tool in tools.tools if tool.name == "product_intelligence_rank")
+    intelligence = next(tool for tool in tools.tools if tool.name == "stock_specs_rank")
     assert "physical dimensions" in intelligence.description
     assert "attribute" in intelligence.description
     assert "metric" in intelligence.inputSchema["properties"]
 
-    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_rank_variants")
-    assert "VIC" in rank_tool.description
-    assert "variant or SKU" in rank_tool.description
+    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_variant_rank")
+    assert "pricing metrics" in rank_tool.description
+    assert "metric" in rank_tool.inputSchema["properties"]
+
+    image_tool = next(tool for tool in tools.tools if tool.name == "stock_image")
+    assert "HTTP image URL" in image_tool.description
+    assert "imageFileName" in image_tool.inputSchema["properties"]
 
     currency_convert = next(tool for tool in tools.tools if tool.name == "fx_convert")
     assert "from" in currency_convert.inputSchema["properties"]
@@ -263,23 +270,24 @@ async def test_mcp_product_family_inventory_returns_all_variants() -> None:
 
 
 @pytest.mark.anyio
-async def test_mcp_rank_variants_by_stock_orders_region_stock() -> None:
+async def test_mcp_variant_rank_orders_region_stock() -> None:
     server = build_mcp_server(build_mcp_settings())
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_rank_variants",
-            {"search": "Laminate Timber Floor", "region": "VIC", "direction": "most"},
+            "stock_variant_rank",
+            {"search": "Laminate Timber Floor", "region": "VIC", "direction": "most", "metric": "stock"},
         )
 
     assert result.isError is False
     assert result.structuredContent is not None
     rows = result.structuredContent["data"]["rows"]
     assert len(rows) >= 3
-    vic_stock = [row["stock"] for row in rows if row["stock"] is not None]
+    vic_stock = [row["rankValue"] for row in rows if row["rankValue"] is not None]
     assert vic_stock == sorted(vic_stock, reverse=True)
     assert rows[0]["region"] == "VIC"
+    assert all(row["groupBy"] == "variant" for row in rows)
 
 
 @pytest.mark.anyio

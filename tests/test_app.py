@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import logging
 import re
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
+import jwt
 from fastapi.testclient import TestClient
 
 from app.agent.engine import AgentEngine, AgentRun
@@ -94,6 +96,54 @@ def build_mcp_auth_client() -> TestClient:
         mcp_oauth_enabled=True,
     )
     return TestClient(create_app(settings))
+
+
+def build_identity_auth_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        identity_auth_enabled=True,
+        auth_issuer="https://login.microsoftonline.com/test-tenant/v2.0",
+        auth_audience="api://hth-mcp",
+        auth_jwt_hs256_secret="test-secret",
+        auth_required_group="MCP_Users",
+    )
+    return TestClient(create_app(settings))
+
+
+def build_identity_token(
+    *,
+    roles: list[str] | None = None,
+    groups: list[str] | None = None,
+    department_claim: str = "3",
+) -> str:
+    now = int(time.time())
+    payload = {
+        "iss": "https://login.microsoftonline.com/test-tenant/v2.0",
+        "aud": "api://hth-mcp",
+        "exp": now + 3600,
+        "nbf": now - 5,
+        "iat": now - 5,
+        "ver": "2.0",
+        "tid": "tenant-1",
+        "oid": "user-1",
+        "sub": "user-1",
+        "roles": roles if roles is not None else ["Tool.Viewer"],
+        "groups": groups if groups is not None else ["MCP_Users"],
+        "extension_departmentId": department_claim,
+    }
+    return jwt.encode(payload, "test-secret", algorithm="HS256")
 
 
 def test_health_endpoint_reports_local_harmonise_mode() -> None:
@@ -282,19 +332,24 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     assert response.status_code == 200
     tool_names = {tool["name"] for tool in response.json()["tools"]}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
-    assert "stock_get_supported_scope" in tool_names
+    assert "stock_scope" in tool_names
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
     assert "stock_get_variant_evidence" not in tool_names
     assert "session_clear_state" not in tool_names
-    assert "stock_search_catalogue" in tool_names
-    assert "stock_get_product_family_inventory" in tool_names
-    assert "stock_rank_variants_by_stock" in tool_names
-    assert "stock_inventory_snapshot" in tool_names
-    assert "resolver_disambiguate_candidates" in tool_names
+    assert "stock_search" in tool_names
+    assert "stock_get_product_family_inventory" not in tool_names
+    assert "stock_specs_rank" in tool_names
+    assert "stock_variant_rank" in tool_names
+    assert "stock_image" in tool_names
+    assert "stock_rank_variants_by_stock" not in tool_names
+    assert "product_intelligence_rank" not in tool_names
+    assert "stock_rank_variants" not in tool_names
+    assert "stock_snapshot" in tool_names
+    assert "stock_disambiguate" in tool_names
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
-    assert "currency_convert" in tool_names
+    assert "fx_convert" in tool_names
 
 
 def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
@@ -306,9 +361,75 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
-    assert "stock_get_supported_scope" in tool_names
-    assert "stock_search_catalogue" in tool_names
-    assert "stock_get_product" in tool_names
+    assert "stock_scope" in tool_names
+    assert "stock_search" in tool_names
+    assert "stock_detail" in tool_names
+
+
+def test_identity_auth_tools_enforce_group_role_and_department_scope() -> None:
+    viewer_token = build_identity_token()
+    wrong_department_token = build_identity_token(department_claim="7")
+    missing_group_token = build_identity_token(groups=["Other_Group"])
+
+    with build_identity_auth_client() as client:
+        tools_response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        valid_call = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock_snapshot",
+                "args": {"page": 1, "pageSize": 2, "departmentId": 3},
+            },
+            headers={"Authorization": f"Bearer {viewer_token}"},
+        )
+        denied_department_call = client.post(
+            "/api/v1/tools/call",
+            json={
+                "tool": "stock_snapshot",
+                "args": {"page": 1, "pageSize": 2, "departmentId": 3},
+            },
+            headers={"Authorization": f"Bearer {wrong_department_token}"},
+        )
+        denied_group_list = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {missing_group_token}"},
+        )
+
+    assert tools_response.status_code == 200
+    tool_names = {tool["name"] for tool in tools_response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+    assert valid_call.status_code == 200
+
+    assert denied_department_call.status_code == 403
+    assert denied_department_call.json()["detail"]["code"] == "department_access_denied"
+
+    assert denied_group_list.status_code == 403
+    assert denied_group_list.json()["detail"]["code"] == "group_access_denied"
+
+
+def test_identity_auth_mcp_requires_bearer_token() -> None:
+    with build_identity_auth_client() as client:
+        response = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1.0.0"},
+                },
+            },
+            headers={"accept": "application/json, text/event-stream"},
+        )
+
+    assert response.status_code == 401
+    body = response.json()
+    assert body["error"]["code"] == "missing_bearer_token"
+    assert body["error"]["mcp_error_code"] == -32001
 
 
 def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
@@ -323,7 +444,7 @@ def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock_search_catalogue"
+    assert payload["tool"] == "stock_search"
     names = [item["name"] for item in payload["data"]["items"]]
     assert "Dance Floor - White Gloss " in names
     assert payload["plan_status"]["status"] == "complete"
@@ -343,7 +464,7 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock_inventory_snapshot"
+    assert payload["tool"] == "stock_snapshot"
     assert payload["data"]["coverage"]["matchedProducts"] == 40
     assert payload["data"]["coverage"]["matchedPages"] == 1
     assert payload["data"]["coverage"]["enrichedVariants"] == 60
@@ -372,7 +493,7 @@ def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock_inventory_snapshot"
+    assert payload["tool"] == "stock_snapshot"
     assert payload["data"]["coverage"]["matchedProducts"] >= 1
     assert payload["data"]["rows"]
 

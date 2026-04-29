@@ -11,7 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from app.config import Settings, UpstreamServiceError
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
-from app.schemas import StockInventorySnapshotArgs
+from app.schemas import StockInventorySnapshotArgs, StockSearchCatalogueArgs
 from app.store import AppKeyValueStore
 
 
@@ -1604,3 +1604,251 @@ async def test_inventory_snapshot_parallelizes_broadened_page_fetches() -> None:
     finally:
         await source.close()
         await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_scan_catalogue_with_recovery_clamps_page_size_and_dedupes_checkpoint_results() -> None:
+    class _AdaptiveRecoverySource:
+        def __init__(self) -> None:
+            self.requests: list[tuple[int, int]] = []
+
+        async def search_catalogue(
+            self,
+            page: int,
+            page_size: int,
+            search: str | None,
+            department_id: int | None,
+            category_id: str | None,
+        ) -> tuple[dict[str, Any], list[str]]:
+            self.requests.append((page, page_size))
+            if page_size == 50 and page == 2:
+                raise UpstreamServiceError(status_code=504, detail="simulated catalogue timeout")
+            if page_size == 50:
+                items = [
+                    {
+                        "id": "prod-1",
+                        "name": "Recovery Chair One",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [{"id": "var-1", "name": "Variant One", "sku": "sku-1", "totalHirable": 10, "optionIds": []}],
+                    }
+                ]
+                return {"items": items, "page": page, "pageSize": page_size, "totalCount": 4, "totalPages": 2}, []
+
+            items_by_page = {
+                1: [
+                    {
+                        "id": "prod-1",
+                        "name": "Recovery Chair One",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [{"id": "var-1", "name": "Variant One", "sku": "sku-1", "totalHirable": 10, "optionIds": []}],
+                    },
+                    {
+                        "id": "prod-2",
+                        "name": "Recovery Chair Two",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [{"id": "var-2", "name": "Variant Two", "sku": "sku-2", "totalHirable": 9, "optionIds": []}],
+                    },
+                ],
+                2: [
+                    {
+                        "id": "prod-3",
+                        "name": "Recovery Chair Three",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [{"id": "var-3", "name": "Variant Three", "sku": "sku-3", "totalHirable": 8, "optionIds": []}],
+                    }
+                ],
+            }
+            return {
+                "items": items_by_page.get(page, []),
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 3,
+                "totalPages": 2,
+            }, []
+
+        async def close(self) -> None:
+            return
+
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _AdaptiveRecoverySource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.recovery"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.recovery"),
+    )
+
+    try:
+        scan = await service.scan_catalogue_with_recovery(
+            StockSearchCatalogueArgs(page=1, pageSize=100, search="chair")
+        )
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+    assert source.requests[0] == (1, 50)
+    assert (2, 50) in source.requests
+    assert (1, 25) in source.requests
+    assert [item.id for item in scan.items] == ["prod-1", "prod-2", "prod-3"]
+    assert any("smaller pageSize" in note for note in scan.notes)
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_surfaces_partial_catalogue_recovery_notes() -> None:
+    class _PartialRecoverySource:
+        def __init__(self) -> None:
+            self.search_requests: list[tuple[int, int]] = []
+
+        async def search_catalogue(
+            self,
+            page: int,
+            page_size: int,
+            search: str | None,
+            department_id: int | None,
+            category_id: str | None,
+        ) -> tuple[dict[str, Any], list[str]]:
+            self.search_requests.append((page, page_size))
+            if page == 1:
+                return {
+                    "items": [
+                        {
+                            "id": "prod-partial",
+                            "name": "Partial Chair",
+                            "departmentId": 3,
+                            "subDepartmentId": None,
+                            "categoryId": "cat-chair",
+                            "isActive": True,
+                            "variations": [],
+                            "variants": [
+                                {
+                                    "id": "var-partial",
+                                    "name": "Partial Chair - Black",
+                                    "sku": "partial-chair-sku",
+                                    "totalHirable": 12,
+                                    "optionIds": [],
+                                }
+                            ],
+                        }
+                    ],
+                    "page": page,
+                    "pageSize": page_size,
+                    "totalCount": 2,
+                    "totalPages": 2,
+                }, []
+            raise UpstreamServiceError(status_code=504, detail="simulated page timeout")
+
+        async def get_product(
+            self,
+            product_id: str | None,
+            sku: str | None,
+            page: int,
+            page_size: int,
+        ) -> tuple[dict[str, Any], list[str]]:
+            return {
+                "items": [
+                    {
+                        "id": "prod-partial",
+                        "name": "Partial Chair",
+                        "departmentId": 3,
+                        "subDepartmentId": None,
+                        "categoryId": "cat-chair",
+                        "isActive": True,
+                        "variations": [],
+                        "variants": [
+                            {
+                                "id": "var-partial",
+                                "name": "Partial Chair - Black",
+                                "sku": "partial-chair-sku",
+                                "totalHirable": 12,
+                                "optionIds": [],
+                                "details": {
+                                    "departmentId": 3,
+                                    "subDepartmentId": None,
+                                    "isActive": True,
+                                    "generalRate": 40.0,
+                                    "expoRate": 38.0,
+                                    "assignedCategoryId": "cat-chair",
+                                    "dimensional": True,
+                                    "canBeSoldInPortions": False,
+                                    "startDate": None,
+                                    "endDate": None,
+                                    "salesNote": "Partial recovery detail",
+                                    "length": 0.5,
+                                    "width": 0.5,
+                                    "height": 0.9,
+                                    "vicStock": 6,
+                                    "vicHirable": 5,
+                                    "nswStock": 4,
+                                    "nswHirable": 3,
+                                    "qldStock": 2,
+                                    "qldHirable": 2,
+                                    "totalStock": 12,
+                                    "lastUpdatedDate": None,
+                                    "imageFileName": None,
+                                    "cost": 11.0,
+                                    "components": [],
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 1,
+                "totalPages": 1,
+            }, []
+
+        async def close(self) -> None:
+            return
+
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _PartialRecoverySource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.partial-recovery"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.partial-recovery"),
+    )
+
+    try:
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=100, search="chair"))
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+    assert source.search_requests[0] == (1, 50)
+    assert snapshot.coverage.isPartial is True
+    assert snapshot.coverage.enrichedVariants == 1
+    assert any("recovery" in note.casefold() or "pagesize" in note.casefold() for note in snapshot.coverage.limitations)

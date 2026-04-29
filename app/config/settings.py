@@ -140,6 +140,19 @@ class Settings(BaseSettings):
         "chatgpt.com,claude.ai,claude.com",
         alias="AUTO_TRUSTED_DOMAINS",
     )
+    identity_auth_enabled: bool = Field(False, alias="HTH_IDENTITY_AUTH_ENABLED")
+    auth_issuer: str | None = Field(None, alias="HTH_AUTH_ISSUER")
+    auth_audience: str | None = Field(None, alias="HTH_AUTH_AUDIENCE")
+    auth_jwks_url: str | None = Field(None, alias="HTH_AUTH_JWKS_URL")
+    auth_jwt_hs256_secret: str | None = Field(None, alias="HTH_AUTH_JWT_HS256_SECRET")
+    auth_required_group: str = Field("MCP_Users", alias="HTH_AUTH_REQUIRED_GROUP")
+    auth_required_claims: str = Field("tid,oid", alias="HTH_AUTH_REQUIRED_CLAIMS")
+    auth_department_claims: str = Field(
+        "extension_departmentId,extension_department,officeLocation",
+        alias="HTH_AUTH_DEPARTMENT_CLAIMS",
+    )
+    auth_required_token_version: str | None = Field("2.0", alias="HTH_AUTH_REQUIRED_TOKEN_VERSION")
+    auth_rate_limit_per_minute: int = Field(50, ge=0, alias="HTH_AUTH_RATE_LIMIT_PER_MINUTE")
 
     @property
     def harmonise_timeout_seconds(self) -> float | None:
@@ -293,6 +306,11 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_MCP_REQUIRE_BEARER_TOKEN=true while HTH_MCP_OAUTH_ENABLED=false; browser OAuth will not be available for bearer-protected remote MCP access."
             )
+        if self.identity_auth_enabled and not (self.auth_jwks_url or self.auth_jwt_hs256_secret):
+            notes.append(
+                "HTH_IDENTITY_AUTH_ENABLED=true but no JWT verifier is configured. Set HTH_AUTH_JWKS_URL (Entra) "
+                "or HTH_AUTH_JWT_HS256_SECRET (local test)."
+            )
         return notes
 
     @staticmethod
@@ -312,6 +330,14 @@ class Settings(BaseSettings):
     @property
     def parsed_mcp_oauth_auto_trusted_redirect_domains(self) -> list[str]:
         return [domain.lower() for domain in self._split_csv(self.mcp_oauth_auto_trusted_redirect_domains)]
+
+    @property
+    def parsed_auth_required_claims(self) -> list[str]:
+        return self._split_csv(self.auth_required_claims)
+
+    @property
+    def parsed_auth_department_claims(self) -> list[str]:
+        return self._split_csv(self.auth_department_claims)
 
     @property
     def mcp_browser_oauth_enabled(self) -> bool:

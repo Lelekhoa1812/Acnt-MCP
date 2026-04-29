@@ -370,6 +370,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
+    required_roles: list[str] = Field(default_factory=list)
 
 
 class AgentDebugIntent(BaseModel):
@@ -576,24 +577,48 @@ class StockAggregateArgs(BaseModel):
 
 
 class StockProductFamilyInventoryArgs(BaseModel):
+    page: int = Field(1, ge=1, description="Catalogue page to start from before family variant enrichment.")
     search: str = Field(
         description="Named product or family text to retrieve. Retrieves every resolved variant/SKU for availability answers."
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
-    pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich, from 1 to 100.")
+    pageSize: int = Field(50, ge=1, le=50, description="Maximum catalogue product rows to enrich, from 1 to 50.")
 
 
-class StockRankVariantsByStockArgs(BaseModel):
+class StockVariantRankArgs(BaseModel):
+    page: int = Field(1, ge=1, description="Catalogue page to start from before family variant ranking.")
     search: str = Field(description="Named product or family text whose variants should be ranked.")
-    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
-        "overall",
-        description="Stock field to rank by. Use VIC for Victoria, NSW, QLD, or overall for total stock.",
-    )
-    direction: Literal["most", "least"] = Field("most", description="Rank highest stock first with most, or lowest first with least.")
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
-    pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich before ranking.")
+    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
+        "overall",
+        description="State or overall stock field for stock/hirable metrics.",
+    )
+    metric: Literal[
+        "stock",
+        "hirable",
+        "length",
+        "width",
+        "height",
+        "area",
+        "volume",
+        "cost",
+        "replacementValue",
+        "generalRate",
+        "expoRate",
+        "hireRate",
+    ] = Field(
+        "stock",
+        description="Ranking metric: stock/hirable availability, physical size, derived area/volume, or pricing.",
+    )
+    direction: Literal["most", "least"] = Field("most", description="Rank highest values first with most, or lowest first.")
+    attributeFilters: list[ProductAttributeFilter] = Field(
+        default_factory=list,
+        description="LLM-supplied aesthetic/style filters; values are not hard-coded by the tool.",
+    )
+    limit: int = Field(10, ge=1, le=50, description="Maximum ranked variants to return.")
+    pageSize: int = Field(50, ge=1, le=50, description="Maximum catalogue product rows to enrich before ranking, from 1 to 50.")
 
 
 class ProductAttributeFilter(BaseModel):
@@ -607,7 +632,7 @@ class ProductAttributeFilter(BaseModel):
     )
 
 
-class ProductIntelligenceRankArgs(BaseModel):
+class StockSpecsRankArgs(BaseModel):
     search: str | None = Field(
         None,
         description="Prompt-supplied family, category, style, or product phrase. Omit only for deliberately broad scoped ranking.",
@@ -646,9 +671,32 @@ class ProductIntelligenceRankArgs(BaseModel):
     )
     limit: int = Field(10, ge=1, le=50, description="Maximum ranked groups to return.")
     page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
-    pageSize: int = Field(100, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
-    includeImages: bool = Field(False, description="When true, attach MCP-native image content for top ranked rows when available.")
-    maxImages: int = Field(1, ge=0, le=5, description="Maximum MCP-native image blocks to attach.")
+    pageSize: int = Field(50, ge=1, le=50, description="Catalogue page size to enrich, from 1 to 50.")
+
+
+class StockImageArgs(BaseModel):
+    imageFileName: str | None = Field(
+        None,
+        description="Exact Harmonise image path or file name when already known.",
+    )
+    sku: str | None = Field(
+        None,
+        description="Exact variant SKU to resolve the image from a product detail payload.",
+    )
+    search: str | None = Field(
+        None,
+        description="Named product or family text to search when the image path or SKU is not already known.",
+    )
+    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
+    page: int = Field(1, ge=1, description="Catalogue page to start from before search-based image resolution.")
+    pageSize: int = Field(20, ge=1, le=50, description="Catalogue page size to use for search-based image resolution, from 1 to 50.")
+
+    @model_validator(mode="after")
+    def validate_source(self) -> "StockImageArgs":
+        if not self.imageFileName and not self.sku and not self.search:
+            raise ValueError("At least one of 'imageFileName', 'sku', or 'search' must be provided.")
+        return self
 
 
 class StockCountItemsArgs(BaseModel):

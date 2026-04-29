@@ -58,9 +58,17 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "with prompt-supplied search/filter arguments; do not answer grouped totals from variant ranking."
         ),
         (
+            "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking, `stock_variant_rank` for "
+            "which-variant-within-a-family resolution, and `stock_image` only when the user explicitly needs a Harmonise image."
+        ),
+        (
             "If a single-product search with a multi-word phrase returns no rows, retry with a shorter "
             "distinctive product term from the user's phrase or prior evidence (for example, if `charlie chair` "
             "returns no rows, try `charlie`) before reporting failure."
+        ),
+        (
+            "If stock retrieval times out or comes back partial, retry with a smaller pageSize and continue from the "
+            "last successful catalogue checkpoint before you conclude the upstream cannot be resolved."
         ),
         # Motivation vs Logic: when users only cite the product name, the prompt should still surface every variant.
         (

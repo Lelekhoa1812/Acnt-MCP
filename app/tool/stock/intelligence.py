@@ -43,6 +43,31 @@ def filter_evidence_by_attributes(
     return matched, notes
 
 
+def rank_evidence_with_filters(
+    evidence_items: list[NormalizedEvidence],
+    *,
+    metric: str,
+    region: str,
+    group_by: str,
+    direction: str,
+    limit: int,
+    attribute_filters: list[ProductAttributeFilter] | None = None,
+) -> tuple[list[NormalizedEvidence], list[dict[str, Any]], list[str]]:
+    # Motivation vs Logic: stock specs ranking and intra-family variant ranking now
+    # share the same filtering + ranking contract so behavior stays consistent
+    # instead of drifting across two near-duplicate tool implementations.
+    filtered_items, filter_notes = filter_evidence_by_attributes(evidence_items, attribute_filters or [])
+    ranked_rows = rank_product_intelligence(
+        filtered_items,
+        metric=metric,
+        region=region,
+        group_by=group_by,
+        direction=direction,
+        limit=limit,
+    )
+    return filtered_items, ranked_rows, filter_notes
+
+
 def rank_product_intelligence(
     evidence_items: list[NormalizedEvidence],
     *,
