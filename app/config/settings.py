@@ -201,11 +201,17 @@ class Settings(BaseSettings):
         return "local" if self.local_harmonise else "remote"
 
     @property
+    def harmonise_inventory_tools_enabled(self) -> bool:
+        return self.data_source.strip().casefold() == "harmonise"
+
+    @property
     def harmonise_base_url(self) -> str:
         return self.local_harmonise_endpoint if self.local_harmonise else self.cloud_harmonise_endpoint
 
     @property
     def data_source_label(self) -> str:
+        if not self.harmonise_inventory_tools_enabled:
+            return "disabled"
         return f"harmonise_{self.harmonise_mode}"
 
     @property
@@ -283,6 +289,11 @@ class Settings(BaseSettings):
             notes.append(
                 "LOCAL_HARMONISE=true; the service runtimes will call the in-process Harmonise simulator "
                 f"using LOCAL_HARMONISE_ENDPOINT ({self.local_harmonise_endpoint})."
+            )
+        if not self.harmonise_inventory_tools_enabled:
+            notes.append(
+                "HTH_DATA_SOURCE is not set to 'harmonise'; Harmonise-backed stock, resolver, and session tools "
+                "are disabled for this run."
             )
         else:
             if not self.cloud_harmonise_endpoint:

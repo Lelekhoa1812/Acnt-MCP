@@ -79,15 +79,33 @@ async def build_container(settings: Settings) -> AppContainer:
         key_value_store.redis_client_connected,
     )
 
-    inventory_source: HarmoniseInventorySource | None = HarmoniseInventorySource(settings=settings, logger=logger)
-    harmonise_inventory_tools_enabled = True
-    if settings.local_harmonise:
-        harmonise_inventory_tools_enabled = await _probe_local_harmonise_inventory_source(inventory_source, logger)
-        if not harmonise_inventory_tools_enabled:
-            await inventory_source.close()
-            inventory_source = None
-
+    inventory_source: HarmoniseInventorySource | None = None
     inventory_service: InventoryService | None = None
+    harmonise_inventory_tools_enabled = settings.harmonise_inventory_tools_enabled
+    if harmonise_inventory_tools_enabled:
+        try:
+            inventory_source = HarmoniseInventorySource(settings=settings, logger=logger)
+        except RuntimeError as exc:
+            # Root Cause vs Logic: local deployments can ship without the
+            # optional in-process Harmonise package, and the app should degrade
+            # to news/weather/FX instead of failing startup before tool gating
+            # has a chance to run.
+            logger.warning(
+                "startup_note=Harmonise inventory source unavailable; "
+                "disabling stock, resolver, and session tools: %s",
+                exc,
+            )
+            harmonise_inventory_tools_enabled = False
+        else:
+            if settings.local_harmonise:
+                harmonise_inventory_tools_enabled = await _probe_local_harmonise_inventory_source(
+                    inventory_source,
+                    logger,
+                )
+                if not harmonise_inventory_tools_enabled:
+                    await inventory_source.close()
+                    inventory_source = None
+
     if inventory_source is not None:
         inventory_service = InventoryService(
             settings=settings,

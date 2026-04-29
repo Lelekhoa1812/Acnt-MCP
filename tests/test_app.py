@@ -58,6 +58,27 @@ def build_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
+def build_null_data_source_client() -> TestClient:
+    settings = Settings(
+        data_source="null",
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url=None,
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=True,
+        mock_ui_path="./ui/mock/index.html",
+    )
+    return TestClient(create_app(settings))
+
+
 def build_cloud_client() -> TestClient:
     settings = Settings(
         local_harmonise=False,
@@ -159,6 +180,57 @@ def test_health_endpoint_reports_local_harmonise_mode() -> None:
     assert payload["redis_fallback_enabled"] is True
     assert payload["local_chat_memory_enabled"] is True
     assert payload["local_chat_memory_turns"] == 6
+    assert payload["harmonise_inventory_tools_enabled"] is True
+
+
+def test_null_data_source_disables_harmonise_tools(monkeypatch) -> None:
+    def fail_init(self, settings, logger):  # noqa: ANN001
+        raise AssertionError("HarmoniseInventorySource.__init__ should not run when HTH_DATA_SOURCE=null")
+
+    monkeypatch.setattr("app.tool.stock.source.HarmoniseInventorySource.__init__", fail_init)
+
+    with build_null_data_source_client() as client:
+        health = client.get("/api/v1/health")
+        tools = client.get("/api/v1/tools")
+
+    assert health.status_code == 200
+    health_payload = health.json()
+    assert health_payload["data_source"] == "disabled"
+    assert health_payload["harmonise_inventory_tools_enabled"] is False
+
+    assert tools.status_code == 200
+    tool_names = {tool["name"] for tool in tools.json()["tools"]}
+    assert "stock_search" not in tool_names
+    assert "stock_scope" not in tool_names
+    assert "stock_snapshot" not in tool_names
+    assert "stock_aggregate" not in tool_names
+    assert "news_search" in tool_names
+    assert "weather_current" in tool_names
+    assert "fx_convert" in tool_names
+
+
+def test_missing_harmonise_dependency_disables_harmonise_tools(monkeypatch) -> None:
+    def fail_init(self, settings, logger):  # noqa: ANN001
+        raise RuntimeError("LOCAL_HARMONISE=true requires the @harmonise dependency")
+
+    monkeypatch.setattr("app.tool.stock.source.HarmoniseInventorySource.__init__", fail_init)
+
+    with build_client() as client:
+        health = client.get("/api/v1/health")
+        tools = client.get("/api/v1/tools")
+
+    assert health.status_code == 200
+    health_payload = health.json()
+    assert health_payload["harmonise_inventory_tools_enabled"] is False
+
+    assert tools.status_code == 200
+    tool_names = {tool["name"] for tool in tools.json()["tools"]}
+    assert "stock_search" not in tool_names
+    assert "stock_scope" not in tool_names
+    assert "stock_snapshot" not in tool_names
+    assert "news_search" in tool_names
+    assert "weather_current" in tool_names
+    assert "fx_convert" in tool_names
 
 
 def test_mcp_unauthorized_response_advertises_oauth_metadata() -> None:
