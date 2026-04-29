@@ -37,6 +37,7 @@ class HarmoniseInventorySource:
         # product row `id` only, so id-only resolution failed with 404. We map
         # variant ids seen in list responses back to the parent product row.
         self._variant_id_to_product: dict[str, dict[str, Any]] = {}
+        self._sku_to_product: dict[str, dict[str, Any]] = {}
         self._catalogue_scan_complete = False
         # Root Cause vs Logic: cloud list/search GETs 500 when multiple requests
         # hit /api/v1/products concurrently. Queue all Harmonise HTTP through one
@@ -139,11 +140,21 @@ class HarmoniseInventorySource:
         page_size: int,
     ) -> tuple[dict[str, Any], list[str]]:
         if sku:
-            # Root Cause vs Logic: /api/v1/products/{sku} is a single-resource
-            # detail endpoint that does not accept pagination query params.
-            # Passing page/pageSize causes a 500 on the cloud Harmonise backend;
-            # Postman confirms the bare URL works correctly without any params.
-            payload = await self._get(f"/api/v1/products/{sku}", params={})
+            compact_sku = sku.strip()
+            if not compact_sku:
+                raise UpstreamServiceError(400, "A non-empty sku must be provided for product retrieval.")
+            # Root Cause vs Logic: SKU detail payloads can be very large, and the
+            # cloud endpoint sometimes returns 5xx under that load. Reuse any
+            # already-cached catalogue row first so we can answer quickly without
+            # retrying the expensive detail route unless we have no alternative.
+            catalogue_item = await self._resolve_catalogue_item_by_sku(compact_sku)
+            if catalogue_item is not None:
+                hydrated = await self._hydrate_product_by_sku(catalogue_item)
+                paged = self._as_paged_payload(hydrated, page=page, page_size=page_size)
+                self._remember_catalogue_items(paged.get("items", []))
+                return paged, []
+
+            payload = await self._get(f"/api/v1/products/{compact_sku}", params={}, max_attempts=1)
             paged = self._as_paged_payload(payload, page=page, page_size=page_size)
             self._remember_catalogue_items(paged.get("items", []))
             return paged, []
@@ -167,8 +178,8 @@ class HarmoniseInventorySource:
         # inventory-backed tools.
         await self.get_departments(include_inactive=False, include_sub_departments=False)
 
-    async def _get(self, path: str, params: dict[str, Any]) -> Any:
-        response = await self._request_with_retry(path=path, params=params)
+    async def _get(self, path: str, params: dict[str, Any], max_attempts: int | None = None) -> Any:
+        response = await self._request_with_retry(path=path, params=params, max_attempts=max_attempts)
         if response.status_code >= 400:
             raise UpstreamServiceError(status_code=response.status_code, detail=response.text)
         data = response.json()
@@ -176,12 +187,12 @@ class HarmoniseInventorySource:
         self.logger.debug("harmonise_response path=%s body=%s", path, _trim_harmonise_log_body(data))
         return data
 
-    async def _request_with_retry(self, path: str, params: dict[str, Any]) -> httpx.Response:
+    async def _request_with_retry(self, path: str, params: dict[str, Any], max_attempts: int | None = None) -> httpx.Response:
         # Root Cause vs Logic: cloud Harmonise list/detail calls can run for a long
         # time under load, and strict timeout+attempt caps were truncating inventory
         # retrieval before rows were fully hydrated. When timeout is disabled in
         # settings, timeout retries now remain unbounded with capped backoff.
-        max_attempts = max(1, self.settings.harmonise_max_attempts)
+        max_attempts = max(1, self.settings.harmonise_max_attempts if max_attempts is None else max_attempts)
         unbounded_timeout_retries = self.settings.harmonise_timeout_seconds is None
         attempt = 1
         while True:
@@ -327,9 +338,19 @@ class HarmoniseInventorySource:
         # product-level variant details, which amplified remote latency and timeouts.
         # We now short-circuit once all expected SKUs have hydrated detail payloads.
         for sku in expected_skus:
-            # Root Cause vs Logic: match get_product(sku): the cloud detail route
-            # returns 500 when page/pageSize query params are present; see get_product.
-            payload = await self._get(f"/api/v1/products/{sku}", params={})
+            # Root Cause vs Logic: one SKU detail call can be enough to make a
+            # whole product feel "timed out" when the payload is huge, so we do a
+            # single fast attempt per SKU and keep any already-hydrated data.
+            try:
+                payload = await self._get(f"/api/v1/products/{sku}", params={}, max_attempts=1)
+            except UpstreamServiceError as exc:
+                self.logger.warning(
+                    "SKU detail hydration failed for %s: %s (status %s)",
+                    sku,
+                    exc.detail,
+                    exc.status_code,
+                )
+                continue
             paged = self._as_paged_payload(payload, page=1, page_size=1)
             items = paged.get("items", []) or []
             if not items:
@@ -420,6 +441,34 @@ class HarmoniseInventorySource:
                 variant_id = variant.get("id")
                 if variant_id:
                     self._variant_id_to_product[str(variant_id)] = item
+                sku = variant.get("sku")
+                if isinstance(sku, str):
+                    compact_sku = sku.strip()
+                    if compact_sku:
+                        self._sku_to_product[compact_sku] = item
+
+    async def _resolve_catalogue_item_by_sku(self, sku: str) -> dict[str, Any] | None:
+        compact_sku = sku.strip()
+        if compact_sku in self._sku_to_product:
+            return self._sku_to_product[compact_sku]
+        if self._catalogue_scan_complete:
+            return None
+
+        page = 1
+        page_size = 50
+        while True:
+            payload = await self._get("/api/v1/products", params={"page": page, "pageSize": page_size})
+            paged = self._as_paged_payload(payload, page=page, page_size=page_size)
+            self._remember_catalogue_items(paged.get("items", []))
+
+            if compact_sku in self._sku_to_product:
+                return self._sku_to_product[compact_sku]
+
+            total_pages = max(1, int(paged.get("totalPages") or 1))
+            if page >= total_pages:
+                self._catalogue_scan_complete = True
+                return None
+            page += 1
 
     def _single_item_page(self, item: dict[str, Any], page: int, page_size: int) -> dict[str, Any]:
         include_item = page == 1 and page_size >= 1

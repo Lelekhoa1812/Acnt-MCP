@@ -1081,6 +1081,91 @@ async def test_cloud_source_retries_transient_timeout_before_success() -> None:
         await source.close()
 
 
+@pytest.mark.anyio
+async def test_cloud_source_uses_cached_catalogue_row_when_sku_detail_500s() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        harmonise_retry_attempts=3,
+        harmonise_retry_backoff_ms=0,
+        harmonise_retry_backoff_cap_ms=0,
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = HarmoniseInventorySource(settings=settings, logger=logging.getLogger("test.service.cloud.detail-fallback"))
+    original_client = source._client
+    attempts = {"catalogue": 0, "detail": 0}
+
+    catalogue_item = {
+        "id": "prod-chair",
+        "name": "Alto Chair",
+        "departmentId": 3,
+        "subDepartmentId": None,
+        "categoryId": "cat-chair",
+        "isActive": True,
+        "variations": [],
+        "variants": [
+            {
+                "id": "var-chair-black",
+                "name": "Alto Chair - Black",
+                "sku": "fn-se-ch-alt-bla",
+                "totalHirable": 172,
+                "optionIds": ["opt-black"],
+            }
+        ],
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/products":
+            attempts["catalogue"] += 1
+            return httpx.Response(
+                200,
+                json={
+                    "items": [catalogue_item],
+                    "page": 1,
+                    "pageSize": 50,
+                    "totalCount": 1,
+                    "totalPages": 1,
+                },
+                request=request,
+            )
+        if request.url.path == "/api/v1/products/fn-se-ch-alt-bla":
+            attempts["detail"] += 1
+            return httpx.Response(500, json={"detail": "simulated oversized payload failure"}, request=request)
+        return httpx.Response(404, request=request)
+
+    source._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url=settings.cloud_harmonise_endpoint,
+        headers=settings.harmonise_client_headers,
+    )
+    await original_client.aclose()
+
+    try:
+        await source.search_catalogue(
+            page=1,
+            page_size=5,
+            search="alto",
+            department_id=None,
+            category_id=None,
+        )
+
+        payload, _ = await source.get_product(
+            product_id=None,
+            sku="fn-se-ch-alt-bla",
+            page=1,
+            page_size=1,
+        )
+
+        assert attempts["catalogue"] == 1
+        assert attempts["detail"] == 1
+        assert payload["items"][0]["id"] == "prod-chair"
+        assert payload["items"][0]["variants"][0]["sku"] == "fn-se-ch-alt-bla"
+    finally:
+        await source.close()
+
+
 class _TimeoutDetailLookupSource:
     def __init__(self) -> None:
         self._catalogue_item = {
