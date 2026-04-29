@@ -159,6 +159,13 @@ class Settings(BaseSettings):
     # )
     auth_required_token_version: str | None = Field("2.0", alias="HTH_AUTH_REQUIRED_TOKEN_VERSION")
     auth_rate_limit_per_minute: int = Field(50, ge=0, alias="HTH_AUTH_RATE_LIMIT_PER_MINUTE")
+    oauth_client_id: str | None = Field(None, alias="OAUTH_CLIENT_ID")
+    oauth_client_secret: str | None = Field(None, alias="OAUTH_CLIENT_SECRET")
+    oauth_tenant_id: str | None = Field(None, alias="OAUTH_TENANT_ID")
+    oauth_authority: str | None = Field(None, alias="OAUTH_AUTHORITY")
+    oauth_audience: str | None = Field(None, alias="OAUTH_AUDIENCE")
+    oauth_scope: str | None = Field(None, alias="OAUTH_SCOPE")
+    oauth_redirect_uri: str | None = Field(None, alias="OAUTH_REDIRECT_URI")
 
     @property
     def harmonise_timeout_seconds(self) -> float | None:
@@ -328,6 +335,22 @@ class Settings(BaseSettings):
                 "HTH_IDENTITY_AUTH_ENABLED=true but no JWT verifier is configured. Set HTH_AUTH_JWKS_URL (Entra) "
                 "or HTH_AUTH_JWT_HS256_SECRET (local test)."
             )
+        if (
+            self.oauth_client_id
+            or self.oauth_client_secret
+            or self.oauth_authority
+            or self.oauth_tenant_id
+            or self.auth_issuer
+        ):
+            if not (self.oauth_client_id and self.oauth_client_secret):
+                notes.append(
+                    "Claude OAuth login is partially configured. Set both OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET."
+                )
+            if not (self.oauth_authority or self.oauth_tenant_id or self.auth_issuer):
+                notes.append(
+                    "Claude OAuth login is missing OAUTH_AUTHORITY or OAUTH_TENANT_ID, so the login redirect "
+                    "cannot be built."
+                )
         return notes
 
     @staticmethod
@@ -369,6 +392,80 @@ class Settings(BaseSettings):
         # the configured bearer token, but allow an explicit secret when you want
         # the bridge-issued JWT to use a separate signing key.
         return self.mcp_oauth_jwt_secret or self.mcp_bearer_token
+
+    @property
+    def claude_oauth_enabled(self) -> bool:
+        return bool(
+            self.oauth_client_id
+            and self.oauth_client_secret
+            and (self.oauth_authority or self.oauth_tenant_id or self.auth_issuer)
+        )
+
+    @property
+    def resolved_oauth_authority(self) -> str | None:
+        if self.oauth_authority:
+            return self.oauth_authority.rstrip("/")
+        if self.oauth_tenant_id:
+            return f"https://login.microsoftonline.com/{self.oauth_tenant_id.strip().strip('/')}"
+        if self.auth_issuer:
+            return self.auth_issuer.rstrip("/").removesuffix("/v2.0")
+        return None
+
+    @property
+    def resolved_oauth_issuer(self) -> str | None:
+        if self.oauth_authority:
+            authority = self.oauth_authority.rstrip("/")
+            if authority.endswith("/v2.0"):
+                return authority
+            return f"{authority}/v2.0"
+        if self.auth_issuer:
+            return self.auth_issuer.rstrip("/")
+        authority = self.resolved_oauth_authority
+        if not authority:
+            return None
+        if authority.endswith("/v2.0"):
+            return authority
+        return f"{authority}/v2.0"
+
+    @property
+    def resolved_oauth_authorize_url(self) -> str | None:
+        authority = self.resolved_oauth_authority
+        if not authority:
+            return None
+        return f"{authority}/oauth2/v2.0/authorize"
+
+    @property
+    def resolved_oauth_token_url(self) -> str | None:
+        authority = self.resolved_oauth_authority
+        if not authority:
+            return None
+        return f"{authority}/oauth2/v2.0/token"
+
+    @property
+    def resolved_oauth_jwks_url(self) -> str | None:
+        if self.auth_jwks_url:
+            return self.auth_jwks_url.rstrip("/")
+        authority = self.resolved_oauth_authority
+        if not authority:
+            return None
+        return f"{authority}/discovery/v2.0/keys"
+
+    def resolved_oauth_audience(self) -> str | None:
+        if self.oauth_audience:
+            return self.oauth_audience
+        if self.auth_audience:
+            return self.auth_audience
+        if self.oauth_client_id:
+            return f"api://{self.oauth_client_id.strip()}"
+        return None
+
+    def resolved_oauth_scope(self) -> str | None:
+        if self.oauth_scope:
+            return self.oauth_scope
+        audience = self.resolved_oauth_audience()
+        if audience:
+            return f"{audience}/.default"
+        return None
 
 
 @lru_cache

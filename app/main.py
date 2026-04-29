@@ -19,9 +19,11 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from app.auth import IdentityAuthError, IdentityGateway, reset_user_context, set_user_context
+from app.auth import ClaudeOAuthService
 from app.mcp.server import build_mcp_server
 
 from app.api.routes.agent import router as agent_router
+from app.api.routes.oauth import router as oauth_router
 from app.api.routes.system import router as system_router
 from app.api.routes.tools import build_tools_router
 from app.config import (
@@ -81,21 +83,25 @@ def _oauth_authorization_server_metadata(base_url: str, settings: Settings) -> d
     if service_documentation.startswith("/"):
         service_documentation = f"{base_url}{service_documentation}"
 
+    scopes_supported = ["openid", "profile", "email", "offline_access"]
+    oauth_scope = settings.resolved_oauth_scope()
+    if oauth_scope and oauth_scope not in scopes_supported:
+        scopes_supported.append(oauth_scope)
+
     return {
         "issuer": base_url,
-        "authorization_endpoint": f"{base_url}/oauth/authorize",
-        "token_endpoint": f"{base_url}/oauth/token",
-        "registration_endpoint": f"{base_url}/oauth/register",
-        # Root Cause vs Logic: the connector UI should surface the manual
-        # client-id/client-secret path when the server is using DCR/pre-registration,
-        # so we advertise CIMD as unsupported until the project actually serves
-        # client metadata documents.
+        "authorization_endpoint": f"{base_url}/oauth/login",
+        "token_endpoint": f"{base_url}/oauth/callback",
+        "token_validation_endpoint": f"{base_url}/oauth/token/validate",
+        # Motivation vs Logic: Claude's browser login now uses a static client
+        # registration, so discovery should advertise the login/callback flow and
+        # keep the client-metadata document path disabled.
         "client_id_metadata_document_supported": False,
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256", "plain"],
-        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
-        "scopes_supported": ["mcp"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        "scopes_supported": scopes_supported,
         "service_documentation": service_documentation,
     }
 
@@ -386,8 +392,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.warning("startup_note=%s", note)
         container = await build_container(resolved_settings)
         app.state.container = container
+        app.state.claude_oauth_service = ClaudeOAuthService(resolved_settings)
         app.state.oauth_clients = {}
         app.state.oauth_codes = {}
+        app.state.oauth_login_states = {}
         app.state.identity_gateway = identity_gateway
         mcp_context = mcp_manager.run()
         app.state.mcp_session_manager_context = mcp_context
@@ -409,14 +417,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
-    if resolved_settings.parsed_mcp_allowed_origins:
+    allowed_origins = list(resolved_settings.parsed_mcp_allowed_origins)
+    if resolved_settings.mcp_browser_oauth_enabled and "null" not in allowed_origins:
+        # Root Cause vs Logic: opening the helper HTML directly from disk sends
+        # `Origin: null`, which the browser treats as a cross-origin request.
+        # Allowing that origin keeps the local registration helper usable
+        # without forcing a separate dev server, while still honoring any
+        # explicit allowlist already configured.
+        allowed_origins.append("null")
+
+    if allowed_origins:
         # Motivation vs Logic: browser-based MCP clients like Claude.ai must
         # read discovery, OAuth, and 401 challenge responses cross-origin. We
         # keep CORS narrowly scoped to the configured allowlist instead of
         # opening the whole app.
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=resolved_settings.parsed_mcp_allowed_origins,
+            allow_origins=allowed_origins,
             allow_credentials=False,
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["*"],
@@ -430,6 +447,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(system_router, prefix=resolved_settings.api_prefix, tags=["system"])
     app.include_router(agent_router, prefix=resolved_settings.api_prefix, tags=["agent"])
+    app.include_router(oauth_router, tags=["oauth"])
     # Root Cause vs Logic: the old app mirrored the REST tool routes under `/mcp`,
     # which looked MCP-like but skipped the real JSON-RPC/stdin protocol entirely.
     # The HTTP app now exposes only the custom REST surface, while real MCP lives

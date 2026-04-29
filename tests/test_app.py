@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 
 from app.agent.engine import AgentEngine, AgentRun
@@ -171,6 +172,31 @@ def build_bridge_identity_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
+def build_claude_oauth_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        oauth_client_id="claude-client-id",
+        oauth_client_secret="claude-client-secret",
+        oauth_tenant_id="tenant-1",
+        oauth_authority="https://login.microsoftonline.com/tenant-1",
+        oauth_audience="api://claude-client-id",
+        oauth_scope="api://claude-client-id/.default",
+    )
+    return TestClient(create_app(settings))
+
+
 def build_identity_token(
     *,
     roles: list[str] | None = None,
@@ -193,6 +219,31 @@ def build_identity_token(
         # "extension_departmentId": department_claim,
     }
     return jwt.encode(payload, "test-secret", algorithm="HS256")
+
+
+def build_claude_oauth_token(
+    *,
+    issuer: str = "https://login.microsoftonline.com/tenant-1/v2.0",
+    audience: str = "api://claude-client-id",
+    subject: str = "user-1",
+) -> tuple[str, rsa.RSAPublicKey]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    now = int(time.time())
+    payload = {
+        "iss": issuer,
+        "aud": audience,
+        "exp": now + 3600,
+        "nbf": now - 5,
+        "iat": now - 5,
+        "ver": "2.0",
+        "tid": "tenant-1",
+        "oid": subject,
+        "sub": subject,
+        "roles": ["Tool.Viewer"],
+        "groups": ["HTH-MCP"],
+    }
+    return jwt.encode(payload, private_key, algorithm="RS256"), public_key
 
 
 def test_health_endpoint_reports_local_harmonise_mode() -> None:
@@ -285,63 +336,77 @@ def test_mcp_unauthorized_response_advertises_oauth_metadata() -> None:
     )
 
 
-def test_mcp_oauth_metadata_and_token_bridge() -> None:
-    with build_mcp_auth_client() as client:
+def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
+    access_token, public_key = build_claude_oauth_token()
+    posted_requests: list[dict[str, object]] = []
+
+    async def fake_exchange(self, *, base_url, code):  # noqa: ANN001
+        posted_requests.append(
+            {
+                "url": "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
+                "data": {
+                    "client_id": self.settings.oauth_client_id,
+                    "client_secret": self.settings.oauth_client_secret,
+                    "code": code,
+                    "redirect_uri": f"{base_url.rstrip('/')}/oauth/callback",
+                },
+            }
+        )
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid profile email offline_access api://claude-client-id/.default",
+        }
+
+    monkeypatch.setattr("app.auth.claude_oauth.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr(
+        "app.auth.claude_oauth.PyJWKClient.get_signing_key_from_jwt",
+        lambda self, token: SimpleNamespace(key=public_key),  # noqa: ARG005
+    )
+
+    with build_claude_oauth_client() as client:
         protected = client.get("/.well-known/oauth-protected-resource")
         authorization_server = client.get("/.well-known/oauth-authorization-server")
-        registered = client.post("/oauth/register", json={"client_name": "pytest"})
-        client_payload = registered.json()
-        client.app.state.oauth_clients.pop(client_payload["client_id"], None)
-        registration_lookup = client.get(
-            urlparse(client_payload["registration_client_uri"]).path,
-            headers={"Authorization": f"Bearer {client_payload['registration_access_token']}"},
-        )
         authorized = client.get(
-            "/oauth/authorize",
-            params={
-                "response_type": "code",
-                "client_id": client_payload["client_id"],
-                "redirect_uri": "https://claude.ai/callback",
-                "state": "state-1",
-            },
+            "/oauth/login",
+            params={"state": "state-1"},
             follow_redirects=False,
         )
         query = parse_qs(urlparse(authorized.headers["location"]).query)
-        token = client.post(
-            "/oauth/token",
-            data={
-                "grant_type": "authorization_code",
-                "code": query["code"][0],
-                "redirect_uri": "https://claude.ai/callback",
-            },
+        callback = client.get(
+            "/oauth/callback",
+            params={"code": "auth-code", "state": "state-1"},
+        )
+        validation = client.post(
+            "/oauth/token/validate",
+            headers={"Authorization": f"Bearer {access_token}"},
         )
 
     assert protected.status_code == 200
     assert protected.json()["resource"] == "https://hth.example.test/mcp"
+    metadata = authorization_server.json()
     assert authorization_server.status_code == 200
-    assert authorization_server.json()["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
-    assert authorization_server.json()["client_id_metadata_document_supported"] is False
-    assert registered.status_code == 201
-    assert client_payload["registration_client_uri"] == "https://hth.example.test/oauth/register/" + client_payload["client_id"]
-    assert client_payload["client_secret"]
-    assert client_payload["registration_access_token"]
-    assert registration_lookup.status_code == 200
-    assert registration_lookup.json()["client_id"] == client_payload["client_id"]
-    assert registration_lookup.json()["client_secret"] == client_payload["client_secret"]
+    assert metadata["authorization_endpoint"] == "https://hth.example.test/oauth/login"
+    assert metadata["token_endpoint"] == "https://hth.example.test/oauth/callback"
+    assert metadata["token_validation_endpoint"] == "https://hth.example.test/oauth/token/validate"
+    assert metadata["client_id_metadata_document_supported"] is False
+    assert "registration_endpoint" not in metadata
     assert authorized.status_code == 302
+    assert query["client_id"] == ["claude-client-id"]
+    assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
     assert query["state"] == ["state-1"]
-    assert token.status_code == 200
-    token_payload = token.json()
-    decoded = jwt.decode(
-        token_payload["access_token"],
-        "test-bridge-secret",
-        algorithms=["HS256"],
-        options={"verify_aud": False, "verify_iss": False},
-    )
-    assert decoded["token_origin"] == "mcp_oauth_bridge"
-    assert decoded["client_id"] == client_payload["client_id"]
-    assert decoded["roles"] == ["Tool.Viewer"]
-    assert token_payload["token_type"] == "Bearer"
+    assert callback.status_code == 200
+    callback_payload = callback.json()
+    assert callback_payload["status"] == "ok"
+    assert callback_payload["claims"]["oid"] == "user-1"
+    assert callback_payload["claims"]["aud"] == "api://claude-client-id"
+    assert validation.status_code == 200
+    assert validation.json()["active"] is True
+    assert validation.json()["claims"]["oid"] == "user-1"
+    assert posted_requests[0]["url"] == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token"
+    assert posted_requests[0]["data"]["client_id"] == "claude-client-id"
+    assert posted_requests[0]["data"]["client_secret"] == "claude-client-secret"
 
 
 def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:
@@ -468,6 +533,23 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     )
     assert decoded["token_origin"] == "mcp_oauth_bridge"
     assert token_payload["token_type"] == "Bearer"
+
+
+def test_oauth_ui_page_is_served_from_the_api_namespace() -> None:
+    with build_mcp_auth_client() as client:
+        response = client.get("/api/v1/oauth")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    body = response.text
+    assert "OAuth client credentials" in body
+    assert "Client ID" in body
+    assert "Client secret" in body
+    assert "/oauth/register" in body
+    assert "Live status" not in body
+    assert "Raw response" not in body
+    assert "What it does" not in body
+    assert "registration_access_token" not in body
 
 
 def test_mcp_oauth_endpoint_aliases_remain_supported() -> None:

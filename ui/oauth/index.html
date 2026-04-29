@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OAuth client credentials</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07111d;
+        --bg-2: #0d1727;
+        --panel: rgba(11, 20, 34, 0.9);
+        --panel-border: rgba(148, 163, 184, 0.14);
+        --text: #e7eef9;
+        --muted: #9aa8bf;
+        --accent: #7dd3fc;
+        --accent-2: #c4b5fd;
+        --success: #34d399;
+        --danger: #fb7185;
+        --field-bg: rgba(3, 8, 20, 0.55);
+        --shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
+        --radius: 22px;
+        --radius-sm: 14px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(125, 211, 252, 0.15), transparent 28%),
+          radial-gradient(circle at top right, rgba(196, 181, 253, 0.12), transparent 24%),
+          linear-gradient(160deg, var(--bg), var(--bg-2));
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          linear-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.72), transparent 90%);
+      }
+
+      .shell {
+        width: min(980px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 32px 0 48px;
+        position: relative;
+        z-index: 1;
+      }
+
+      .card {
+        border: 1px solid var(--panel-border);
+        border-radius: var(--radius);
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(20px);
+      }
+
+      .hero {
+        padding: 28px;
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.25rem);
+        line-height: 0.96;
+        letter-spacing: -0.05em;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 18px;
+      }
+
+      .panel {
+        padding: 24px;
+      }
+
+      .subhead {
+        margin: 0 0 16px;
+        font-size: 0.92rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      label {
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.14);
+        background: var(--field-bg);
+        color: var(--text);
+        padding: 13px 14px;
+        font: inherit;
+        outline: none;
+        transition:
+          border-color 120ms ease,
+          box-shadow 120ms ease,
+          background 120ms ease;
+      }
+
+      textarea {
+        min-height: 110px;
+        resize: vertical;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: rgba(125, 211, 252, 0.48);
+        box-shadow: 0 0 0 4px rgba(125, 211, 252, 0.1);
+        background: rgba(3, 8, 20, 0.72);
+      }
+
+      input[readonly] {
+        color: #d7e5f7;
+      }
+
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 14px;
+        padding: 12px 16px;
+        font: inherit;
+        font-weight: 600;
+        color: #07111f;
+        background: linear-gradient(135deg, rgba(125, 211, 252, 0.95), rgba(196, 181, 253, 0.9));
+        cursor: pointer;
+        transition:
+          transform 120ms ease,
+          opacity 120ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+        transform: none;
+      }
+
+      .result-grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .result-card {
+        padding: 18px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        background: rgba(3, 8, 20, 0.35);
+      }
+
+      .result-label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 22px;
+        transform: translateX(-50%) translateY(18px);
+        min-width: min(560px, calc(100% - 32px));
+        max-width: calc(100% - 32px);
+        padding: 14px 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(7, 17, 29, 0.94);
+        box-shadow: var(--shadow);
+        color: var(--text);
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity 160ms ease,
+          transform 160ms ease;
+      }
+
+      .toast[data-open="true"] {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+        pointer-events: auto;
+      }
+
+      .toast[data-kind="success"] {
+        border-color: rgba(52, 211, 153, 0.3);
+      }
+
+      .toast[data-kind="error"] {
+        border-color: rgba(251, 113, 133, 0.3);
+      }
+
+      .toast[data-kind="success"] .toast-mark {
+        color: var(--success);
+      }
+
+      .toast[data-kind="error"] .toast-mark {
+        color: var(--danger);
+      }
+
+      .toast-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .toast-mark {
+        flex: none;
+        font-weight: 700;
+      }
+
+      .toast-message {
+        margin: 0;
+        line-height: 1.5;
+      }
+
+      @media (max-width: 860px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .shell {
+          width: min(100% - 18px, 980px);
+          padding-top: 14px;
+        }
+
+        .hero,
+        .panel {
+          padding: 18px;
+        }
+
+        .toast {
+          min-width: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card hero">
+        <h1>OAuth client credentials</h1>
+      </section>
+
+      <section class="layout">
+        <form class="card panel" id="oauthForm">
+          <h2 class="subhead">Register client</h2>
+          <div class="grid">
+            <div class="field">
+              <label for="endpoint">Register endpoint</label>
+              <input id="endpoint" value="/oauth/register" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="clientName">Client name</label>
+              <input id="clientName" value="My Connector" autocomplete="off" />
+            </div>
+            <div class="field full">
+              <label for="redirectUris">Redirect URI(s)</label>
+              <textarea id="redirectUris" spellcheck="false">https://claude.ai/api/mcp/auth_callback</textarea>
+            </div>
+          </div>
+          <div class="actions" style="margin-top: 16px">
+            <button id="registerButton" type="submit">Register client</button>
+          </div>
+        </form>
+
+        <section class="card panel">
+          <h2 class="subhead">Returned credentials</h2>
+          <div class="result-grid">
+            <div class="result-card">
+              <label class="result-label" for="clientId">Client ID</label>
+              <input id="clientId" readonly placeholder="Generated after registration" />
+            </div>
+            <div class="result-card">
+              <label class="result-label" for="clientSecret">Client secret</label>
+              <input id="clientSecret" readonly placeholder="Generated after registration" />
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" data-kind="success" data-open="false" role="status" aria-live="polite">
+      <div class="toast-row">
+        <span class="toast-mark" id="toastMark">Success</span>
+        <p class="toast-message" id="toastMessage"></p>
+      </div>
+    </div>
+
+    <script>
+      const form = document.getElementById("oauthForm");
+      const endpointEl = document.getElementById("endpoint");
+      const clientNameEl = document.getElementById("clientName");
+      const redirectUrisEl = document.getElementById("redirectUris");
+      const registerButton = document.getElementById("registerButton");
+      const clientIdEl = document.getElementById("clientId");
+      const clientSecretEl = document.getElementById("clientSecret");
+      const toastEl = document.getElementById("toast");
+      const toastMarkEl = document.getElementById("toastMark");
+      const toastMessageEl = document.getElementById("toastMessage");
+      let toastTimer;
+
+      function normalizeRedirectUris(text) {
+        return text
+          .split(/\r?\n|,/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+      }
+
+      function clearResults() {
+        clientIdEl.value = "";
+        clientSecretEl.value = "";
+      }
+
+      function showToast(kind, message) {
+        clearTimeout(toastTimer);
+        toastEl.dataset.kind = kind;
+        toastMarkEl.textContent = kind === "success" ? "Success" : "Error";
+        toastMessageEl.textContent = message;
+        toastEl.dataset.open = "true";
+        toastTimer = window.setTimeout(() => {
+          toastEl.dataset.open = "false";
+        }, 4200);
+      }
+
+      function hideToast() {
+        clearTimeout(toastTimer);
+        toastEl.dataset.open = "false";
+      }
+
+      function readResponsePayload(response, contentType, text) {
+        if (contentType.includes("application/json")) {
+          return text ? JSON.parse(text) : {};
+        }
+        return text ? { detail: text } : {};
+      }
+
+      async function registerClient(event) {
+        event.preventDefault();
+        const endpoint = endpointEl.value.trim() || "/oauth/register";
+        const clientName = clientNameEl.value.trim();
+        const redirect_uris = normalizeRedirectUris(redirectUrisEl.value);
+
+        if (!endpoint) {
+          clearResults();
+          showToast("error", "Please enter the register endpoint.");
+          return;
+        }
+        if (!clientName) {
+          clearResults();
+          showToast("error", "Please enter a client name.");
+          return;
+        }
+        if (!redirect_uris.length) {
+          clearResults();
+          showToast("error", "Please enter at least one redirect URI.");
+          return;
+        }
+
+        registerButton.disabled = true;
+        hideToast();
+
+        // Motivation vs Logic: this page is meant for a single operator action,
+        // so the flow stays narrow: submit registration, extract only the client
+        // ID and secret, and surface the outcome through a toast instead of a
+        // verbose status panel.
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              client_name: clientName,
+              redirect_uris,
+            }),
+          });
+
+          const contentType = response.headers.get("content-type") || "";
+          const bodyText = await response.text();
+          const payload = readResponsePayload(response, contentType, bodyText);
+
+          if (!response.ok) {
+            const message = payload.detail || payload.error || response.statusText || "Request failed.";
+            throw new Error(message);
+          }
+
+          const client_id = payload.client_id ?? "";
+          const client_secret = payload.client_secret ?? "";
+          if (!client_id || !client_secret) {
+            throw new Error("The registration response did not include a client ID and secret.");
+          }
+
+          clientIdEl.value = client_id;
+          clientSecretEl.value = client_secret;
+          showToast("success", "Client credentials created successfully.");
+        } catch (error) {
+          clearResults();
+          const message = error instanceof Error ? error.message : String(error);
+          showToast("error", message);
+        } finally {
+          registerButton.disabled = false;
+        }
+      }
+
+      form.addEventListener("submit", registerClient);
+    </script>
+  </body>
+</html>

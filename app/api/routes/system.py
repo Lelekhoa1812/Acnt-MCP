@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
 from app.config import get_container
-from app.render import render_mock
+from app.render import render_mock, render_static_html
 
 
 router = APIRouter()
@@ -81,6 +81,17 @@ def _build_ui_response(container) -> HTMLResponse:
     return HTMLResponse(render_mock(path=path, settings=container.settings))
 
 
+def _build_oauth_response(container) -> HTMLResponse:
+    oauth_path = container.settings.resolve_path("./ui/oauth/index.html")
+    if not oauth_path.exists():
+        return HTMLResponse("<p>OAuth helper template is missing.</p>", status_code=404)
+
+    # Motivation vs Logic: the OAuth helper is a lightweight operator page,
+    # so we serve the authored HTML directly from the API namespace that the
+    # web deployment already exposes instead of adding another build step.
+    return HTMLResponse(render_static_html(oauth_path))
+
+
 @router.get("/chat", response_class=HTMLResponse)
 async def chat_ui(container = Depends(get_container)) -> HTMLResponse:
     return _build_ui_response(container)
@@ -96,3 +107,8 @@ async def ui(container = Depends(get_container)) -> HTMLResponse:
 async def mock_ui_legacy(container = Depends(get_container)) -> HTMLResponse:
     # Legacy alias: same shell as /chat; prefer /chat for new links.
     return _build_ui_response(container)
+
+
+@router.get("/oauth", response_class=HTMLResponse)
+async def oauth_ui(container = Depends(get_container)) -> HTMLResponse:
+    return _build_oauth_response(container)

@@ -4,13 +4,14 @@ import json
 from pathlib import Path
 
 from app.config import Settings
+from app.render.static import render_static_html
 
 
 def render_mock(path: Path, settings: Settings) -> str:
     # Motivation vs Logic: the mock UI is now a real frontend shell that the
     # user opens directly, so the backend serves a template plus runtime config
     # instead of generating a one-off HTML snapshot for each query response.
-    html = path.read_text(encoding="utf-8")
+    html = render_static_html(path)
     config = json.dumps(
         {
             "apiPrefix": settings.api_prefix,

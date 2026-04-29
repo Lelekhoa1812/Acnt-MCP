@@ -1,191 +1,238 @@
-# Phase 2: Authentication and Identity Enforcement
+## High-level Architecture
 
-This project uses two different security layers:
+[cite_start]The following table outlines the interaction flow between Claude, the Identity Provider (IdP), the custom MCP server, and downstream services[cite: 7, 8]:
 
-1. `auth.md` covers the resource-server identity layer that validates who is allowed to call the MCP and REST surfaces.
-2. `oauth.md` covers the MCP OAuth bridge and client registration flow used by connector UIs.
+| Flow | Component | Description |
+| :--- | :--- | :--- |
+| 1 | Claude (client) | The starting point for the request. |
+| 2 | | |
+| 3 | | OAuth 2.0 (Authorization Code flow) |
+| 4 | | |
+| 5 | Azure AD (or other OAuth IdP) | Authenticates the user and issues tokens. |
+| 6 | | |
+| 7 | | Access Token (JWT) |
+| 8 | | |
+| 9 | Custom MCP Server (Python) | Hosted on Azure App Service; processes requests. |
+| 10 | | |
+| 11 | | Tool execution |
+| 12 | | |
+| 13 | Downstream services / APIs | Final destination for data processing or retrieval. |
 
-The important distinction is:
+---
 
-- Authentication answers, "Is this token real?"
-- Authorization answers, "Is this identity allowed to use this server or tool?"
-- OAuth registration answers, "How does a connector obtain the client credentials needed to start the flow?"
+## Step 1 – Register an OAuth application (Client ID & Secret)
 
-## 1. What This Layer Does
+[cite_start]Claude does not generate the OAuth client ID or secret; you must do this using an Identity Provider (IdP)[cite: 10].
 
-The server does not implement a human sign-in page. It validates bearer tokens on inbound requests and then decides whether the request may proceed.
+### Option A (Recommended): Azure Entra ID (Azure AD)
+1. [cite_start]Go to **Azure Portal → Entra ID → App registrations**[cite: 13].
+2. [cite_start]Click **New registration**[cite: 14].
+3. [cite_start]Set the following[cite: 15, 16, 17]:
+   - **Name**: `claude-mcp-connector`
+   - **Supported account types**: Single tenant (recommended)
+4. [cite_start]Set the **Redirect URI**[cite: 18].
+5. [cite_start]Click **Register**[cite: 19].
+6. **✅ You now have**:
+   - [cite_start]Application (client) ID [cite: 21]
+   - [cite_start]Directory (tenant) ID [cite: 22]
 
-When the token comes from the MCP OAuth bridge, it is a server-signed JWT rather than a raw opaque string. The bridge token is still validated by the same `IdentityGateway`.
+### Create Client Secret
+1. [cite_start]Inside the App Registration, go to **Certificates & secrets**[cite: 24].
+2. [cite_start]Click **New client secret**[cite: 25].
+3. [cite_start]**Copy the value immediately**[cite: 26].
+4. [cite_start]**✅ This is your OAuth Client Secret**[cite: 27].
 
-The identity checks apply to:
+### Alternative IdPs
+[cite_start]You can also use: Auth0, Okta, Keycloak, or Cognito[cite: 28, 29, 30, 31, 32, 33]. The concept remains the same:
+- [cite_start]Client ID + Client Secret come from the IdP[cite: 35].
+- [cite_start]Redirect URI must point to your MCP server[cite: 36].
 
-- `POST /api/v1/tools`
-- `POST /api/v1/tools/call`
-- `POST /mcp`
-- Any other route that opts into the shared `IdentityGateway`
+---
 
-The current implementation is intentionally fail-closed:
+## Step 2 – Store OAuth credentials in Azure App Service
 
-- Missing or malformed bearer token -> `401`
-- Invalid signature, issuer, audience, or expiry -> `401`
-- Missing required claims -> `403`
-- Wrong tenant/group/role -> `403`
-- Per-user rate limit exceeded -> `429`
+> [cite_start]⚠️ **Warning**: Never hard-code secrets in Python code[cite: 38].
 
-## 2. Entra Configuration
+### Set Application Settings
+[cite_start]Go to **Azure App Service → Configuration → Application settings** and add the following keys[cite: 39, 40, 41, 42]:
 
-For production identity enforcement, configure Microsoft Entra ID as the token issuer.
+| Key | Value |
+| :--- | :--- |
+| `OAUTH_CLIENT_ID` | `<your-client-id>` |
+| `OAUTH_CLIENT_SECRET` | `<your-client-secret>` |
+| `OAUTH_TENANT_ID` | `<tenant-id>` |
+| `OAUTH_AUTHORITY` | `https://login.microsoftonline.com/<tenant-id>` |
 
-Use two app registrations:
+[cite_start]**Optional (typical settings)[cite: 43, 44]:**
+- `OAUTH_AUDIENCE`: `api://<client-id>`
+- `OAUTH_SCOPE`: `api://<client-id>/.default`
 
-1. Resource app
-2. Client app
+[cite_start]✅ These settings become environment variables available in your Python code[cite: 45].
 
-Resource app settings:
+---
 
-| Setting | Purpose | Notes |
-| --- | --- | --- |
-| `requestedAccessTokenVersion` | Use v2 access tokens | Keep this at `2` |
-| App ID URI | Audience for access tokens | Example: `api://<resource-app-id>` |
-| Scope | Permission that the client requests | Example: `MCP.Invoke` |
-| App roles | Tool or admin roles | Example: `Tool.Viewer`, `Tool.Admin` |
+## Step 3 – Implement OAuth endpoints in your MCP server (Python)
 
-Client app settings:
+[cite_start]Your MCP server must expose specific OAuth endpoints for Claude to use[cite: 46, 47].
 
-| Setting | Purpose | Notes |
-| --- | --- | --- |
-| Redirect URI | Where the client receives the code | This is owned by the client, not this server |
-| Delegated permission | What the client can ask for | Usually the resource scope plus any standard OpenID scopes the client needs |
-| Pre-authorization | Avoid repeat consent prompts | Useful for trusted internal clients |
+### [cite_start]Required Endpoints [cite: 48, 49]
+| Endpoint | Purpose |
+| :--- | :--- |
+| `/oauth/login` | Starts OAuth flow |
+| `/oauth/callback` | Receives authorization code |
+| `/oauth/token/validate` | Validates access token |
+| `MCP tool endpoints` | Require valid token |
 
-## 3. Environment Variables
+### [cite_start]Load OAuth Environment Variables [cite: 50, 51]
+```python
+import os
 
-These settings control the identity gateway:
+CLIENT_ID = os.environ[\"OAUTH_CLIENT_ID\"]
+CLIENT_SECRET = os.environ[\"OAUTH_CLIENT_SECRET\"]
+TENANT_ID = os.environ[\"OAUTH_TENANT_ID\"]
 
-| Variable | Meaning | Recommended value |
-| --- | --- | --- |
-| `HTH_IDENTITY_AUTH_ENABLED` | Turns JWT validation on | `true` in production |
-| `HTH_AUTH_ISSUER` | Token issuer URL | `https://login.microsoftonline.com/<tenant-id>/v2.0` |
-| `HTH_AUTH_AUDIENCE` | Expected token audience | `api://<resource-app-id>` |
-| `HTH_AUTH_JWKS_URL` | Public key endpoint for signature validation | Entra JWKS URL for the tenant |
-| `HTH_AUTH_JWT_HS256_SECRET` | Local-only symmetric test secret | Development only |
-| `HTH_MCP_OAUTH_JWT_SECRET` | Signing key for bridge-issued access tokens | Prefer a dedicated secret in production |
-| `HTH_AUTH_REQUIRED_GROUP` | Group gate | `HTH-MCP` by default |
-| `HTH_AUTH_REQUIRED_CLAIMS` | Minimum claims required in the token | `tid,oid` by default |
-| `HTH_AUTH_REQUIRED_TOKEN_VERSION` | Access token version check | `2.0` |
-| `HTH_AUTH_RATE_LIMIT_PER_MINUTE` | Per-user tool-call throttle | `50` by default |
+AUTHORITY = f\"[https://login.microsoftonline.com/](https://login.microsoftonline.com/){TENANT_ID}\"
+TOKEN_URL = f\"{AUTHORITY}/oauth2/v2.0/token\"
+AUTHORIZE_URL = f\"{AUTHORITY}/oauth2/v2.0/authorize\"
+```
+[cite_start]✅ The OAuth Client ID and Secret are read directly from the Azure App Service configuration[cite: 52].
 
-`HTH_AUTH_JWT_HS256_SECRET` is only for local test tokens. Do not use it in production.
-`HTH_MCP_OAUTH_JWT_SECRET` signs bridge-issued access tokens; if it is not set, the bridge falls back to `HTH_MCP_BEARER_TOKEN` for compatibility.
+---
 
-## 4. Validation Rules
+## Step 4 – OAuth login endpoint (`/oauth/login`)
 
-The `IdentityGateway` performs the checks in this order:
+[cite_start]Claude calls this endpoint to begin authentication[cite: 53, 54].
 
-1. Extract the `Authorization` header.
-2. Decode the token using HS256 or the Entra JWKS.
-3. Verify issuer, audience, and expiry.
-4. Verify required claims such as `tid` and `oid`.
-5. Verify token version when `HTH_AUTH_REQUIRED_TOKEN_VERSION` is set.
-6. Verify the user belongs to the required group.
-7. Apply the per-user rate limit.
+[cite_start]**Example (FastAPI)[cite: 55, 56]:**
+```python
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+import urllib.parse
 
-The server stores the claims in `UserContext`, which carries:
+app = FastAPI()
 
-- `tenant_id`
-- `user_id`
-- `subject`
-- `roles`
-- `groups`
-- raw `claims`
+@app.get(\"/oauth/login\")
+def oauth_login():
+    params = {
+        \"client_id\": CLIENT_ID,
+        \"response_type\": \"code\",
+        \"redirect_uri\": \"https://<your-app>.azurewebsites.net/oauth/callback\",
+        \"response_mode\": \"query\",
+        \"scope\": \"openid profile email api://<client-id>/.default\",
+        \"state\": \"claude\",
+    }
 
-## 5. Authorization Model
-
-The project uses a combination of RBAC and lightweight ABAC.
-
-RBAC:
-
-- `Tool.Viewer` grants access to normal tools.
-- `Tool.Admin` is reserved for admin-only workflows.
-
-ABAC:
-
-- Tool access can be filtered based on claims.
-- `tools/list` is filtered before a client sees the catalog.
-- `tools/call` is checked again so a forged request cannot bypass discovery filtering.
-
-The shared tool registry applies role gates centrally so the REST surface and MCP surface behave the same way.
-
-## 6. Tool Visibility
-
-Tool discovery is not static.
-
-If a user lacks the required role for a tool:
-
-- the tool is hidden from `list_tools`
-- the tool is rejected again if a client tries to invoke it directly
-
-That keeps the surface least-privileged even when a client already knows a tool name.
-
-## 7. Failure Modes
-
-The main auth error cases are:
-
-| Error | HTTP status | Meaning |
-| --- | --- | --- |
-| `missing_bearer_token` | `401` | No bearer token was provided |
-| `invalid_bearer_token` | `401` | Token header was empty or malformed |
-| `invalid_token` | `401` | JWT failed verification |
-| `missing_claims` | `403` | Required claims were absent |
-| `unsupported_token_version` | `403` | Token version did not match the configured version |
-| `group_access_denied` | `403` | User is not in the required group |
-| `tool_access_denied` | `403` | Token is valid, but the requested tool requires a role the user does not have |
-| `rate_limited` | `429` | The user exceeded the per-minute call budget |
-
-For MCP callers, auth failures are returned in a structured JSON error body and include the `mcp_error_code` used by the transport layer.
-
-## 8. Local Testing
-
-For local tests, you can validate the auth path with a signed HS256 JWT.
-
-Suggested development setup:
-
-```bash
-HTH_IDENTITY_AUTH_ENABLED=true
-HTH_AUTH_JWT_HS256_SECRET=test-secret
-HTH_AUTH_ISSUER=https://login.microsoftonline.com/test-tenant/v2.0
-HTH_AUTH_AUDIENCE=api://hth-mcp
-HTH_AUTH_REQUIRED_GROUP=HTH-MCP
+    url = AUTHORIZE_URL + \"?\" + urllib.parse.urlencode(params)
+    return RedirectResponse(url)
 ```
 
-Example claims for a test token:
+---
+
+## Step 5 – OAuth callback endpoint (`/oauth/callback`)
+
+[cite_start]This endpoint receives the authorization code, exchanges it for an access token, and returns success to Claude[cite: 57, 58, 59, 60, 61].
+
+[cite_start]**Example Implementation[cite: 62]:**
+```python
+import requests
+
+@app.get(\"/oauth/callback\")
+def oauth_callback(code: str):
+    data = {
+        \"grant_type\": \"authorization_code\",
+        \"client_id\": CLIENT_ID,
+        \"client_secret\": CLIENT_SECRET,
+        \"code\": code,
+        \"redirect_uri\": \"https://<your-app>.azurewebsites.net/oauth/callback\",
+        \"scope\": \"api://<client-id>/.default\",
+    }
+
+    token_resp = requests.post(TOKEN_URL, data=data).json()
+    return token_resp
+```
+✅ **Security Note**: The Client Secret is used ONLY here (server-side). [cite_start]Never expose it to Claude or browsers[cite: 63].
+
+---
+
+## Step 6 – Token validation middleware
+
+[cite_start]Claude sends the access token in the header[cite: 64, 65, 66]:
+`Authorization: Bearer <access_token>`
+
+[cite_start]Add middleware to validate the JSON Web Tokens (JWT)[cite: 67, 68]:
+```python
+from jose import jwt
+
+def validate_token(token: str):
+    payload = jwt.decode(
+        token,
+        key=PUBLIC_KEYS,
+        audience=\"api://<client-id>\",
+        issuer=AUTHORITY,
+    )
+    return payload
+```
+[cite_start]Note: You typically fetch Azure AD public keys from[cite: 69, 70]:
+`https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys`
+
+---
+
+## Step 7 – Expose MCP endpoints secured by OAuth
+
+[cite_start]Example of securing an MCP tool endpoint[cite: 71, 72, 73]:
+```python
+from fastapi import Depends, Header, HTTPException
+
+def auth(authorization: str = Header(...)):
+    token = authorization.replace(\"Bearer \", \"\")
+    validate_token(token)
+
+@app.post(\"/mcp/tools/search\", dependencies=[Depends(auth)])
+def search_tool(query: dict):
+    return {\"result\": \"secure data\"}
+```
+
+---
+
+## Step 8 – Configure Claude Custom Connector (MCP)
+
+[cite_start]In Claude (or Claude Enterprise config), use the following configuration[cite: 74, 75, 76]:
 
 ```json
 {
-  "iss": "https://login.microsoftonline.com/test-tenant/v2.0",
-  "aud": "api://hth-mcp",
-  "ver": "2.0",
-  "tid": "tenant-1",
-  "oid": "user-1",
-  "sub": "user-1",
-  "roles": ["Tool.Viewer"],
-  "groups": ["HTH-MCP"]
+  \"name\": \"azure-mcp\",
+  \"transport\": {
+    \"type\": \"http\",
+    \"base_url\": \"https://<your-app>.azurewebsites.net\"
+  },
+  \"auth\": {
+    \"type\": \"oauth2\",
+    \"authorization_url\": \"https://<your-app>.azurewebsites.net/oauth/login\",
+    \"token_validation_url\": \"https://<your-app>.azurewebsites.net/oauth/token/validate\"
+  }
 }
 ```
+[cite_start]✅ Claude never stores your client secret; it only interacts via OAuth redirects and access tokens[cite: 77].
 
-## 9. Production Checklist
+---
 
-1. Set `HTH_IDENTITY_AUTH_ENABLED=true`.
-2. Set the Entra `issuer`, `audience`, and `jwks` values.
-3. Set `HTH_AUTH_REQUIRED_GROUP` to the real access group.
-4. Confirm the token contains `tid` and `oid`.
-5. Confirm the token has `ver: 2.0`.
-6. Assign `Tool.Admin` only to the few operators who need it.
-7. Keep `HTH_AUTH_JWT_HS256_SECRET` out of production.
-8. Test one normal tool call and one denied call before rollout.
+## Summary: Where Credentials Live
 
-## 10. What This Layer Is Not
+| Location | Client ID | Client Secret |
+| :--- | :--- | :--- |
+| Azure Entra ID | ✅ Issued | ✅ Issued |
+| Azure App Service → App Settings | ✅ Stored | ✅ Stored |
+| Python MCP code | ✅ Read from env | ✅ Read from env |
+| Claude | ❌ No | ❌ No |
 
-This layer is not the OAuth client-registration flow shown in the connector UI.
+[cite_start][cite: 78, 79]
 
-If you are configuring a connector and need the OAuth client ID and secret, read `oauth.md`. That file explains the registration endpoint, callback handling, and how to recover the client credentials later.
+---
+
+## [cite_start]Common Mistakes to Avoid [cite: 80, 81]
+
+- ❌ Putting client secret in Claude configuration.
+- ❌ Hard-coding secrets in Python code.
+- ❌ Forgetting HTTPS (OAuth requires it).
+- ❌ Missing redirect URI registration.
+- ❌ Not validating JWT audience/issuer.
