@@ -160,6 +160,13 @@ class HarmoniseInventorySource:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def probe(self) -> None:
+        # Motivation vs Logic: startup should be able to distinguish "Harmonise
+        # is reachable" from "the app booted but stock tooling should stay hidden",
+        # so we perform one lightweight inventory request before registering any
+        # inventory-backed tools.
+        await self.get_departments(include_inactive=False, include_sub_departments=False)
+
     async def _get(self, path: str, params: dict[str, Any]) -> Any:
         response = await self._request_with_retry(path=path, params=params)
         if response.status_code >= 400:

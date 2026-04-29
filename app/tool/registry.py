@@ -84,13 +84,15 @@ def _redact_args_for_tool_log(raw_args: dict[str, Any]) -> dict[str, Any]:
 class ToolRegistry:
     def __init__(
         self,
-        inventory_service: InventoryService,
+        inventory_service: InventoryService | None,
         resolver_service: ResolverService,
         session_store: SessionStore,
         news_service: NewsService,
         weather_service: WeatherService,
         currency_service: CurrencyService,
         logger: logging.Logger,
+        *,
+        inventory_tools_enabled: bool = True,
     ) -> None:
         self.inventory_service = inventory_service
         self.resolver_service = resolver_service
@@ -99,10 +101,15 @@ class ToolRegistry:
         self.weather_service = weather_service
         self.currency_service = currency_service
         self.logger = logger
+        self.inventory_tools_enabled = inventory_tools_enabled and inventory_service is not None
         self._tools: dict[str, ToolSpec] = {}
-        self._register_stock()
-        self._register_resolver()
-        self._register_session()
+        if self.inventory_tools_enabled:
+            # Motivation vs Logic: inventory-backed tools should disappear cleanly
+            # when Harmonise is unavailable, so stock, resolver, and session
+            # registrations are kept behind one runtime capability gate.
+            self._register_stock()
+            self._register_resolver()
+            self._register_session()
         self._register_news()
         self._register_weather()
         self._register_currency()

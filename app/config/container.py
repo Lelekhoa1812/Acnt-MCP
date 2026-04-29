@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import anyio
+
 from app.agent import AgentEngine
 from app.config.settings import Settings
 from app.tool.currency import CurrencyService
@@ -21,8 +23,8 @@ from app.tool.weather import WeatherService
 class AppContainer:
     settings: Settings
     key_value_store: AppKeyValueStore
-    inventory_source: HarmoniseInventorySource
-    inventory_service: InventoryService
+    inventory_source: HarmoniseInventorySource | None
+    inventory_service: InventoryService | None
     session_store: SessionStore
     resolver_service: ResolverService
     news_service: NewsService
@@ -31,14 +33,38 @@ class AppContainer:
     tool_registry: ToolRegistry
     agent_engine: AgentEngine
     orchestrator_service: OrchestratorService
+    harmonise_inventory_tools_enabled: bool
 
     async def close(self) -> None:
         await self.agent_engine.close()
-        await self.inventory_source.close()
+        if self.inventory_source is not None:
+            await self.inventory_source.close()
         await self.news_service.close()
         await self.weather_service.close()
         await self.currency_service.close()
         await self.key_value_store.close()
+
+
+async def _probe_local_harmonise_inventory_source(
+    inventory_source: HarmoniseInventorySource,
+    logger: logging.Logger,
+) -> bool:
+    # Root Cause vs Logic: `LOCAL_HARMONISE=true` used to assume the backing
+    # simulator was always healthy, which meant a broken local Harmonise setup
+    # crashed startup instead of shrinking the tool surface. We probe once here
+    # so the app can stay up with news/weather/currency only when stock cannot
+    # be served.
+    try:
+        with anyio.fail_after(5):
+            await inventory_source.probe()
+    except Exception as exc:  # pragma: no cover - exercised via startup fallback tests
+        logger.warning(
+            "startup_note=LOCAL_HARMONISE=true but the Harmonise probe failed; "
+            "disabling stock, resolver, and session tools: %s",
+            exc,
+        )
+        return False
+    return True
 
 
 async def build_container(settings: Settings) -> AppContainer:
@@ -53,14 +79,22 @@ async def build_container(settings: Settings) -> AppContainer:
         key_value_store.redis_client_connected,
     )
 
-    inventory_source = HarmoniseInventorySource(settings=settings, logger=logger)
+    inventory_source: HarmoniseInventorySource | None = HarmoniseInventorySource(settings=settings, logger=logger)
+    harmonise_inventory_tools_enabled = True
+    if settings.local_harmonise:
+        harmonise_inventory_tools_enabled = await _probe_local_harmonise_inventory_source(inventory_source, logger)
+        if not harmonise_inventory_tools_enabled:
+            await inventory_source.close()
+            inventory_source = None
 
-    inventory_service = InventoryService(
-        settings=settings,
-        source=inventory_source,
-        key_value_store=key_value_store,
-        logger=logger,
-    )
+    inventory_service: InventoryService | None = None
+    if inventory_source is not None:
+        inventory_service = InventoryService(
+            settings=settings,
+            source=inventory_source,
+            key_value_store=key_value_store,
+            logger=logger,
+        )
     session_store = SessionStore(settings=settings, key_value_store=key_value_store, logger=logger)
     resolver_service = ResolverService(logger=logger)
     news_service = NewsService(settings=settings, key_value_store=key_value_store, logger=logger)
@@ -74,6 +108,7 @@ async def build_container(settings: Settings) -> AppContainer:
         weather_service=weather_service,
         currency_service=currency_service,
         logger=logger,
+        inventory_tools_enabled=harmonise_inventory_tools_enabled,
     )
     agent_engine = AgentEngine(settings=settings, tool_registry=tool_registry, logger=logger)
     orchestrator_service = OrchestratorService(
@@ -97,4 +132,5 @@ async def build_container(settings: Settings) -> AppContainer:
         tool_registry=tool_registry,
         agent_engine=agent_engine,
         orchestrator_service=orchestrator_service,
+        harmonise_inventory_tools_enabled=harmonise_inventory_tools_enabled,
     )

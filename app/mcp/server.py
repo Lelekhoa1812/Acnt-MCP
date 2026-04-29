@@ -26,7 +26,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no rows, partial "
     "coverage, or timeouts occur, retry with a shorter distinctive phrase or a broader stock_scope filter before "
     "giving up; grouped aggregation already paginates through catalogue results in the backend. Weather, news, and FX tools are "
-    "auxiliary and must not answer inventory questions. Answer directly without preambles, tool names, or internal "
+    "auxiliary and must not answer inventory questions. If stock tools are unavailable, use only weather, news, and FX "
+    "tools instead of trying to infer inventory facts. Answer directly without preambles, tool names, or internal "
     "keys; use answer_ready or structured totals for grounding."
 )
 

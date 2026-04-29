@@ -23,6 +23,7 @@ async def health(container = Depends(get_container)) -> dict[str, object]:
         "redis_fallback_enabled": container.settings.redis_fallback_enabled,
         "local_chat_memory_enabled": container.settings.local_chat_memory_enabled,
         "local_chat_memory_turns": container.settings.local_chat_memory_turns,
+        "harmonise_inventory_tools_enabled": container.harmonise_inventory_tools_enabled,
     }
 
 
@@ -65,6 +66,7 @@ async def system_spec(container = Depends(get_container)) -> dict[str, object]:
             "event line item workflows not yet implemented in the current tool contract",
         ],
         "startup_notes": container.settings.startup_notes(),
+        "harmonise_inventory_tools_enabled": container.harmonise_inventory_tools_enabled,
     }
 
 
