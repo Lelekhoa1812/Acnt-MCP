@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import secrets
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
@@ -59,6 +62,15 @@ class ClaudeOAuthService:
             return redirect_uri
         return f"{base_url.rstrip('/')}/oauth/callback"
 
+    @staticmethod
+    def _pkce_code_verifier() -> str:
+        return secrets.token_urlsafe(64)
+
+    @staticmethod
+    def _pkce_code_challenge(verifier: str) -> str:
+        digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
     def _login_scope(self) -> str:
         scope = self.settings.resolved_oauth_scope()
         if not scope:
@@ -69,7 +81,7 @@ class ClaudeOAuthService:
             )
         return f"openid profile email offline_access {scope}"
 
-    def build_authorize_url(self, *, base_url: str, state: str) -> str:
+    def build_authorize_url(self, *, base_url: str, state: str) -> tuple[str, str]:
         self._require_enabled()
         authorize_url = self.settings.resolved_oauth_authorize_url
         if not authorize_url:
@@ -79,6 +91,11 @@ class ClaudeOAuthService:
                 status_code=500,
             )
 
+        # Root Cause vs Logic: Azure rejects cross-origin authorization code
+        # redemption unless the flow uses PKCE. We generate the verifier here
+        # so the login redirect and callback exchange share the same proof key.
+        code_verifier = self._pkce_code_verifier()
+
         params = {
             "client_id": self.settings.oauth_client_id,
             "response_type": "code",
@@ -86,10 +103,12 @@ class ClaudeOAuthService:
             "response_mode": "query",
             "scope": self._login_scope(),
             "state": state,
+            "code_challenge": self._pkce_code_challenge(code_verifier),
+            "code_challenge_method": "S256",
         }
-        return f"{authorize_url}?{urlencode(params)}"
+        return f"{authorize_url}?{urlencode(params)}", code_verifier
 
-    async def exchange_code_for_token(self, *, base_url: str, code: str) -> dict[str, Any]:
+    async def exchange_code_for_token(self, *, base_url: str, code: str, code_verifier: str | None = None) -> dict[str, Any]:
         self._require_enabled()
         token_url = self.settings.resolved_oauth_token_url
         if not token_url:
@@ -107,6 +126,8 @@ class ClaudeOAuthService:
             "redirect_uri": self._require_redirect_uri(base_url),
             "scope": self._login_scope(),
         }
+        if code_verifier:
+            data["code_verifier"] = code_verifier
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.post(token_url, data=data)

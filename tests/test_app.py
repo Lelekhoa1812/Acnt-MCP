@@ -340,7 +340,7 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     access_token, public_key = build_claude_oauth_token()
     posted_requests: list[dict[str, object]] = []
 
-    async def fake_exchange(self, *, base_url, code):  # noqa: ANN001
+    async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001
         posted_requests.append(
             {
                 "url": "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token",
@@ -348,6 +348,7 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
                     "client_id": self.settings.oauth_client_id,
                     "client_secret": self.settings.oauth_client_secret,
                     "code": code,
+                    "code_verifier": code_verifier,
                     "redirect_uri": f"{base_url.rstrip('/')}/oauth/callback",
                 },
             }
@@ -359,9 +360,9 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
             "scope": "openid profile email offline_access api://claude-client-id/.default",
         }
 
-    monkeypatch.setattr("app.auth.claude_oauth.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
     monkeypatch.setattr(
-        "app.auth.claude_oauth.PyJWKClient.get_signing_key_from_jwt",
+        "app.auth.claude.PyJWKClient.get_signing_key_from_jwt",
         lambda self, token: SimpleNamespace(key=public_key),  # noqa: ARG005
     )
 
@@ -396,6 +397,8 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     assert query["client_id"] == ["claude-client-id"]
     assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
     assert query["state"] == ["state-1"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["code_challenge"][0]
     assert callback.status_code == 200
     callback_payload = callback.json()
     assert callback_payload["status"] == "ok"
@@ -407,6 +410,7 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
     assert posted_requests[0]["url"] == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token"
     assert posted_requests[0]["data"]["client_id"] == "claude-client-id"
     assert posted_requests[0]["data"]["client_secret"] == "claude-client-secret"
+    assert posted_requests[0]["data"]["code_verifier"]
 
 
 def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:

@@ -28,19 +28,15 @@ def _get_oauth_service(request: Request) -> ClaudeOAuthService:
     return service
 
 
-def _remember_state(request: Request, state: str) -> None:
-    request.app.state.oauth_login_states[state] = {"expires_at": time.time() + 600}
-
-
-def _consume_state(request: Request, state: str | None) -> bool:
+def _consume_state(request: Request, state: str | None) -> dict[str, Any] | None:
     if not state:
-        return False
+        return None
     record: dict[str, Any] | None = request.app.state.oauth_login_states.pop(state, None)
     if not record:
-        return False
+        return None
     if record.get("expires_at", 0.0) < time.time():
-        return False
-    return True
+        return None
+    return record
 
 
 def _extract_access_token(request: Request) -> str | None:
@@ -58,8 +54,12 @@ async def oauth_login(request: Request, container=Depends(get_container)) -> Red
     service = _get_oauth_service(request)
     base_url = _base_url_for_request(request)
     state = request.query_params.get("state") or secrets.token_urlsafe(32)
-    _remember_state(request, state)
-    return RedirectResponse(service.build_authorize_url(base_url=base_url, state=state), status_code=302)
+    authorize_url, code_verifier = service.build_authorize_url(base_url=base_url, state=state)
+    request.app.state.oauth_login_states[state] = {
+        "expires_at": time.time() + 600,
+        "code_verifier": code_verifier,
+    }
+    return RedirectResponse(authorize_url, status_code=302)
 
 
 @router.get("/oauth/callback")
@@ -81,11 +81,16 @@ async def oauth_callback(request: Request, container=Depends(get_container)) -> 
     state = params.get("state")
     if not code:
         return JSONResponse(status_code=400, content={"error": "invalid_request", "error_description": "Missing code."})
-    if not _consume_state(request, state):
+    state_record = _consume_state(request, state)
+    if not state_record:
         return JSONResponse(status_code=400, content={"error": "invalid_state", "error_description": "State mismatch."})
 
     try:
-        token_payload = await service.exchange_code_for_token(base_url=base_url, code=code)
+        token_payload = await service.exchange_code_for_token(
+            base_url=base_url,
+            code=code,
+            code_verifier=str(state_record.get("code_verifier") or ""),
+        )
         claims = service.validate_access_token(str(token_payload["access_token"]))
     except ClaudeOAuthError as exc:
         return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "error_description": exc.message})
