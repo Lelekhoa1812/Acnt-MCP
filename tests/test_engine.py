@@ -51,7 +51,6 @@ async def test_search_split_prompt_requests_distinctive_fallback_without_hardcod
     assert terms == ["Charlie chair", "Charlie"]
     system_prompt = payloads[0]["messages"][0]["content"]
     assert "distinctive product/model token" in system_prompt
-    assert "never use hard-coded" in system_prompt
     assert "include the original phrase first" in system_prompt
 
 

@@ -116,10 +116,10 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
     ```
 
 - **`stock_search`**
-  - **Purpose:** Finds families/products matching keywords, departments, categories, and paging filters. Good starting point for ambiguous requests.
-  - **Arguments:** `search`, `departmentId`, `categoryId`, `page`, `pageSize`.
-  - **Example input:** `{"search": "white gloss dance floor", "page": 1, "pageSize": 5}`.
-  - **Example output:** Catalog page with `items` (each has `id`, `name`, `departmentId`, and variants), `page`, `pageSize`, `totalCount`, `totalPages`.
+  - **Purpose:** Finds families/products matching keywords, departments, and categories. Good starting point for ambiguous requests. The backend automatically pages through the catalogue in capped batches, so callers do not control `pageSize`.
+  - **Arguments:** `search`, `departmentId`, `categoryId`, `page`.
+  - **Example input:** `{"search": "white gloss dance floor", "page": 1}`.
+  - **Example output:** Aggregated catalogue response with `items` (each has `id`, `name`, `departmentId`, and variants), `page`, fixed backend `pageSize`, `totalCount`, and `totalPages`.
 
 - **`stock_detail`**
   - **Purpose:** Once an exact SKU or product ID is known, this returns the family plus full variant list (dimensions, pricing`, `stock` per state).
@@ -152,7 +152,7 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
 
 - **`stock_image`**
   - **Purpose:** Resolves a Harmonise product image from an exact image path, exact SKU, or product-family search, then returns the HTTP image URL plus MCP-native image content when rendering succeeds.
-  - **Arguments:** `imageFileName`, `sku`, or `search`, plus optional `departmentId`, `categoryId`, `page`, `pageSize`.
+  - **Arguments:** `imageFileName`, `sku`, or `search`, plus optional `departmentId`, `categoryId`, `page`.
   - **Example input:** `{"sku": "fl-la-la-lam-1-gre"}`.
   - **Example output:** `{"source": "sku", "imageFileName": "...", "imageUrl": "...", "coverage": {...}}` plus inline MCP image content when fetch succeeds.
 
@@ -231,7 +231,7 @@ Example Claude.ai tool routing:
 
 - “How many department and category of stock do we have?” -> `stock_scope`.
 - “Let me know about our Alto chair stock availability.” -> `stock_snapshot` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
-- “Which type of chair has the most stock in NSW production-wise?” -> `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`.
+- “Which type of chair has the most stock in NSW production-wise?” -> `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. The backend caps page size at 50 and paginates through the full matching catalogue automatically.
 - “Which Charlie chair variant is most in stock in Victoria?” -> `stock_variant_rank` with `search="Charlie chair"`, `metric="stock"`, `region="VIC"`, and `direction="most"`.
 
 ## Local setup
@@ -305,7 +305,6 @@ curl -X POST http://localhost:80/api/v1/tools/call   -H "Content-Type: applicati
     "tool": "stock_search",
     "args": {
       "page": 1,
-      "pageSize": 5,
       "search": "white gloss dance floor"
     }
   }'

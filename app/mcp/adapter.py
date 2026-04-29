@@ -136,25 +136,22 @@ class McpToolAdapter:
     def _log_success(self, result: ToolResult, session_id: str) -> None:
         user_context = get_user_context()
         user_id = user_context.user_id if user_context else "anonymous"
-        department = user_context.department_claim if user_context else "unknown"
         trace = result.trace
         if trace is None:
             self.logger.debug(
-                "mcp_tool_result tool=%s session_id=%s user_id=%s department=%s status=%s",
+                "mcp_tool_result tool=%s session_id=%s user_id=%s status=%s",
                 result.tool,
                 session_id,
                 user_id,
-                department,
                 result.status,
             )
             return
 
         self.logger.debug(
-            "mcp_tool_result tool=%s session_id=%s user_id=%s department=%s status=%s cache_status=%s result_count=%s notes=%s",
+            "mcp_tool_result tool=%s session_id=%s user_id=%s status=%s cache_status=%s result_count=%s notes=%s",
             result.tool,
             session_id,
             user_id,
-            department,
             result.status,
             trace.cache_status,
             trace.result_count,
@@ -164,13 +161,11 @@ class McpToolAdapter:
     def _log_error(self, name: str, arguments: dict[str, Any], session_id: str, exc: Exception) -> None:
         user_context = get_user_context()
         user_id = user_context.user_id if user_context else "anonymous"
-        department = user_context.department_claim if user_context else "unknown"
         self.logger.warning(
-            "mcp_tool_error tool=%s session_id=%s user_id=%s department=%s args=%s error=%s",
+            "mcp_tool_error tool=%s session_id=%s user_id=%s args=%s error=%s",
             name,
             session_id,
             user_id,
-            department,
             arguments,
             exc,
         )

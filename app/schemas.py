@@ -475,7 +475,6 @@ class StockGetDepartmentsArgs(BaseModel):
 
 class StockGetCategoriesArgs(BaseModel):
     page: int = Field(1, ge=1, description="Raw Harmonise category page to retrieve.")
-    pageSize: int = Field(20, ge=1, le=100, description="Raw category page size, from 1 to 100.")
 
 
 class StockGetSupportedScopeArgs(BaseModel):
@@ -484,7 +483,6 @@ class StockGetSupportedScopeArgs(BaseModel):
 
 class StockSearchCatalogueArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue result page to retrieve.")
-    pageSize: int = Field(20, ge=1, le=100, description="Catalogue page size, from 1 to 100.")
     search: str | None = Field(
         None,
         description="Product or family name to search for. Do not combine several unrelated product names in one search.",
@@ -503,7 +501,6 @@ class StockGetProductArgs(BaseModel):
     id: str | None = Field(None, description="Harmonise product family UUID from catalogue/search results.")
     sku: str | None = Field(None, description="Variant SKU. Prefer sku for exact variant/detail lookup when available.")
     page: int = Field(1, ge=1, description="Detail result page to retrieve.")
-    pageSize: int = Field(20, ge=1, le=100, description="Detail page size, from 1 to 100.")
 
     @model_validator(mode="after")
     def validate_identifier(self) -> "StockGetProductArgs":
@@ -545,15 +542,12 @@ class StockCompareVariantsArgs(BaseModel):
 
 class StockInventorySnapshotArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
-    pageSize: int = Field(20, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
     search: str | None = Field(None, description="Focused product, family, or category name to search for.")
     departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when the user's category is clear.")
 
 
 class StockAggregateArgs(BaseModel):
-    page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
-    pageSize: int = Field(100, ge=1, le=100, description="Catalogue page size to enrich, from 1 to 100.")
     search: str | None = Field(
         None,
         description="Prompt-supplied product, family, or category phrase to aggregate. Omit only for deliberately broad inventory totals.",
@@ -583,7 +577,6 @@ class StockProductFamilyInventoryArgs(BaseModel):
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
-    pageSize: int = Field(50, ge=1, le=50, description="Maximum catalogue product rows to enrich, from 1 to 50.")
 
 
 class StockVariantRankArgs(BaseModel):
@@ -618,7 +611,6 @@ class StockVariantRankArgs(BaseModel):
         description="LLM-supplied aesthetic/style filters; values are not hard-coded by the tool.",
     )
     limit: int = Field(10, ge=1, le=50, description="Maximum ranked variants to return.")
-    pageSize: int = Field(50, ge=1, le=50, description="Maximum catalogue product rows to enrich before ranking, from 1 to 50.")
 
 
 class ProductAttributeFilter(BaseModel):
@@ -671,7 +663,6 @@ class StockSpecsRankArgs(BaseModel):
     )
     limit: int = Field(10, ge=1, le=50, description="Maximum ranked groups to return.")
     page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
-    pageSize: int = Field(50, ge=1, le=50, description="Catalogue page size to enrich, from 1 to 50.")
 
 
 class StockImageArgs(BaseModel):
@@ -690,7 +681,6 @@ class StockImageArgs(BaseModel):
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
     page: int = Field(1, ge=1, description="Catalogue page to start from before search-based image resolution.")
-    pageSize: int = Field(20, ge=1, le=50, description="Catalogue page size to use for search-based image resolution, from 1 to 50.")
 
     @model_validator(mode="after")
     def validate_source(self) -> "StockImageArgs":
@@ -720,7 +710,6 @@ class StockHirableByStateArgs(BaseModel):
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
     categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
-    pageSize: int = Field(100, ge=1, le=100, description="Maximum catalogue product rows to enrich, from 1 to 100.")
 
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):

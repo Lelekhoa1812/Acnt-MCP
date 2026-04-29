@@ -16,7 +16,7 @@ To support M365 authentication for MCP, implement a **Dual-App Registration** st
 
 #### A. MCP Server Registration (The Resource)
 * **Manifest**: Set `requestedAccessTokenVersion: 2`.
-* **Expose an API**: Define a scope `api://{client_id}/MCP.Invoke`.
+* **Expose an API**: Set the App ID URI to `api://{client_id}` and define a scope named `MCP.Invoke` under it.
 * **App Roles**: Create roles (e.g., `Tool.Admin`, `Tool.Viewer`) for RBAC.
 
 #### B. Client Registration (The AI Agent)
@@ -34,8 +34,10 @@ Utilize **Attribute-Based Access Control (ABAC)** using claims within the JWT.
 | Component | Logic | Source |
 | :--- | :--- | :--- |
 | **Authentication** | JWT Signature + Audience + Expiry check. | Entra ID Header |
-| **Identity Gating** | User must belong to the `MCP_Users` security group. | `groups` claim |
+| **Identity Gating** | User must belong to the `HTH-MCP` security group. | `groups` claim |
+<!-- Department-based gating is temporarily disabled.
 | **Department Gating** | `departmentId` in the request must match the user's `officeLocation` or `extension_department` claim. | `UserContext` |
+-->
 | **Tool Gating** | Tool metadata `required_roles` must match the user's `roles` claim. | Tool Registry |
 
 > [!IMPORTANT]
@@ -126,10 +128,13 @@ The following settings tell the app how to recognize Microsoft Entra sign-in tok
 | `HTH_IDENTITY_AUTH_ENABLED=true` | Turns on Microsoft identity checks. If this is off, the app will not enforce Entra-based access rules. | Set this in your Azure app settings or deployment environment. |
 | `HTH_AUTH_ISSUER=https://login.microsoftonline.com/tenant-id/v2.0` | This is the security address that tells the app who issued the sign-in token. | Use your Entra tenant’s login URL. |
 | `HTH_AUTH_JWKS_URL=https://login.microsoftonline.com/tenant-id/discovery/v2.0/keys` | This is the public key address the app uses to verify the token is real and was not changed. | Use the JWKS URL for your Entra tenant. |
-| `HTH_AUTH_AUDIENCE=api://resource-client-id/MCP.Invoke` | This is the specific name of the service the token is meant for. It helps prevent tokens for other apps from being accepted. | Use the API identifier for the Resource app and its `MCP.Invoke` scope. |
-| `HTH_AUTH_REQUIRED_GROUP=MCP_Users` | This is the Microsoft 365 group the user must belong to before they can use MCP. | Create or reuse a group with this name. |
+<!-- Root Cause vs Logic: Entra access tokens validate the API App ID URI in the `aud` claim, while the scope name lives in `scp`; keep `/MCP.Invoke` out of HTH_AUTH_AUDIENCE so real tokens pass audience validation. -->
+| `HTH_AUTH_AUDIENCE=api://resource-client-id` | This is the specific service identifier the token is meant for. It helps prevent tokens for other apps from being accepted. | Use the Resource app's App ID URI, not the scope name. |
+| `HTH_AUTH_REQUIRED_GROUP=HTH-MCP` | This is the Microsoft 365 group the user must belong to before they can use MCP. | Create or reuse a group with this name. |
 | `HTH_AUTH_REQUIRED_CLAIMS=tid,oid` | These are the minimum identity details the app expects to see in the token. `tid` identifies the tenant and `oid` identifies the user. | Usually included automatically by Entra. |
+<!-- Department-related claims are temporarily disabled.
 | `HTH_AUTH_DEPARTMENT_CLAIMS=extension_departmentId,extension_department,officeLocation` | These are the department-related details the app can read from the token when it needs to check department-based access. | Your IT team may add these as optional claims or extension attributes. |
+-->
 | `HTH_AUTH_REQUIRED_TOKEN_VERSION=2.0` | Tells the app to expect a modern Entra token format. | Set to `2.0` for production. |
 
 
@@ -141,9 +146,9 @@ Useful rule of thumb:
 ### Managing Access via Microsoft 365
 Access is controlled in two layers: who can sign in, and what they are allowed to do after they sign in.
 
-#### Step 1: Create or use the `MCP_Users` group
+#### Step 1: Create or use the `HTH-MCP` group
 1. Open the Microsoft 365 admin or Entra admin portal.
-2. Create a security group named `MCP_Users`, or use an existing group if your organization already has one for this purpose.
+2. Create a security group named `HTH-MCP`, or use an existing group if your organization already has one for this purpose.
 3. Add the people who should be allowed to use the MCP service.
 4. Keep this group small and intentional. If someone leaves the project, remove them from the group.
 
@@ -154,21 +159,25 @@ Roles are simple labels that describe what a person can do:
 Most users should only get `Tool.Viewer`. Give `Tool.Admin` only to the few people who truly need it.
 
 #### Step 3: Match access to the right people
-1. Put regular project users in `MCP_Users` and give them `Tool.Viewer`.
-2. Put support or operations staff in `MCP_Users` and give them `Tool.Admin` if they need session control.
+1. Put regular project users in `HTH-MCP` and give them `Tool.Viewer`.
+2. Put support or operations staff in `HTH-MCP` and give them `Tool.Admin` if they need session control.
 3. Do not assign admin access broadly. Keep it limited to the smallest practical group.
 
 ### Data and Privacy (Claims)
 The app needs a few pieces of information from the sign-in token to make correct access decisions.
 1. `tid` tells the app which Microsoft tenant the user belongs to.
 2. `oid` tells the app which user is signed in.
+<!-- Department-related values such as `extension_departmentId`, `extension_department`, or `officeLocation` are temporarily disabled.
 3. Department-related values such as `extension_departmentId`, `extension_department`, or `officeLocation` help the app decide whether a request belongs to the right department.
+-->
 > Think of these as labels inside the digital key that comes with the sign-in. If the labels are missing, the app cannot safely confirm access and will fail closed.
 
 Important guidance:
 1. Make sure these claims are included in the token the Entra setup sends to the app.
 2. Keep the data limited to what the app actually needs.
+<!-- Department-based access is temporarily disabled.
 3. If your organization uses department-based access, confirm the department values are accurate before rollout.
+-->
 
 ### Production Safety Rules
 1. **Remove local testing secrets before production.**
@@ -186,9 +195,9 @@ Important guidance:
 1. Create the Resource app and Client app.
 2. Expose `MCP.Invoke` and set access token version 2.
 3. Add the redirect URIs for web and desktop use.
-4. Create the `MCP_Users` group and add the right people.
-5. Confirm the token contains the required claims and department data.
-7. Set the `HTH_AUTH_*` environment variables in Azure.
-8. Turn on `HTH_IDENTITY_AUTH_ENABLED=true`.
-9. Remove any local-only HS256 secret before production go-live.
-10. Test sign-in, tool visibility, and one normal tool call before opening access to the full team.
+4. Create the `HTH-MCP` group and add the right people.
+5. Confirm the token contains the required claims.
+6. Set the `HTH_AUTH_*` environment variables in Azure.
+7. Turn on `HTH_IDENTITY_AUTH_ENABLED=true`.
+8. Remove any local-only HS256 secret before production go-live.
+9. Test sign-in, tool visibility, and one normal tool call before opening access to the full team.

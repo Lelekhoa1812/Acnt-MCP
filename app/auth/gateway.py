@@ -173,14 +173,12 @@ class IdentityGateway:
                 missing_claims=["tid", "oid"],
             )
 
-        department_claim = self._resolve_department_claim(claims)
         return UserContext(
             tenant_id=tenant_id,
             user_id=user_id,
             subject=subject,
             roles=self._normalize_claim_values(claims.get("roles")),
             groups=self._normalize_claim_values(claims.get("groups")),
-            department_claim=department_claim,
             claims=claims,
         )
 
@@ -195,16 +193,18 @@ class IdentityGateway:
                 status_code=403,
             )
 
-    def _resolve_department_claim(self, claims: dict[str, Any]) -> str | None:
-        for claim_name in self.settings.parsed_auth_department_claims:
-            value = claims.get(claim_name)
-            if value is None:
-                continue
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, (int, float)):
-                return str(value)
-        return None
+    # Department-based access is disabled for now, so the old claim lookup is
+    # kept here as commented reference only.
+    # def _resolve_department_claim(self, claims: dict[str, Any]) -> str | None:
+    #     for claim_name in self.settings.parsed_auth_department_claims:
+    #         value = claims.get(claim_name)
+    #         if value is None:
+    #             continue
+    #         if isinstance(value, str) and value.strip():
+    #             return value.strip()
+    #         if isinstance(value, (int, float)):
+    #             return str(value)
+    #     return None
 
     def _normalize_claim_values(self, raw: Any) -> list[str]:
         if raw is None:
@@ -242,4 +242,3 @@ class IdentityGateway:
                     status_code=429,
                 )
             calls.append(now)
-

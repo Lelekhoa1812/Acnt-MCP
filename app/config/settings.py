@@ -144,12 +144,14 @@ class Settings(BaseSettings):
     auth_audience: str | None = Field(None, alias="HTH_AUTH_AUDIENCE")
     auth_jwks_url: str | None = Field(None, alias="HTH_AUTH_JWKS_URL")
     auth_jwt_hs256_secret: str | None = Field(None, alias="HTH_AUTH_JWT_HS256_SECRET")
-    auth_required_group: str = Field("MCP_Users", alias="HTH_AUTH_REQUIRED_GROUP")
+    auth_required_group: str = Field("HTH-MCP", alias="HTH_AUTH_REQUIRED_GROUP")
     auth_required_claims: str = Field("tid,oid", alias="HTH_AUTH_REQUIRED_CLAIMS")
-    auth_department_claims: str = Field(
-        "extension_departmentId,extension_department,officeLocation",
-        alias="HTH_AUTH_DEPARTMENT_CLAIMS",
-    )
+    # Department-based access is disabled for now; keep the setting commented
+    # out so we can re-enable it later without reintroducing the old policy.
+    # auth_department_claims: str = Field(
+    #     "extension_departmentId,extension_department,officeLocation",
+    #     alias="HTH_AUTH_DEPARTMENT_CLAIMS",
+    # )
     auth_required_token_version: str | None = Field("2.0", alias="HTH_AUTH_REQUIRED_TOKEN_VERSION")
     auth_rate_limit_per_minute: int = Field(50, ge=0, alias="HTH_AUTH_RATE_LIMIT_PER_MINUTE")
 
@@ -334,9 +336,8 @@ class Settings(BaseSettings):
     def parsed_auth_required_claims(self) -> list[str]:
         return self._split_csv(self.auth_required_claims)
 
-    @property
-    def parsed_auth_department_claims(self) -> list[str]:
-        return self._split_csv(self.auth_department_claims)
+    # Department-based access is disabled for now, so there is no parser for
+    # department claims in the active configuration path.
 
     @property
     def mcp_browser_oauth_enabled(self) -> bool:

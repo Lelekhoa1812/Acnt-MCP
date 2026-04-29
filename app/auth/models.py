@@ -11,7 +11,9 @@ class UserContext(BaseModel):
     subject: str
     roles: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
-    department_claim: str | None = None
+    # Department-based access is disabled for now, so the claim is kept
+    # commented out rather than removed.
+    # department_claim: str | None = None
     claims: dict[str, Any] = Field(default_factory=dict)
 
     @property

@@ -27,7 +27,7 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
-    assert "smaller pageSize before giving up" in MCP_SERVER_INSTRUCTIONS
+    assert "grouped aggregation already paginates" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 
 
@@ -130,6 +130,8 @@ async def test_mcp_initialize_and_list_tools() -> None:
     aggregate = next(tool for tool in tools.tools if tool.name == "stock_aggregate")
     assert "Grouped stock" in aggregate.description
     assert "not single-variant" in aggregate.description
+    assert "page" not in aggregate.inputSchema["properties"]
+    assert "pageSize" not in aggregate.inputSchema["properties"]
 
     intelligence = next(tool for tool in tools.tools if tool.name == "stock_specs_rank")
     assert "physical dimensions" in intelligence.description
@@ -298,8 +300,6 @@ async def test_mcp_stock_aggregate_ranks_grouped_nsw_stock() -> None:
         result = await client.call_tool(
             "stock_aggregate",
             {
-                "page": 1,
-                "pageSize": 100,
                 "search": "Laminate Timber Floor",
                 "region": "NSW",
                 "measure": "stock",

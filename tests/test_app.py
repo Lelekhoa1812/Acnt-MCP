@@ -117,7 +117,7 @@ def build_identity_auth_client() -> TestClient:
         auth_issuer="https://login.microsoftonline.com/test-tenant/v2.0",
         auth_audience="api://hth-mcp",
         auth_jwt_hs256_secret="test-secret",
-        auth_required_group="MCP_Users",
+        auth_required_group="HTH-MCP",
     )
     return TestClient(create_app(settings))
 
@@ -126,7 +126,6 @@ def build_identity_token(
     *,
     roles: list[str] | None = None,
     groups: list[str] | None = None,
-    department_claim: str = "3",
 ) -> str:
     now = int(time.time())
     payload = {
@@ -140,8 +139,9 @@ def build_identity_token(
         "oid": "user-1",
         "sub": "user-1",
         "roles": roles if roles is not None else ["Tool.Viewer"],
-        "groups": groups if groups is not None else ["MCP_Users"],
-        "extension_departmentId": department_claim,
+        "groups": groups if groups is not None else ["HTH-MCP"],
+        # Department-based claims are temporarily disabled.
+        # "extension_departmentId": department_claim,
     }
     return jwt.encode(payload, "test-secret", algorithm="HS256")
 
@@ -365,9 +365,8 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
     assert "stock_detail" in tool_names
 
 
-def test_identity_auth_tools_enforce_group_role_and_department_scope() -> None:
+def test_identity_auth_tools_enforce_group_role_access() -> None:
     viewer_token = build_identity_token()
-    wrong_department_token = build_identity_token(department_claim="7")
     missing_group_token = build_identity_token(groups=["Other_Group"])
 
     with build_identity_auth_client() as client:
@@ -379,17 +378,9 @@ def test_identity_auth_tools_enforce_group_role_and_department_scope() -> None:
             "/api/v1/tools/call",
             json={
                 "tool": "stock_snapshot",
-                "args": {"page": 1, "pageSize": 2, "departmentId": 3},
+                "args": {"page": 1, "pageSize": 2},
             },
             headers={"Authorization": f"Bearer {viewer_token}"},
-        )
-        denied_department_call = client.post(
-            "/api/v1/tools/call",
-            json={
-                "tool": "stock_snapshot",
-                "args": {"page": 1, "pageSize": 2, "departmentId": 3},
-            },
-            headers={"Authorization": f"Bearer {wrong_department_token}"},
         )
         denied_group_list = client.get(
             "/api/v1/tools",
@@ -400,9 +391,6 @@ def test_identity_auth_tools_enforce_group_role_and_department_scope() -> None:
     tool_names = {tool["name"] for tool in tools_response.json()["tools"]}
     assert "stock_snapshot" in tool_names
     assert valid_call.status_code == 200
-
-    assert denied_department_call.status_code == 403
-    assert denied_department_call.json()["detail"]["code"] == "department_access_denied"
 
     assert denied_group_list.status_code == 403
     assert denied_group_list.json()["detail"]["code"] == "group_access_denied"

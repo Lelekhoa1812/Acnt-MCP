@@ -55,7 +55,8 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
         ),
         (
             "Grouped most/least questions by type, family, category, state, or all inventory: use `stock_aggregate` "
-            "with prompt-supplied search/filter arguments; do not answer grouped totals from variant ranking."
+            "with prompt-supplied search/filter arguments; the backend paginates automatically, so do not try to "
+            "manage pagination in the prompt; do not answer grouped totals from variant ranking."
         ),
         (
             "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking, `stock_variant_rank` for "
@@ -67,8 +68,8 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "returns no rows, try `charlie`) before reporting failure."
         ),
         (
-            "If stock retrieval times out or comes back partial, retry with a smaller pageSize and continue from the "
-            "last successful catalogue checkpoint before you conclude the upstream cannot be resolved."
+            "If stock retrieval times out or comes back partial, retry with a narrower search phrase or filter; "
+            "grouped aggregation already paginates through catalogue results in the backend."
         ),
         # Motivation vs Logic: when users only cite the product name, the prompt should still surface every variant.
         (

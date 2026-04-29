@@ -32,6 +32,7 @@ from app.schemas import (
     ProductVariantDto,
     ProvenanceSnapshot,
     StockApiDepartmentDto,
+    StockAggregateArgs,
     StockCategoryDtoPagedResponse,
     StockExtractVariantEvidenceArgs,
     StockGetCategoriesArgs,
@@ -45,6 +46,7 @@ from app.store import AppKeyValueStore
 
 
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+STOCK_PAGE_SIZE_CAP = 50
 
 
 @dataclass
@@ -95,7 +97,7 @@ class InventoryService:
             namespace="tool",
             key=f"stock_get_categories:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
-            loader=lambda: self.source.get_categories(page=args.page, page_size=args.pageSize),
+            loader=lambda: self.source.get_categories(page=args.page, page_size=self._catalogue_page_size_cap()),
         )
         return StockCategoryDtoPagedResponse.model_validate(raw), cache_status, notes
 
@@ -108,12 +110,41 @@ class InventoryService:
             namespace="tool",
             key=f"stock_search_catalogue:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
+            loader=lambda: self._search_catalogue_all(args),
+        )
+        return ProductListItemDtoPagedResponse.model_validate(raw), cache_status, notes
+
+    async def _search_catalogue_page(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[ProductListItemDtoPagedResponse, str, list[str]]:
+        page_args = StockSearchCatalogueArgs(
+            page=page,
+            search=search,
+            departmentId=department_id,
+            categoryId=category_id,
+        )
+        cache_key = self._cache_key(
+            {
+                **page_args.model_dump(mode="json"),
+                "pageSize": page_size,
+            }
+        )
+        raw, cache_status, notes = await self.key_value_store.cached_call(
+            namespace="tool",
+            key=f"stock_search_catalogue_page:{cache_key}",
+            ttl_seconds=self.settings.cache_ttl_seconds,
             loader=lambda: self.source.search_catalogue(
-                page=args.page,
-                page_size=args.pageSize,
-                search=args.search,
-                department_id=args.departmentId,
-                category_id=args.categoryId,
+                page=page,
+                page_size=page_size,
+                search=search,
+                department_id=department_id,
+                category_id=category_id,
             ),
         )
         return ProductListItemDtoPagedResponse.model_validate(raw), cache_status, notes
@@ -124,7 +155,7 @@ class InventoryService:
     ) -> AdaptiveCatalogueScan:
         return await self._scan_catalogue_with_recovery(
             page=args.page,
-            page_size=args.pageSize,
+            page_size=self._catalogue_page_size_cap(),
             search=args.search,
             department_id=args.departmentId,
             category_id=args.categoryId,
@@ -143,7 +174,7 @@ class InventoryService:
                 product_id=args.id,
                 sku=args.sku,
                 page=args.page,
-                page_size=args.pageSize,
+                page_size=self._catalogue_page_size_cap(),
             ),
         )
         return ProductListItemDtoPagedResponse.model_validate(raw), cache_status, notes
@@ -168,7 +199,6 @@ class InventoryService:
             id=args.id if args.id and self.looks_like_uuid(args.id) else None,
             sku=args.sku if args.sku else None,
             page=1,
-            pageSize=20,
         )
         product_response, cache_status, notes = await self.get_product(lookup_args)
         if not product_response.items:
@@ -232,7 +262,7 @@ class InventoryService:
         # compact, answer-ready evidence bundle for large table requests.
         catalogue_scan = await self._scan_catalogue_with_recovery(
             page=args.page,
-            page_size=args.pageSize,
+            page_size=self._catalogue_page_size_cap(),
             search=args.search,
             department_id=args.departmentId,
             category_id=args.categoryId,
@@ -298,7 +328,6 @@ class InventoryService:
                 id=None,
                 sku=sku,
                 page=1,
-                pageSize=min(100, max(20, len(product.variants) or 1)),
             )
             try:
                 async with semaphore:
@@ -367,7 +396,6 @@ class InventoryService:
                             id=None,
                             sku=variant.sku,
                             page=1,
-                            pageSize=20,
                         )
                     )
                 except UpstreamServiceError as exc:
@@ -412,7 +440,7 @@ class InventoryService:
             evidence=evidence_items,
             coverage=InventorySnapshotCoverage(
                 requestedPage=args.page,
-                requestedPageSize=args.pageSize,
+                requestedPageSize=self._catalogue_page_size_cap(),
                 matchedProducts=len(catalogue_items),
                 matchedPages=matched_pages,
                 enrichedProducts=enriched_products,
@@ -422,6 +450,22 @@ class InventoryService:
             ),
         )
         return response, self._combine_cache_statuses(cache_statuses), notes
+
+    async def aggregate_stock(
+        self,
+        args: StockAggregateArgs,
+    ) -> tuple[InventorySnapshotResponse, str, list[str]]:
+        # Motivation vs Logic: grouped totals need stable backend-owned paging
+        # so the caller cannot accidentally force oversized catalogue pulls.
+        # We always start at page 1, cap page size at 50, and let the shared
+        # snapshot scanner continue paging until the upstream runs out of rows.
+        snapshot_args = StockInventorySnapshotArgs(
+            page=1,
+            search=args.search,
+            departmentId=args.departmentId,
+            categoryId=args.categoryId,
+        )
+        return await self.inventory_snapshot(snapshot_args)
 
     @staticmethod
     def looks_like_uuid(value: str | None) -> bool:
@@ -693,6 +737,10 @@ class InventoryService:
         limit = max(1, self.settings.stock_parallel_requests_limit)
         return max(1, min(limit, max(1, item_count)))
 
+    @staticmethod
+    def _catalogue_page_size_cap() -> int:
+        return STOCK_PAGE_SIZE_CAP
+
     async def _fetch_catalogue_pages(
         self,
         *,
@@ -713,15 +761,14 @@ class InventoryService:
         semaphore = anyio.Semaphore(parallelism)
 
         async def fetch_page(index: int, page_number: int) -> None:
-            page_args = StockSearchCatalogueArgs(
-                page=page_number,
-                pageSize=page_size,
-                search=search,
-                departmentId=department_id,
-                categoryId=category_id,
-            )
             async with semaphore:
-                page_results[index] = await self.search_catalogue(page_args)
+                page_results[index] = await self._search_catalogue_page(
+                    page=page_number,
+                    page_size=page_size,
+                    search=search,
+                    department_id=department_id,
+                    category_id=category_id,
+                )
 
         async with anyio.create_task_group() as task_group:
             for index, page_number in enumerate(page_numbers):
@@ -738,6 +785,29 @@ class InventoryService:
             notes.extend(page_notes)
             items.extend(page_response.items)
         return items, cache_statuses, notes
+
+    async def _search_catalogue_all(self, args: StockSearchCatalogueArgs) -> tuple[dict[str, Any], list[str]]:
+        # Motivation vs Logic: stock search should now behave like the broader
+        # snapshot tools and keep paging until the catalogue is exhausted, so
+        # the caller gets a complete answer-ready result set without controlling
+        # page size.
+        scan = await self._scan_catalogue_with_recovery(
+            page=1,
+            page_size=self._catalogue_page_size_cap(),
+            search=args.search,
+            department_id=args.departmentId,
+            category_id=args.categoryId,
+        )
+        items = self._dedupe_products(scan.items)
+        page_size = self._catalogue_page_size_cap()
+        response = {
+            "items": [item.model_dump(mode="json") for item in items],
+            "page": 1,
+            "pageSize": page_size,
+            "totalCount": len(items),
+            "totalPages": max(1, scan.matched_pages or 1),
+        }
+        return response, scan.notes
 
     def _adaptive_catalogue_page_sizes(self, requested_page_size: int) -> list[int]:
         # Root Cause vs Logic: Harmonise list endpoints frequently time out on
@@ -787,7 +857,13 @@ class InventoryService:
                     categoryId=category_id,
                 )
                 try:
-                    page_response, page_cache_status, page_notes = await self.search_catalogue(page_args)
+                    page_response, page_cache_status, page_notes = await self._search_catalogue_page(
+                        page=page_args.page,
+                        page_size=candidate_page_size,
+                        search=page_args.search,
+                        department_id=page_args.departmentId,
+                        category_id=page_args.categoryId,
+                    )
                 except UpstreamServiceError as exc:
                     last_error = exc
                     recovery_scope = (
@@ -874,14 +950,13 @@ class InventoryService:
 
         broadened_args = StockSearchCatalogueArgs(
             page=1,
-            pageSize=50,
             search=None,
             departmentId=department_id,
             categoryId=args.categoryId,
         )
         broadened_scan = await self._scan_catalogue_with_recovery(
             page=broadened_args.page,
-            page_size=broadened_args.pageSize,
+            page_size=self._catalogue_page_size_cap(),
             search=None,
             department_id=department_id,
             category_id=args.categoryId,

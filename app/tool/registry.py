@@ -243,26 +243,27 @@ class ToolRegistry:
                 ),
                 status_code=403,
             )
-
-        department_id = raw_args.get("departmentId")
-        if department_id is None:
-            return
-        if not user_context.department_claim:
-            raise IdentityAuthError(
-                code="missing_claims",
-                message="departmentId was supplied but no department claim is present in the token.",
-                status_code=403,
-                missing_claims=["extension_departmentId|extension_department|officeLocation"],
-            )
-        if str(department_id).strip().lower() != str(user_context.department_claim).strip().lower():
-            raise IdentityAuthError(
-                code="department_access_denied",
-                message=(
-                    f"departmentId '{department_id}' does not match token department claim "
-                    f"'{user_context.department_claim}'."
-                ),
-                status_code=403,
-            )
+        # Department-based access is disabled for now. We keep the earlier
+        # department gate commented out below as a reference for re-enable work.
+        # department_id = raw_args.get("departmentId")
+        # if department_id is None:
+        #     return
+        # if not user_context.department_claim:
+        #     raise IdentityAuthError(
+        #         code="missing_claims",
+        #         message="departmentId was supplied but no department claim is present in the token.",
+        #         status_code=403,
+        #         missing_claims=["extension_departmentId|extension_department|officeLocation"],
+        #     )
+        # if str(department_id).strip().lower() != str(user_context.department_claim).strip().lower():
+        #     raise IdentityAuthError(
+        #         code="department_access_denied",
+        #         message=(
+        #             f"departmentId '{department_id}' does not match token department claim "
+        #             f"'{user_context.department_claim}'."
+        #         ),
+        #         status_code=403,
+        #     )
 
     def _register_stock(self) -> None:
         async def get_departments(validated: StockGetDepartmentsArgs, _: str | None, thought: str) -> ToolResult:
@@ -404,14 +405,7 @@ class ToolRegistry:
             )
 
         async def aggregate_stock(validated: StockAggregateArgs, _: str | None, thought: str) -> ToolResult:
-            snapshot_args = StockInventorySnapshotArgs(
-                page=validated.page,
-                pageSize=validated.pageSize,
-                search=validated.search,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
-            )
-            data, cache_status, notes = await self.inventory_service.inventory_snapshot(snapshot_args)
+            data, cache_status, notes = await self.inventory_service.aggregate_stock(validated)
             ranked_groups = self._aggregate_snapshot_evidence(
                 data.evidence,
                 region=validated.region,
@@ -456,7 +450,6 @@ class ToolRegistry:
         ) -> ToolResult:
             snapshot_args = StockInventorySnapshotArgs(
                 page=validated.page,
-                pageSize=validated.pageSize,
                 search=validated.search,
                 departmentId=validated.departmentId,
                 categoryId=validated.categoryId,
@@ -529,7 +522,7 @@ class ToolRegistry:
             # resolution and binary rendering happen in one explicit place.
             if validated.sku and not image_file_name:
                 product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
-                    StockGetProductArgs(sku=validated.sku, page=1, pageSize=20)
+                    StockGetProductArgs(sku=validated.sku, page=1)
                 )
                 cache_statuses.append(product_cache_status)
                 notes.extend(product_notes)
@@ -551,7 +544,6 @@ class ToolRegistry:
                 catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
                     StockSearchCatalogueArgs(
                         page=validated.page,
-                        pageSize=validated.pageSize,
                         search=validated.search,
                         departmentId=validated.departmentId,
                         categoryId=validated.categoryId,
@@ -568,7 +560,7 @@ class ToolRegistry:
                         if not variant.sku:
                             continue
                         product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
-                            StockGetProductArgs(sku=variant.sku, page=1, pageSize=20)
+                            StockGetProductArgs(sku=variant.sku, page=1)
                         )
                         cache_statuses.append(product_cache_status)
                         notes.extend(product_notes)
@@ -622,7 +614,7 @@ class ToolRegistry:
                 "resolutionNotes": notes,
                 "coverage": {
                     "requestedPage": validated.page,
-                    "requestedPageSize": validated.pageSize,
+                    "requestedPageSize": self.inventory_service._catalogue_page_size_cap(),
                     "isPartial": bool(coverage_limitations),
                     "limitations": coverage_limitations,
                 },
@@ -685,7 +677,6 @@ class ToolRegistry:
             catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
                 StockSearchCatalogueArgs(
                     page=validated.page,
-                    pageSize=validated.pageSize,
                     search=validated.search,
                     departmentId=validated.departmentId,
                     categoryId=validated.categoryId,
@@ -727,7 +718,7 @@ class ToolRegistry:
                 limitations.append("No variant-level stock evidence was returned for the requested family.")
             coverage = {
                 "requestedPage": validated.page,
-                "requestedPageSize": validated.pageSize,
+                "requestedPageSize": self.inventory_service._catalogue_page_size_cap(),
                 "matchedProducts": len(matched_products),
                 "matchedPages": catalogue_scan.matched_pages,
                 "enrichedProducts": len({item.product_id for item in evidence_items if item.product_id}),
@@ -826,7 +817,6 @@ class ToolRegistry:
         async def count_items(validated: StockCountItemsArgs, _: str | None, thought: str) -> ToolResult:
             cat_args = StockSearchCatalogueArgs(
                 page=1,
-                pageSize=1,
                 search=validated.search,
                 departmentId=validated.departmentId,
                 categoryId=validated.categoryId,
@@ -843,7 +833,6 @@ class ToolRegistry:
             if validated.countVariants and validated.search:
                 full_args = StockSearchCatalogueArgs(
                     page=1,
-                    pageSize=10,
                     search=validated.search,
                     departmentId=validated.departmentId,
                     categoryId=validated.categoryId,
@@ -886,7 +875,6 @@ class ToolRegistry:
                 search=validated.search,
                 departmentId=validated.departmentId,
                 categoryId=validated.categoryId,
-                pageSize=validated.pageSize,
             )
             evidence_items, cache_status, notes, coverage = await collect_family_evidence(family_args)
             target_states = validated.states or ["VIC", "NSW", "QLD"]
@@ -995,7 +983,7 @@ class ToolRegistry:
         self._register(
             "stock_search",
             (
-                "Harmonise catalogue discovery by product/family text plus supported filters: page, pageSize, "
+                "Harmonise catalogue discovery by product/family text plus supported filters: page, "
                 "search, departmentId, categoryId. Use to find product ids/SKUs and variants; for availability of a "
                 "named family, follow with stock_snapshot so every variant is covered."
             ),
@@ -1496,7 +1484,6 @@ class ToolRegistry:
         async def disambiguate(validated: ResolverDisambiguateCandidatesArgs, _: str | None, thought: str) -> ToolResult:
             search_args = StockSearchCatalogueArgs(
                 page=1,
-                pageSize=50,
                 search=validated.query,
                 departmentId=validated.departmentId,
                 categoryId=validated.categoryId,

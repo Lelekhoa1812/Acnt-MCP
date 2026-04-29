@@ -65,7 +65,7 @@ SYSTEM_BEHAVIOR_RULES = [
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
     "If search returns identifiers but not requested attributes, add a next hop with `stock_detail` before answering product-family questions.",
     "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
-    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; do not answer grouped totals from `stock_variant_rank`.",
+    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; the backend handles page-by-page aggregation automatically, so do not try to manage pagination in the prompt, and do not answer grouped totals from `stock_variant_rank`.",
     "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering.",
     "For multi-item requests, execute one `stock_search` call per item term instead of one combined term that mixes multiple products.",
     "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
@@ -79,7 +79,7 @@ SYSTEM_BEHAVIOR_RULES = [
         "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
         "returns no rows, try `charlie`) before reporting failure."
     ),
-    "If stock retrieval times out or returns incomplete coverage, retry with a smaller pageSize and continue from the last successful catalogue checkpoint before concluding it failed.",
+    "If stock retrieval times out or returns incomplete coverage, retry with a narrower search phrase or filter; grouped aggregation already paginates through catalogue results in the backend.",
     "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over long raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
@@ -402,7 +402,7 @@ Rules:
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
 - If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
 - If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
-- If stock retrieval hits timeouts or partial coverage, add a dependent fallback step that retries with a smaller `pageSize` before concluding the upstream could not be resolved.
+- If stock retrieval hits timeouts or partial coverage, add a dependent fallback step that narrows the search/filter rather than trying to tune pagination manually.
 - For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock_search steps with one product target per step.

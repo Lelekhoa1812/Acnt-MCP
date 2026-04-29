@@ -24,8 +24,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "when the user asks which variant or SKU ranks highest/lowest within a resolved family. Use stock_image "
     "for Harmonise image retrieval/rendering. Use stock_detail for exact product/SKU detail and stock_compare "
     "only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no rows, partial "
-    "coverage, or timeouts occur, retry with a shorter distinctive phrase, a broader stock_scope filter, or a "
-    "smaller pageSize before giving up, then state any limitation plainly. Weather, news, and FX tools are "
+    "coverage, or timeouts occur, retry with a shorter distinctive phrase or a broader stock_scope filter before "
+    "giving up; grouped aggregation already paginates through catalogue results in the backend. Weather, news, and FX tools are "
     "auxiliary and must not answer inventory questions. Answer directly without preambles, tool names, or internal "
     "keys; use answer_ready or structured totals for grounding."
 )

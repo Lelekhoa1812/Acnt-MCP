@@ -537,7 +537,7 @@ async def test_inventory_snapshot_hydrates_multi_variant_rows_in_cloud_mode() ->
 
     try:
         snapshot, _, _ = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=10, search="chair")
+            StockInventorySnapshotArgs(page=1, search="chair")
         )
         assert snapshot.coverage.enrichedProducts == 1
         assert snapshot.coverage.enrichedVariants == 2
@@ -799,7 +799,7 @@ async def test_inventory_snapshot_fetches_multi_product_details_in_parallel() ->
 
     try:
         snapshot, _, _ = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=3, search="parallel chair")
+            StockInventorySnapshotArgs(page=1, search="parallel chair")
         )
         assert snapshot.coverage.enrichedProducts == 3
         assert snapshot.coverage.enrichedVariants == 3
@@ -831,15 +831,15 @@ async def test_inventory_snapshot_scans_all_matched_catalogue_pages_for_complete
 
     try:
         snapshot, _, _ = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=1, search="parallel chair")
+            StockInventorySnapshotArgs(page=1, search="parallel chair")
         )
         assert snapshot.coverage.matchedProducts == 3
-        assert snapshot.coverage.matchedPages == 3
+        assert snapshot.coverage.matchedPages == 1
         assert snapshot.coverage.enrichedProducts == 3
         assert snapshot.coverage.enrichedVariants == 3
         assert len(snapshot.rows) == 3
-        assert source.catalogue_calls[0] == (1, 1)
-        assert set(source.catalogue_calls[1:]) == {(2, 1), (3, 1)}
+        assert source.catalogue_calls[0] == (1, 50)
+        assert len(source.catalogue_calls) == 1
     finally:
         await source.close()
         await key_value_store.close()
@@ -987,8 +987,10 @@ async def test_inventory_snapshot_parallelizes_remaining_matched_pages() -> None
     )
 
     try:
-        await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=1, search="parallel family"))
-        assert source.max_active_search_calls > 1
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="parallel family"))
+        assert snapshot.coverage.matchedProducts == 3
+        assert snapshot.coverage.enrichedProducts == 3
+        assert source.max_active_search_calls == 1
     finally:
         await source.close()
         await key_value_store.close()
@@ -1339,7 +1341,7 @@ async def test_inventory_snapshot_reports_detail_lookup_timeouts() -> None:
 
     try:
         snapshot, _, _ = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=10, search="chair")
+            StockInventorySnapshotArgs(page=1, search="chair")
         )
         assert snapshot.coverage.enrichedProducts == 0
         assert snapshot.coverage.enrichedVariants == 0
@@ -1375,7 +1377,7 @@ async def test_inventory_snapshot_expands_department_scan_when_broad_search_is_t
 
     try:
         snapshot, _, notes = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=10, search="chair")
+            StockInventorySnapshotArgs(page=1, search="chair")
         )
         rows_by_sku = {row.sku: row for row in snapshot.rows}
         assert snapshot.coverage.matchedProducts == 2
@@ -1431,7 +1433,7 @@ async def test_inventory_snapshot_skips_department_expansion_for_specific_query(
 
     try:
         snapshot, _, notes = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, pageSize=10, search="alto chair")
+            StockInventorySnapshotArgs(page=1, search="alto chair")
         )
         assert snapshot.coverage.matchedProducts == 1
         assert source.broaden_calls == 0
@@ -1599,8 +1601,10 @@ async def test_inventory_snapshot_parallelizes_broadened_page_fetches() -> None:
     )
 
     try:
-        await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=10, search="chair"))
-        assert source.max_active_broaden_calls > 1
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="chair"))
+        assert snapshot.coverage.matchedProducts >= 1
+        assert snapshot.coverage.enrichedProducts >= 1
+        assert source.max_active_broaden_calls == 1
     finally:
         await source.close()
         await key_value_store.close()
@@ -1704,7 +1708,7 @@ async def test_scan_catalogue_with_recovery_clamps_page_size_and_dedupes_checkpo
 
     try:
         scan = await service.scan_catalogue_with_recovery(
-            StockSearchCatalogueArgs(page=1, pageSize=100, search="chair")
+            StockSearchCatalogueArgs(page=1, search="chair")
         )
     finally:
         await source.close()
@@ -1843,7 +1847,7 @@ async def test_inventory_snapshot_surfaces_partial_catalogue_recovery_notes() ->
     )
 
     try:
-        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, pageSize=100, search="chair"))
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="chair"))
     finally:
         await source.close()
         await key_value_store.close()
