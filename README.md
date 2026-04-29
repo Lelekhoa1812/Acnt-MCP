@@ -320,7 +320,7 @@ The repo includes a local `.mcp.json` example for process-based MCP clients (Cla
 
 Claude.ai requires a public HTTPS MCP endpoint, so the stdio server is not directly attachable. Follow `docs/phase2/mcp.md` for Azure deployments that expose `/mcp`, trust forwarded HTTPS headers, and enable the OAuth bridge for browser connectors.
 
-For connector-style OAuth setup, configure `HTH_MCP_BEARER_TOKEN`. That keeps the OAuth bridge available and exposes the registration, authorize, and token endpoints that connector UIs expect. The project uses the manual/DCR path for client registration, so the connector should read the `client_id` and `client_secret` returned by `POST /oauth/register`.
+For connector-style OAuth setup, configure `HTH_MCP_BEARER_TOKEN`. That keeps the OAuth bridge available and exposes the registration, authorize, and token endpoints that connector UIs expect. The project uses the manual/DCR path for client registration, so the connector should read the `client_id` and `client_secret` returned by `POST /oauth/register`. The bridge now returns a JWT access token, signed by `HTH_MCP_OAUTH_JWT_SECRET` when set or `HTH_MCP_BEARER_TOKEN` as a fallback.
 
 If you trust public connectors from ChatGPT or Claude, set `AUTO_TRUSTED_DOMAINS=chatgpt.com,claude.ai,claude.com` so those hosts can auto-register without a manual pre-registration step.
 
@@ -329,6 +329,7 @@ OAuth recovery rule of thumb:
 1. `POST /oauth/register`
 2. Save `client_id`, `client_secret`, `registration_client_uri`, and `registration_access_token`
 3. If you ever lose the values, call `GET /oauth/register/{client_id}` with the registration access token
+4. If identity validation is enabled, use the JWT access token returned by `/oauth/token` when calling `/mcp`
 
 Identity enforcement is separate from the OAuth bridge. Read `docs/phase2/auth.md` for the Entra/JWT resource-server rules and `docs/phase2/oauth.md` for the connector registration flow.
 

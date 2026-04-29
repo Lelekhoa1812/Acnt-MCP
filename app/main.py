@@ -8,6 +8,7 @@ import time
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import jwt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -170,6 +171,41 @@ def _oauth_registration_response(base_url: str, client_id: str, record: dict[str
         "redirect_uris": record.get("redirect_uris", []),
         "auto_registered": record.get("auto_registered", False),
     }
+
+
+def _bridge_access_token_payload(base_url: str, settings: Settings, client_id: str, grant_type: str) -> dict[str, object]:
+    now = int(time.time())
+    audience = settings.auth_audience or _mcp_resource_url(base_url, settings)
+    issuer = settings.auth_issuer or base_url
+    required_group = settings.auth_required_group.strip()
+    groups = [required_group] if required_group else []
+    roles = ["Tool.Viewer"]
+    return {
+        "iss": issuer,
+        "aud": audience,
+        "iat": now,
+        "nbf": now,
+        "exp": now + settings.mcp_oauth_token_ttl_seconds,
+        "ver": settings.auth_required_token_version or "2.0",
+        "tid": "mcp-bridge",
+        "oid": client_id,
+        "sub": client_id,
+        "azp": client_id,
+        "client_id": client_id,
+        "grant_type": grant_type,
+        "scope": "mcp",
+        "groups": groups,
+        "roles": roles,
+        "token_origin": "mcp_oauth_bridge",
+    }
+
+
+def _bridge_access_token(base_url: str, settings: Settings, client_id: str, grant_type: str) -> str:
+    secret = settings.mcp_oauth_jwt_signing_secret
+    if not secret:
+        raise RuntimeError("MCP OAuth bridge token signing secret is not configured.")
+    payload = _bridge_access_token_payload(base_url, settings, client_id, grant_type)
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 async def _auto_register_oauth_client(
@@ -560,9 +596,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         # Motivation vs Logic: Claude.ai web connectors require a standards-shaped
         # OAuth handshake before they will send a bearer token to remote MCP.
-        # This bridge issues short-lived authorization codes that redeem to the
-        # existing HTH_MCP_BEARER_TOKEN, keeping one server-side credential while
-        # allowing OAuth-only clients to complete connector setup.
+        # This bridge issues short-lived authorization codes that redeem to a
+        # server-signed JWT, keeping the connector flow self-contained while
+        # still letting the MCP transport validate the same access token.
         code = secrets.token_urlsafe(32)
         request.app.state.oauth_codes[code] = {
             "client_id": client_id,
@@ -582,9 +618,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
+        base_url = _base_url_from_request(request, resolved_settings)
         body = (await request.body()).decode()
         params = {key: values[-1] for key, values in parse_qs(body).items()}
         grant_type = params.get("grant_type")
+        client_id: str | None = params.get("client_id")
 
         if grant_type == "authorization_code":
             code = params.get("code")
@@ -601,8 +639,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 params.get("code_verifier"),
             ):
                 return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+            client_id = str(code_record["client_id"])
         elif grant_type == "client_credentials":
-            client_id = params.get("client_id")
             client = request.app.state.oauth_clients.get(client_id) if client_id else None
             if client is None and client_id is not None:
                 client = await _load_oauth_client(request, client_id)
@@ -613,7 +651,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return JSONResponse(
             content={
-                "access_token": resolved_settings.mcp_bearer_token,
+                # Root Cause vs Logic: the connector flow must mint a real JWT so
+                # the MCP transport can validate the same access token it receives
+                # instead of failing on an opaque bearer string.
+                "access_token": _bridge_access_token(base_url, resolved_settings, client_id or "", grant_type),
                 "token_type": "Bearer",
                 "expires_in": resolved_settings.mcp_oauth_token_ttl_seconds,
                 "scope": "mcp",

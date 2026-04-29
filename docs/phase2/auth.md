@@ -15,6 +15,8 @@ The important distinction is:
 
 The server does not implement a human sign-in page. It validates bearer tokens on inbound requests and then decides whether the request may proceed.
 
+When the token comes from the MCP OAuth bridge, it is a server-signed JWT rather than a raw opaque string. The bridge token is still validated by the same `IdentityGateway`.
+
 The identity checks apply to:
 
 - `POST /api/v1/tools`
@@ -67,12 +69,14 @@ These settings control the identity gateway:
 | `HTH_AUTH_AUDIENCE` | Expected token audience | `api://<resource-app-id>` |
 | `HTH_AUTH_JWKS_URL` | Public key endpoint for signature validation | Entra JWKS URL for the tenant |
 | `HTH_AUTH_JWT_HS256_SECRET` | Local-only symmetric test secret | Development only |
+| `HTH_MCP_OAUTH_JWT_SECRET` | Signing key for bridge-issued access tokens | Prefer a dedicated secret in production |
 | `HTH_AUTH_REQUIRED_GROUP` | Group gate | `HTH-MCP` by default |
 | `HTH_AUTH_REQUIRED_CLAIMS` | Minimum claims required in the token | `tid,oid` by default |
 | `HTH_AUTH_REQUIRED_TOKEN_VERSION` | Access token version check | `2.0` |
 | `HTH_AUTH_RATE_LIMIT_PER_MINUTE` | Per-user tool-call throttle | `50` by default |
 
 `HTH_AUTH_JWT_HS256_SECRET` is only for local test tokens. Do not use it in production.
+`HTH_MCP_OAUTH_JWT_SECRET` signs bridge-issued access tokens; if it is not set, the bridge falls back to `HTH_MCP_BEARER_TOKEN` for compatibility.
 
 ## 4. Validation Rules
 

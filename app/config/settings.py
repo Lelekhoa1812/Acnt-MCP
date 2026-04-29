@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
     mcp_oauth_token_ttl_seconds: int = Field(3600, ge=60, alias="HTH_MCP_OAUTH_TOKEN_TTL_SECONDS")
+    # Motivation vs Logic: the OAuth bridge should issue a real JWT access token
+    # so the same server can validate `/mcp` requests without a second auth path.
+    # Prefer an explicit signing secret in production, but keep the bearer token as
+    # a backward-compatible fallback for existing deployments.
+    mcp_oauth_jwt_secret: str | None = Field(None, alias="HTH_MCP_OAUTH_JWT_SECRET")
     mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
         "chatgpt.com,claude.ai,claude.com",
         alias="AUTO_TRUSTED_DOMAINS",
@@ -357,6 +362,13 @@ class Settings(BaseSettings):
         # bridge as enabled whenever a token exists so browser clients can redeem
         # it without requiring a second deployment toggle.
         return bool(self.mcp_bearer_token)
+
+    @property
+    def mcp_oauth_jwt_signing_secret(self) -> str | None:
+        # Motivation vs Logic: keep legacy deployments working by falling back to
+        # the configured bearer token, but allow an explicit secret when you want
+        # the bridge-issued JWT to use a separate signing key.
+        return self.mcp_oauth_jwt_secret or self.mcp_bearer_token
 
 
 @lru_cache

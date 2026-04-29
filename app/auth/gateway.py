@@ -8,7 +8,7 @@ from time import time
 from typing import Any
 
 import jwt
-from jwt import InvalidTokenError, PyJWKClient
+from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 
 from app.auth.models import UserContext
 from app.config.settings import Settings
@@ -100,10 +100,10 @@ class IdentityGateway:
         return token
 
     def _decode_token(self, token: str) -> dict[str, Any]:
-        try:
-            audience = self.settings.auth_audience or None
-            issuer = self.settings.auth_issuer or None
-            if self.settings.auth_jwt_hs256_secret:
+        audience = self.settings.auth_audience or None
+        issuer = self.settings.auth_issuer or None
+        if self.settings.auth_jwt_hs256_secret:
+            try:
                 return jwt.decode(
                     token,
                     self.settings.auth_jwt_hs256_secret,
@@ -112,7 +112,16 @@ class IdentityGateway:
                     issuer=issuer,
                     options={"require": ["exp"]},
                 )
-            if self._jwk_client is not None:
+            except InvalidTokenError as exc:
+                raise IdentityAuthError(
+                    code="invalid_token",
+                    message=f"Token validation failed: {exc}",
+                    status_code=401,
+                    mcp_error_code=-32001,
+                ) from exc
+
+        if self._jwk_client is not None:
+            try:
                 signing_key = self._jwk_client.get_signing_key_from_jwt(token).key
                 return jwt.decode(
                     token,
@@ -122,13 +131,27 @@ class IdentityGateway:
                     issuer=issuer,
                     options={"require": ["exp"]},
                 )
-        except InvalidTokenError as exc:
-            raise IdentityAuthError(
-                code="invalid_token",
-                message=f"Token validation failed: {exc}",
-                status_code=401,
-                mcp_error_code=-32001,
-            ) from exc
+            except (InvalidTokenError, PyJWKClientError):
+                pass
+
+        bridge_secret = self.settings.mcp_oauth_jwt_signing_secret
+        if bridge_secret:
+            try:
+                return jwt.decode(
+                    token,
+                    bridge_secret,
+                    algorithms=["HS256"],
+                    audience=audience,
+                    issuer=issuer,
+                    options={"require": ["exp"]},
+                )
+            except InvalidTokenError as exc:
+                raise IdentityAuthError(
+                    code="invalid_token",
+                    message=f"Token validation failed: {exc}",
+                    status_code=401,
+                    mcp_error_code=-32001,
+                ) from exc
 
         raise IdentityAuthError(
             code="identity_config_error",

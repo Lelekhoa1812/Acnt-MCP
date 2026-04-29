@@ -113,6 +113,7 @@ The authorization flow is:
 For this project, the returned access token is the MCP bearer token configured in `HTH_MCP_BEARER_TOKEN`.
 
 That means the OAuth bridge is a connector bootstrap mechanism, not a separate identity provider.
+The bridge issues a JWT access token signed by `HTH_MCP_OAUTH_JWT_SECRET` when it is set, or by `HTH_MCP_BEARER_TOKEN` as a compatibility fallback.
 
 ## 6. Client Credentials Flow
 
@@ -189,9 +190,10 @@ If the connector sees `invalid_grant`:
 ## 11. Practical Setup Checklist
 
 1. Set `HTH_MCP_BEARER_TOKEN`.
-2. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
-3. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
-4. Register the client with `POST /oauth/register`.
-5. Paste the returned `client_id` and `client_secret` into the connector UI.
-6. Save `registration_client_uri` and `registration_access_token`.
-7. Test one authorize redirect and one token exchange.
+2. Prefer setting `HTH_MCP_OAUTH_JWT_SECRET` so the bridge has a dedicated signing key.
+3. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
+4. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
+5. Register the client with `POST /oauth/register`.
+6. Paste the returned `client_id` and `client_secret` into the connector UI.
+7. Save `registration_client_uri` and `registration_access_token`.
+8. Test one authorize redirect and one token exchange.

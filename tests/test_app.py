@@ -114,6 +114,7 @@ def build_mcp_auth_client() -> TestClient:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
         mcp_bearer_token="test-mcp-token",
+        mcp_oauth_jwt_secret="test-bridge-secret",
         mcp_require_bearer_token=True,
     )
     return TestClient(create_app(settings))
@@ -140,6 +141,32 @@ def build_identity_auth_client() -> TestClient:
         auth_audience="api://hth-mcp",
         auth_jwt_hs256_secret="test-secret",
         auth_required_group="HTH-MCP",
+    )
+    return TestClient(create_app(settings))
+
+
+def build_bridge_identity_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        identity_auth_enabled=True,
+        auth_issuer="https://hth.example.test",
+        auth_audience="https://hth.example.test/mcp",
+        auth_jwt_hs256_secret="test-bridge-secret",
+        auth_required_group="HTH-MCP",
+        mcp_bearer_token="test-mcp-token",
+        mcp_oauth_jwt_secret="test-bridge-secret",
     )
     return TestClient(create_app(settings))
 
@@ -304,8 +331,63 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
     assert authorized.status_code == 302
     assert query["state"] == ["state-1"]
     assert token.status_code == 200
-    assert token.json()["access_token"] == "test-mcp-token"
-    assert token.json()["token_type"] == "Bearer"
+    token_payload = token.json()
+    decoded = jwt.decode(
+        token_payload["access_token"],
+        "test-bridge-secret",
+        algorithms=["HS256"],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+    assert decoded["token_origin"] == "mcp_oauth_bridge"
+    assert decoded["client_id"] == client_payload["client_id"]
+    assert decoded["roles"] == ["Tool.Viewer"]
+    assert token_payload["token_type"] == "Bearer"
+
+
+def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:
+    with build_bridge_identity_client() as client:
+        registered = client.post("/oauth/register", json={"client_name": "pytest"})
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": query["code"][0],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+        token_payload = token.json()
+        mcp_response = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pytest", "version": "1.0.0"},
+                },
+            },
+            headers={
+                "accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {token_payload['access_token']}",
+            },
+        )
+
+    assert registered.status_code == 201
+    assert token.status_code == 200
+    assert mcp_response.status_code == 200
 
 
 def test_mcp_browser_origins_receive_cors_headers() -> None:
@@ -347,6 +429,7 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
         enable_mock_ui_simulation=False,
         public_base_url="https://hth.example.test",
         mcp_bearer_token="test-mcp-token",
+        mcp_oauth_jwt_secret="test-bridge-secret",
     )
 
     with TestClient(create_app(settings)) as client:
@@ -376,7 +459,15 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     assert registered.status_code == 201
     assert authorized.status_code == 302
     assert token.status_code == 200
-    assert token.json()["access_token"] == "test-mcp-token"
+    token_payload = token.json()
+    decoded = jwt.decode(
+        token_payload["access_token"],
+        "test-bridge-secret",
+        algorithms=["HS256"],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+    assert decoded["token_origin"] == "mcp_oauth_bridge"
+    assert token_payload["token_type"] == "Bearer"
 
 
 def test_mcp_oauth_endpoint_aliases_remain_supported() -> None:
@@ -405,7 +496,15 @@ def test_mcp_oauth_endpoint_aliases_remain_supported() -> None:
     assert registered.status_code == 201
     assert authorized.status_code == 302
     assert token.status_code == 200
-    assert token.json()["access_token"] == "test-mcp-token"
+    token_payload = token.json()
+    decoded = jwt.decode(
+        token_payload["access_token"],
+        "test-bridge-secret",
+        algorithms=["HS256"],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+    assert decoded["token_origin"] == "mcp_oauth_bridge"
+    assert token_payload["token_type"] == "Bearer"
 
 
 def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
