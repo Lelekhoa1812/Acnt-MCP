@@ -58,6 +58,13 @@ def _mcp_resource_url(base_url: str, settings: Settings) -> str:
     return f"{base_url}{settings.mcp_path}"
 
 
+_OAUTH_CLIENT_NAMESPACE = "oauth_client"
+
+
+def _oauth_client_storage_key(client_id: str) -> str:
+    return client_id
+
+
 def _oauth_protected_resource_metadata(base_url: str, settings: Settings) -> dict[str, object]:
     return {
         "resource": _mcp_resource_url(base_url, settings),
@@ -78,11 +85,11 @@ def _oauth_authorization_server_metadata(base_url: str, settings: Settings) -> d
         "authorization_endpoint": f"{base_url}/oauth/authorize",
         "token_endpoint": f"{base_url}/oauth/token",
         "registration_endpoint": f"{base_url}/oauth/register",
-        # Motivation vs Logic: Claude.ai web connectors and other remote MCP
-        # clients are more reliable when the auth server advertises CIMD support,
-        # because they can register via a metadata URL instead of depending only
-        # on dynamic registration semantics.
-        "client_id_metadata_document_supported": True,
+        # Root Cause vs Logic: the connector UI should surface the manual
+        # client-id/client-secret path when the server is using DCR/pre-registration,
+        # so we advertise CIMD as unsupported until the project actually serves
+        # client metadata documents.
+        "client_id_metadata_document_supported": False,
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "client_credentials"],
         "code_challenge_methods_supported": ["S256", "plain"],
@@ -112,7 +119,60 @@ def _redirect_host_from_uri(uri: str | None) -> str | None:
     return parsed.hostname.lower() if parsed.hostname else None
 
 
-def _auto_register_oauth_client(
+async def _load_oauth_client(request: Request, client_id: str) -> dict[str, object] | None:
+    cached = request.app.state.oauth_clients.get(client_id)
+    if cached is not None:
+        return cached
+
+    container = getattr(request.app.state, "container", None)
+    if container is None:
+        return None
+
+    record, _ = await container.key_value_store.get_json(_OAUTH_CLIENT_NAMESPACE, _oauth_client_storage_key(client_id))
+    if isinstance(record, dict):
+        request.app.state.oauth_clients[client_id] = record
+        return record
+    return None
+
+
+async def _persist_oauth_client(request: Request, client_id: str, record: dict[str, object]) -> None:
+    container = getattr(request.app.state, "container", None)
+    if container is None:
+        request.app.state.oauth_clients[client_id] = record
+        return
+
+    await container.key_value_store.set_json(
+        _OAUTH_CLIENT_NAMESPACE,
+        _oauth_client_storage_key(client_id),
+        record,
+        ttl_seconds=None,
+    )
+    request.app.state.oauth_clients[client_id] = record
+
+
+def _registration_client_uri(base_url: str, client_id: str) -> str:
+    return f"{base_url}/oauth/register/{client_id}"
+
+
+def _oauth_registration_response(base_url: str, client_id: str, record: dict[str, object]) -> dict[str, object]:
+    return {
+        "client_id": client_id,
+        "client_secret": record["client_secret"],
+        "client_id_issued_at": record["client_id_issued_at"],
+        "client_secret_expires_at": record["client_secret_expires_at"],
+        "registration_client_uri": _registration_client_uri(base_url, client_id),
+        "registration_access_token": record["registration_access_token"],
+        "token_endpoint_auth_method": record["token_endpoint_auth_method"],
+        "grant_types": record["grant_types"],
+        "response_types": record["response_types"],
+        "scope": record["scope"],
+        "client_name": record.get("client_name"),
+        "redirect_uris": record.get("redirect_uris", []),
+        "auto_registered": record.get("auto_registered", False),
+    }
+
+
+async def _auto_register_oauth_client(
     request: Request,
     client_id: str,
     redirect_uri: str | None,
@@ -129,12 +189,21 @@ def _auto_register_oauth_client(
             # Motivation vs Logic: Claude.ai/ChatGPT connectors use variable redirect URIs,
             # so we auto-register any client_id that comes from those hosts instead of
             # forcing a manual POST before `/oauth/authorize`.
-            request.app.state.oauth_clients[client_id] = {
+            record = {
+                "client_id": client_id,
                 "client_secret": secrets.token_urlsafe(32),
+                "registration_access_token": secrets.token_urlsafe(32),
                 "client_name": f"auto-{host}",
                 "redirect_uris": [redirect_uri] if redirect_uri else [],
                 "auto_registered": True,
+                "client_id_issued_at": int(time.time()),
+                "client_secret_expires_at": 0,
+                "token_endpoint_auth_method": "client_secret_post",
+                "grant_types": ["authorization_code", "client_credentials"],
+                "response_types": ["code"],
+                "scope": "mcp",
             }
+            await _persist_oauth_client(request, client_id, record)
             logger.info(
                 "auto_registered_oauth_client client_id=%s redirect_uri=%s trusted_host=%s",
                 client_id,
@@ -144,30 +213,6 @@ def _auto_register_oauth_client(
             return True
 
     return False
-
-
-def _seed_configured_oauth_client(
-    app: FastAPI,
-    settings: Settings,
-    logger: logging.Logger,
-) -> None:
-    client_id = settings.mcp_oauth_client_id
-    if not client_id:
-        return
-
-    client_secret = settings.mcp_oauth_client_secret or ""
-    app.state.oauth_clients[client_id] = {
-        "client_secret": client_secret,
-        "client_name": "env-configured",
-        "redirect_uris": [],
-        "auto_registered": True,
-        "configured": True,
-    }
-    logger.info(
-        "seeded_oauth_client client_id=%s auth_method=%s",
-        client_id,
-        "client_secret_post" if client_secret else "none",
-    )
 
 
 class McpTransportASGI:
@@ -307,7 +352,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.container = container
         app.state.oauth_clients = {}
         app.state.oauth_codes = {}
-        _seed_configured_oauth_client(app, resolved_settings, logger)
         app.state.identity_gateway = identity_gateway
         mcp_context = mcp_manager.run()
         app.state.mcp_session_manager_context = mcp_context
@@ -425,7 +469,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_entrypoint": "uvicorn app.main:app (StreamableHTTPSessionManager at /mcp)",
             "mcp_auth_required": resolved_settings.mcp_require_bearer_token,
             "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
-            "mcp_oauth_client_configured": bool(resolved_settings.mcp_oauth_client_id),
             "identity_auth_enabled": resolved_settings.identity_auth_enabled,
             "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,
@@ -448,26 +491,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
+        base_url = _base_url_from_request(request, resolved_settings)
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
         client_id = f"hth-{secrets.token_urlsafe(16)}"
         client_secret = secrets.token_urlsafe(32)
-        request.app.state.oauth_clients[client_id] = {
+        registration_access_token = secrets.token_urlsafe(32)
+        record = {
+            "client_id": client_id,
             "client_secret": client_secret,
+            "registration_access_token": registration_access_token,
             "client_name": body.get("client_name") if isinstance(body, dict) else None,
             "redirect_uris": body.get("redirect_uris", []) if isinstance(body, dict) else [],
+            "client_id_issued_at": int(time.time()),
+            "client_secret_expires_at": 0,
+            "token_endpoint_auth_method": "client_secret_post",
+            "grant_types": ["authorization_code", "client_credentials"],
+            "response_types": ["code"],
+            "scope": "mcp",
+            "auto_registered": False,
         }
+        await _persist_oauth_client(request, client_id, record)
         return JSONResponse(
             status_code=201,
-            content={
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "client_id_issued_at": int(time.time()),
-                "token_endpoint_auth_method": "client_secret_post",
-                "grant_types": ["authorization_code", "client_credentials"],
-                "response_types": ["code"],
-                "scope": "mcp",
-            },
+            content=_oauth_registration_response(base_url, client_id, record),
         )
+
+    @app.get("/oauth/register/{client_id}")
+    async def oauth_get_registration(request: Request, client_id: str) -> JSONResponse:
+        if not resolved_settings.mcp_browser_oauth_enabled:
+            return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
+
+        base_url = _base_url_from_request(request, resolved_settings)
+        record = await _load_oauth_client(request, client_id)
+        if record is None:
+            return JSONResponse(status_code=404, content={"detail": "OAuth client not found."})
+
+        registration_access_token = record.get("registration_access_token")
+        headers = request.headers
+        raw_auth = headers.get("authorization", "").strip()
+        if raw_auth.lower().startswith("bearer "):
+            raw_auth = raw_auth[7:].strip()
+        if not raw_auth or not secrets.compare_digest(str(registration_access_token), raw_auth):
+            return JSONResponse(status_code=401, content={"detail": "Invalid registration access token."})
+
+        return JSONResponse(content=_oauth_registration_response(base_url, client_id, record))
 
     @app.get("/oauth/authorize")
     @app.get("/authorize")
@@ -481,8 +548,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response_type = params.get("response_type")
         if response_type != "code" or not client_id or not redirect_uri:
             return JSONResponse(status_code=400, content={"error": "invalid_request"})
-        if client_id not in request.app.state.oauth_clients:
-            if not _auto_register_oauth_client(
+        if client_id not in request.app.state.oauth_clients and await _load_oauth_client(request, client_id) is None:
+            if not await _auto_register_oauth_client(
                 request,
                 client_id,
                 redirect_uri,
@@ -535,7 +602,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 return JSONResponse(status_code=400, content={"error": "invalid_grant"})
         elif grant_type == "client_credentials":
-            client = request.app.state.oauth_clients.get(params.get("client_id"))
+            client_id = params.get("client_id")
+            client = request.app.state.oauth_clients.get(client_id) if client_id else None
+            if client is None and client_id is not None:
+                client = await _load_oauth_client(request, client_id)
             if not client or not secrets.compare_digest(client["client_secret"], params.get("client_secret", "")):
                 return JSONResponse(status_code=401, content={"error": "invalid_client"})
         else:

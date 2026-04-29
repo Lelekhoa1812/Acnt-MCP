@@ -15,8 +15,12 @@ from app.config import Settings
 class InMemoryTtlStore:
     def __init__(self) -> None:
         self._values: dict[str, tuple[float, str]] = {}
+        self._persistent_values: dict[str, str] = {}
 
     async def get(self, key: str) -> str | None:
+        persistent_value = self._persistent_values.get(key)
+        if persistent_value is not None:
+            return persistent_value
         stored = self._values.get(key)
         if not stored:
             return None
@@ -26,11 +30,16 @@ class InMemoryTtlStore:
             return None
         return value
 
-    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
+    async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> None:
+        if ttl_seconds is None:
+            self._persistent_values[key] = value
+            self._values.pop(key, None)
+            return
         self._values[key] = (time.time() + ttl_seconds, value)
 
     async def delete(self, key: str) -> None:
         self._values.pop(key, None)
+        self._persistent_values.pop(key, None)
 
 
 class AppKeyValueStore:
@@ -85,7 +94,7 @@ class AppKeyValueStore:
         backend = "memory" if self._using_memory_fallback else "redis"
         return json.loads(raw), f"{backend}_hit"
 
-    async def set_json(self, namespace: str, key: str, value: Any, ttl_seconds: int) -> str:
+    async def set_json(self, namespace: str, key: str, value: Any, ttl_seconds: int | None = None) -> str:
         namespaced_key = f"{namespace}:{key}"
         raw = json.dumps(value, sort_keys=True, default=str)
         backend = await self._set_raw(namespaced_key, raw, ttl_seconds)
@@ -132,10 +141,13 @@ class AppKeyValueStore:
                 self.logger.warning("Redis get failed; switching to memory fallback. reason=%s", exc)
         return await self._memory.get(key)
 
-    async def _set_raw(self, key: str, value: str, ttl_seconds: int) -> str:
+    async def _set_raw(self, key: str, value: str, ttl_seconds: int | None) -> str:
         if self._redis is not None:
             try:
-                await self._redis.set(key, value, ex=ttl_seconds)
+                if ttl_seconds is None:
+                    await self._redis.set(key, value)
+                else:
+                    await self._redis.set(key, value, ex=ttl_seconds)
                 return "redis_set"
             except RedisError as exc:
                 if not self.settings.redis_fallback_enabled:

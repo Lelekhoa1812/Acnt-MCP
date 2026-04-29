@@ -119,27 +119,6 @@ def build_mcp_auth_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
-def build_seeded_oauth_client() -> TestClient:
-    settings = Settings(
-        local_harmonise=True,
-        log_level="debug",
-        public_base_url="https://hth.example.test",
-        server_website_url=None,
-        server_logo_url=None,
-        mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
-        redis_fallback_enabled=True,
-        redis_url=TEST_REDIS_URL,
-        enable_mock_ui_simulation=False,
-        mcp_bearer_token="seeded-access-token",
-        mcp_oauth_client_id="seeded-client-id",
-        mcp_oauth_client_secret="seeded-client-secret",
-    )
-    return TestClient(create_app(settings))
-
 
 def build_identity_auth_client() -> TestClient:
     settings = Settings(
@@ -285,6 +264,11 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
         authorization_server = client.get("/.well-known/oauth-authorization-server")
         registered = client.post("/oauth/register", json={"client_name": "pytest"})
         client_payload = registered.json()
+        client.app.state.oauth_clients.pop(client_payload["client_id"], None)
+        registration_lookup = client.get(
+            urlparse(client_payload["registration_client_uri"]).path,
+            headers={"Authorization": f"Bearer {client_payload['registration_access_token']}"},
+        )
         authorized = client.get(
             "/oauth/authorize",
             params={
@@ -309,30 +293,19 @@ def test_mcp_oauth_metadata_and_token_bridge() -> None:
     assert protected.json()["resource"] == "https://hth.example.test/mcp"
     assert authorization_server.status_code == 200
     assert authorization_server.json()["authorization_endpoint"] == "https://hth.example.test/oauth/authorize"
-    assert authorization_server.json()["client_id_metadata_document_supported"] is True
+    assert authorization_server.json()["client_id_metadata_document_supported"] is False
     assert registered.status_code == 201
+    assert client_payload["registration_client_uri"] == "https://hth.example.test/oauth/register/" + client_payload["client_id"]
+    assert client_payload["client_secret"]
+    assert client_payload["registration_access_token"]
+    assert registration_lookup.status_code == 200
+    assert registration_lookup.json()["client_id"] == client_payload["client_id"]
+    assert registration_lookup.json()["client_secret"] == client_payload["client_secret"]
     assert authorized.status_code == 302
     assert query["state"] == ["state-1"]
     assert token.status_code == 200
     assert token.json()["access_token"] == "test-mcp-token"
     assert token.json()["token_type"] == "Bearer"
-
-
-def test_mcp_seeded_oauth_client_can_redeem_tokens() -> None:
-    with build_seeded_oauth_client() as client:
-        response = client.post(
-            "/oauth/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": "seeded-client-id",
-                "client_secret": "seeded-client-secret",
-            },
-        )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["access_token"] == "seeded-access-token"
-    assert payload["token_type"] == "Bearer"
 
 
 def test_mcp_browser_origins_receive_cors_headers() -> None:

@@ -1,0 +1,12 @@
+How to find the OAuth client ID and secret:
+1. Set HTH_MCP_BEARER_TOKEN and deploy the server.
+2. Call POST /oauth/register.
+3. Save the response fields:
+- client_id
+- client_secret
+- registration_client_uri
+- registration_access_token
+4. Paste client_id and client_secret into the connector UI.
+5. If you lose them later, call GET /oauth/register/{client_id} with:
+- Authorization: Bearer <registration_access_token>
+6. Copy the returned client_id and client_secret again.
