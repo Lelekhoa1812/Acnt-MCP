@@ -93,7 +93,7 @@ def build_mcp_auth_client() -> TestClient:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
         mcp_bearer_token="test-mcp-token",
-        mcp_oauth_enabled=True,
+        mcp_require_bearer_token=True,
     )
     return TestClient(create_app(settings))
 
@@ -263,7 +263,6 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
         enable_mock_ui_simulation=False,
         public_base_url="https://hth.example.test",
         mcp_bearer_token="test-mcp-token",
-        mcp_oauth_enabled=False,
     )
 
     with TestClient(create_app(settings)) as client:

@@ -134,7 +134,6 @@ class Settings(BaseSettings):
     mcp_require_bearer_token: bool = Field(False, alias="HTH_MCP_REQUIRE_BEARER_TOKEN")
     mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
-    mcp_oauth_enabled: bool = Field(False, alias="HTH_MCP_OAUTH_ENABLED")
     mcp_oauth_token_ttl_seconds: int = Field(3600, ge=60, alias="HTH_MCP_OAUTH_TOKEN_TTL_SECONDS")
     mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
         "chatgpt.com,claude.ai,claude.com",
@@ -302,9 +301,9 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_MCP_BEARER_TOKEN is not configured; the public `/mcp` transport will accept unauthenticated requests."
             )
-        elif self.mcp_require_bearer_token and not self.mcp_oauth_enabled:
+        elif self.mcp_require_bearer_token:
             notes.append(
-                "HTH_MCP_REQUIRE_BEARER_TOKEN=true while HTH_MCP_OAUTH_ENABLED=false; browser OAuth will not be available for bearer-protected remote MCP access."
+                "HTH_MCP_REQUIRE_BEARER_TOKEN=true while HTH_MCP_BEARER_TOKEN is set; browser OAuth is enabled automatically from the bearer token."
             )
         if self.identity_auth_enabled and not (self.auth_jwks_url or self.auth_jwt_hs256_secret):
             notes.append(

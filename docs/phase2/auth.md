@@ -1,4 +1,4 @@
-## Phase 2: Authentication & Gatekeeping Strategy
+## AUTHENTICATION IMPLEMENTATION
 
 **Goal**: Establish a Zero Trust "Identity-Aware Gateway" where every MCP tool call is cryptographically tied to a Microsoft 365 identity. Access is governed not just at the session level, but at the **individual tool and resource level** using Entra ID claims and Administrative Units.
 
@@ -100,7 +100,7 @@ LLM clients handle authentication in two primary ways in 2026:
 
 ---
 
-## Admin Configuration
+## ADMIN CONFIGURATION
 
 ### Request Checklist
 1. Create **two App Registrations** in Microsoft Entra ID.

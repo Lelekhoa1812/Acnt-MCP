@@ -82,7 +82,6 @@ def build_mcp_public_settings() -> Settings:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
         mcp_bearer_token="test-mcp-token",
-        mcp_oauth_enabled=True,
     )
 
 
