@@ -146,6 +146,30 @@ def _auto_register_oauth_client(
     return False
 
 
+def _seed_configured_oauth_client(
+    app: FastAPI,
+    settings: Settings,
+    logger: logging.Logger,
+) -> None:
+    client_id = settings.mcp_oauth_client_id
+    if not client_id:
+        return
+
+    client_secret = settings.mcp_oauth_client_secret or ""
+    app.state.oauth_clients[client_id] = {
+        "client_secret": client_secret,
+        "client_name": "env-configured",
+        "redirect_uris": [],
+        "auto_registered": True,
+        "configured": True,
+    }
+    logger.info(
+        "seeded_oauth_client client_id=%s auth_method=%s",
+        client_id,
+        "client_secret_post" if client_secret else "none",
+    )
+
+
 class McpTransportASGI:
     def __init__(
         self,
@@ -283,6 +307,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.container = container
         app.state.oauth_clients = {}
         app.state.oauth_codes = {}
+        _seed_configured_oauth_client(app, resolved_settings, logger)
         app.state.identity_gateway = identity_gateway
         mcp_context = mcp_manager.run()
         app.state.mcp_session_manager_context = mcp_context
@@ -400,6 +425,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_entrypoint": "uvicorn app.main:app (StreamableHTTPSessionManager at /mcp)",
             "mcp_auth_required": resolved_settings.mcp_require_bearer_token,
             "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
+            "mcp_oauth_client_configured": bool(resolved_settings.mcp_oauth_client_id),
             "identity_auth_enabled": resolved_settings.identity_auth_enabled,
             "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,

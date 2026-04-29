@@ -135,6 +135,8 @@ class Settings(BaseSettings):
     mcp_allowed_hosts: str | None = Field(None, alias="HTH_MCP_ALLOWED_HOSTS")
     mcp_allowed_origins: str | None = Field(None, alias="HTH_MCP_ALLOWED_ORIGINS")
     mcp_oauth_token_ttl_seconds: int = Field(3600, ge=60, alias="HTH_MCP_OAUTH_TOKEN_TTL_SECONDS")
+    mcp_oauth_client_id: str | None = Field(None, alias="HTH_MCP_OAUTH_CLIENT_ID")
+    mcp_oauth_client_secret: str | None = Field(None, alias="HTH_MCP_OAUTH_CLIENT_SECRET")
     mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
         "chatgpt.com,claude.ai,claude.com",
         alias="AUTO_TRUSTED_DOMAINS",
@@ -318,6 +320,16 @@ class Settings(BaseSettings):
             notes.append(
                 "HTH_MCP_REQUIRE_BEARER_TOKEN=true while HTH_MCP_BEARER_TOKEN is set; browser OAuth is enabled automatically from the bearer token."
             )
+        if self.mcp_oauth_client_id:
+            notes.append(
+                "HTH_MCP_OAUTH_CLIENT_ID is set; the OAuth bridge will pre-seed a reusable client registration "
+                "for ChatGPT/Claude manual setup."
+            )
+            if not self.mcp_oauth_client_secret:
+                notes.append(
+                    "HTH_MCP_OAUTH_CLIENT_SECRET is not set; the seeded OAuth client will behave as a public "
+                    "client and rely on authorization-code + PKCE."
+                )
         if self.identity_auth_enabled and not (self.auth_jwks_url or self.auth_jwt_hs256_secret):
             notes.append(
                 "HTH_IDENTITY_AUTH_ENABLED=true but no JWT verifier is configured. Set HTH_AUTH_JWKS_URL (Entra) "

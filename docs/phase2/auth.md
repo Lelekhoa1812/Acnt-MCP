@@ -79,6 +79,19 @@ LLM clients handle authentication in two primary ways in 2026:
     * The client displays a "Sign in with Microsoft" button.
     * The resulting token is stored in the client’s secure vault and sent in the `Authorization` header of every subsequent SSE (Server-Sent Events) or stdio message.
 
+### MCP Connector Credentials vs Entra Credentials
+There are two different credential pairs in this system:
+
+1. **MCP connector credentials**
+   - These are the `OAuth Client ID` and optional `OAuth Client Secret` that ChatGPT or Claude asks for in the connector screen.
+   - They belong to the MCP bridge in this repo, not to Microsoft Entra.
+   - You can obtain them by calling `POST /oauth/register` on the deployed MCP server, or you can pre-seed them with `HTH_MCP_OAUTH_CLIENT_ID` and `HTH_MCP_OAUTH_CLIENT_SECRET`.
+   - `HTH_MCP_OAUTH_CLIENT_SECRET` is optional; if you leave it blank, the connector behaves like a public client and relies on authorization code + PKCE.
+2. **Entra resource-app credentials**
+   - These are the values used by the server to validate Microsoft 365 identity tokens.
+   - They live in `HTH_AUTH_ISSUER`, `HTH_AUTH_JWKS_URL`, and `HTH_AUTH_AUDIENCE`.
+   - `HTH_AUTH_AUDIENCE` must be the App ID URI, such as `api://<resource-client-id>`, not the scope name.
+
 ---
 
 ### 6. Updated Implementation Checklist
@@ -136,6 +149,8 @@ The following settings tell the app how to recognize Microsoft Entra sign-in tok
 | `HTH_AUTH_DEPARTMENT_CLAIMS=extension_departmentId,extension_department,officeLocation` | These are the department-related details the app can read from the token when it needs to check department-based access. | Your IT team may add these as optional claims or extension attributes. |
 -->
 | `HTH_AUTH_REQUIRED_TOKEN_VERSION=2.0` | Tells the app to expect a modern Entra token format. | Set to `2.0` for production. |
+| `HTH_MCP_OAUTH_CLIENT_ID=<client-id>` | Seeds a reusable MCP connector client registration for ChatGPT/Claude manual setup. | Optional. Use the value returned by `POST /oauth/register`, or set your own if you want a stable client ID. |
+| `HTH_MCP_OAUTH_CLIENT_SECRET=<client-secret>` | Optional secret for the seeded MCP connector client. | Leave blank for public-client + PKCE setups; set it when the client uses `client_secret_post`. |
 
 
 Useful rule of thumb:

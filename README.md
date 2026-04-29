@@ -322,6 +322,13 @@ Claude.ai requires a public HTTPS MCP endpoint, so the stdio server is not direc
 
 For Claude.ai browser connectors, configure `HTH_MCP_BEARER_TOKEN`. The app keeps the OAuth bridge available whenever a bearer token is present, and it advertises `client_id_metadata_document_supported=true` so web clients can use the newer registration path. When you trust public connectors from ChatGPT or Claude, also set `AUTO_TRUSTED_DOMAINS` (default `chatgpt.com,claude.ai,claude.com`) so those hosts auto-register without calling `/oauth/register` manually.
 
+If a connector UI asks you for an `OAuth Client ID` and optional `OAuth Client Secret`, those are the MCP bridge credentials for this server, not your Entra resource-app values. You can either:
+
+1. Call `POST /oauth/register` on the deployed server and paste the returned `client_id` and `client_secret` into ChatGPT/Claude.
+2. Pre-seed a stable pair with `HTH_MCP_OAUTH_CLIENT_ID` and `HTH_MCP_OAUTH_CLIENT_SECRET` in Azure or `.env`.
+
+For Entra-based identity validation, keep using `HTH_AUTH_ISSUER`, `HTH_AUTH_JWKS_URL`, and `HTH_AUTH_AUDIENCE` from the resource app registration.
+
 ## Tests
 
 ```bash
