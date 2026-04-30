@@ -121,6 +121,8 @@ class OrchestratorService:
         session_id: str | None,
         thought: str = "",
         user_context: UserContext | None = None,
+        client_id: str | None = None,
+        client_name: str | None = None,
     ) -> ToolResult:
         # Motivation vs Logic: direct REST/MCP tool calls now flow through the
         # same session-scoped plan+memo+validation lifecycle as `/query`, so the
@@ -163,7 +165,12 @@ class OrchestratorService:
         result.memo_update = memo_update
         result.validation = validation
 
-        await self.usage_stats_service.record_tool_call(user_context=user_context, tool_name=tool_name)
+        await self.usage_stats_service.record_tool_call(
+            user_context=user_context,
+            tool_name=tool_name,
+            client_id=client_id,
+            client_name=client_name,
+        )
         await self.session_store.save_state(session_state)
         return result
 

@@ -17,6 +17,8 @@ class UserContext(BaseModel):
     # claim that is useful for log correlation, so we keep it on the shared
     # user context instead of re-parsing JWT claims in each call site.
     email: str | None = None
+    client_id: str | None = None
+    token_origin: str | None = None
     roles: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
     # Department-based access is disabled for now, so the claim is kept

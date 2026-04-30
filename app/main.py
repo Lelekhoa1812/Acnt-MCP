@@ -207,43 +207,39 @@ def _bridge_access_token_payload(
 ) -> dict[str, object]:
     now = int(time.time())
     audience = settings.auth_audience or _mcp_resource_url(base_url, settings)
-    issuer = settings.auth_issuer or base_url
-    required_group = settings.auth_required_group.strip()
+    issuer = settings.mcp_oauth_bridge_issuer or base_url
     groups = _normalize_claim_values(user_claims.get("groups") if user_claims else None)
     roles = _normalize_claim_values(user_claims.get("roles") if user_claims else None)
-    if not groups and required_group:
-        groups = [required_group]
-    if not roles:
-        roles = ["Tool.Viewer"]
-    user_tenant_id = str((user_claims or {}).get("tid") or "mcp-bridge")
-    user_id = str((user_claims or {}).get("oid") or (user_claims or {}).get("sub") or client_id)
-    subject = str((user_claims or {}).get("sub") or user_id)
+    user_tenant_id = str((user_claims or {}).get("tid") or "").strip()
+    user_id = str((user_claims or {}).get("oid") or "").strip()
+    subject = str((user_claims or {}).get("sub") or user_id or "").strip()
     email = resolve_user_email(user_claims or {}) if user_claims else None
     preferred_username = str((user_claims or {}).get("preferred_username") or "").strip() if user_claims else ""
     upn = str((user_claims or {}).get("upn") or "").strip() if user_claims else ""
     unique_name = str((user_claims or {}).get("unique_name") or "").strip() if user_claims else ""
-    return {
+    payload = {
         "iss": issuer,
         "aud": audience,
         "iat": now,
         "nbf": now,
         "exp": now + settings.mcp_oauth_token_ttl_seconds,
         "ver": settings.auth_required_token_version or "2.0",
-        "tid": user_tenant_id,
-        "oid": user_id,
-        "sub": subject,
         "azp": client_id,
         "client_id": client_id,
         "grant_type": grant_type,
         "scope": "mcp",
-        "groups": groups,
-        "roles": roles,
         "token_origin": "mcp_oauth_bridge",
+        **({"tid": user_tenant_id} if user_tenant_id else {}),
+        **({"oid": user_id} if user_id else {}),
+        **({"sub": subject} if subject else {}),
+        **({"groups": groups} if groups else {}),
+        **({"roles": roles} if roles else {}),
         **({"email": email} if email else {}),
         **({"preferred_username": preferred_username} if preferred_username else {}),
         **({"upn": upn} if upn else {}),
         **({"unique_name": unique_name} if unique_name else {}),
     }
+    return payload
 
 
 def _bridge_access_token(
@@ -718,12 +714,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raw_claims = code_record.get("user_claims")
             if isinstance(raw_claims, dict):
                 user_claims = raw_claims
+            if resolved_settings.identity_auth_enabled and not (
+                user_claims and user_claims.get("tid") and user_claims.get("oid")
+            ):
+                # Root Cause vs Logic: the bridge previously filled missing user
+                # identity with the OAuth client_id, causing logs and stats to
+                # classify the connector app as the human caller. Identity mode
+                # now requires a real Entra login before issuing a user token.
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_grant",
+                        "error_description": "Authorization code is not bound to an authenticated Entra user.",
+                    },
+                )
         elif grant_type == "client_credentials":
             client = request.app.state.oauth_clients.get(client_id) if client_id else None
             if client is None and client_id is not None:
                 client = await _load_oauth_client(request, client_id)
             if not client or not secrets.compare_digest(client["client_secret"], params.get("client_secret", "")):
                 return JSONResponse(status_code=401, content={"error": "invalid_client"})
+            if resolved_settings.identity_auth_enabled:
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "app_only_token_denied",
+                        "error_description": "Client credentials tokens cannot access user-scoped MCP tools.",
+                    },
+                )
         else:
             return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
         return JSONResponse(

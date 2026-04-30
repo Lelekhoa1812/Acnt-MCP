@@ -172,7 +172,7 @@ def sign_token(private_key: object, *, issuer: str, audience: str, now: int, ove
         "tid": "tenant-1",
         "oid": "user-1",
         "sub": "user-1",
-        "groups": ["HTH-MCP"],
+        "groups": [os.getenv("HTH_AUTH_REQUIRED_GROUP") or "HTH-MCP"],
         "roles": ["Tool.Viewer"],
     }
     if overrides:
@@ -330,7 +330,8 @@ def main() -> int:
                 results.append(CaseResult("Missing claims rejection", False, str(exc)))
 
             # Test 8: confirm the required Microsoft 365 group gate still denies a
-            # correctly signed token when the caller is not in `HTH-MCP`.
+            # correctly signed token when the caller is not in the configured
+            # required group.
             wrong_group_token = sign_token(
                 private_key,
                 issuer=issuer,

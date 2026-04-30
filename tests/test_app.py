@@ -567,7 +567,7 @@ def test_claude_callback_errors_render_safe_browser_page() -> None:
     assert diagnostic.json()["error"] == "invalid_grant"
 
 
-def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:
+def test_mcp_oauth_bridge_requires_entra_user_claims_when_identity_auth_is_enabled() -> None:
     with build_bridge_identity_client() as client:
         registered = client.post("/oauth/register", json={"client_name": "pytest"})
         client_payload = registered.json()
@@ -589,28 +589,29 @@ def test_mcp_oauth_bridge_token_is_accepted_by_mcp_transport() -> None:
                 "redirect_uri": "https://claude.ai/callback",
             },
         )
-        token_payload = token.json()
-        mcp_response = client.post(
-            "/mcp/",
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "pytest", "version": "1.0.0"},
-                },
-            },
-            headers={
-                "accept": "application/json, text/event-stream",
-                "Authorization": f"Bearer {token_payload['access_token']}",
+
+    assert registered.status_code == 201
+    assert token.status_code == 400
+    assert token.json()["error"] == "invalid_grant"
+    assert "authenticated Entra user" in token.json()["error_description"]
+
+
+def test_mcp_oauth_bridge_denies_client_credentials_when_identity_auth_is_enabled() -> None:
+    with build_bridge_identity_client() as client:
+        registered = client.post("/oauth/register", json={"client_name": "pytest"})
+        client_payload = registered.json()
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": client_payload["client_id"],
+                "client_secret": client_payload["client_secret"],
             },
         )
 
     assert registered.status_code == 201
-    assert token.status_code == 200
-    assert mcp_response.status_code == 200
+    assert token.status_code == 403
+    assert token.json()["error"] == "app_only_token_denied"
 
 
 def test_mcp_browser_origins_receive_cors_headers() -> None:
@@ -842,7 +843,86 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
     assert decoded["email"] == "alice@example.com"
     assert decoded["tid"] == "tenant-1"
     assert decoded["oid"] == "user-1"
+    assert decoded["iss"] == "https://hth.example.test"
+    assert decoded["azp"] == client_payload["client_id"]
+    assert decoded["groups"] == ["HTH-MCP"]
+    assert decoded["roles"] == ["Tool.Viewer"]
     assert login_calls[0]["code_verifier"]
+
+
+def test_mcp_oauth_bridge_merges_display_email_from_id_token(monkeypatch) -> None:
+    async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001, ARG001
+        return {
+            "access_token": "access-token",
+            "id_token": "id-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid profile email offline_access api://claude-client-id/.default",
+        }
+
+    def fake_validate(self, token):  # noqa: ANN001, ARG001
+        if token == "id-token":
+            return {
+                "tid": "tenant-1",
+                "oid": "ignored-id-token-oid",
+                "sub": "ignored-id-token-sub",
+                "email": "alice.idtoken@example.com",
+                "preferred_username": "alice.preferred@example.com",
+            }
+        return {
+            "tid": "tenant-1",
+            "oid": "user-1",
+            "sub": "user-1",
+            "groups": ["HTH-MCP"],
+            "roles": ["Tool.Viewer"],
+        }
+
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_access_token", fake_validate)
+
+    with build_bridge_identity_user_client() as client:
+        registered = client.post(
+            "/oauth/register",
+            json={"client_name": "pytest", "redirect_uris": ["https://claude.ai/callback"]},
+        )
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        login_state = parse_qs(urlparse(authorized.headers["location"]).query)["state"][0]
+        callback = client.get(
+            "/oauth/callback",
+            params={"code": "auth-code", "state": login_state},
+            follow_redirects=False,
+        )
+        bridge_code = parse_qs(urlparse(callback.headers["location"]).query)["code"][0]
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": bridge_code,
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+
+    decoded = jwt.decode(
+        token.json()["access_token"],
+        "test-bridge-secret",
+        algorithms=["HS256"],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+
+    assert token.status_code == 200
+    assert decoded["tid"] == "tenant-1"
+    assert decoded["oid"] == "user-1"
+    assert decoded["email"] == "alice.idtoken@example.com"
+    assert decoded["preferred_username"] == "alice.preferred@example.com"
 
 
 def test_cursor_pkce_authorization_code_exchange_succeeds() -> None:
@@ -1080,6 +1160,36 @@ def test_identity_auth_tools_enforce_group_role_access() -> None:
     assert denied_group_list.json()["detail"]["code"] == "group_access_denied"
 
 
+def test_identity_auth_tool_policy_can_require_configured_role() -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={"auth_tool_access_policy": '{"stock_snapshot":{"roles":["Stock.Reader"]}}'}
+    )
+    denied_token = build_identity_token(roles=["Tool.Viewer"])
+    allowed_token = build_identity_token(roles=["Stock.Reader"])
+
+    with TestClient(create_app(settings)) as client:
+        denied_tools = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {denied_token}"},
+        )
+        denied_call = client.post(
+            "/api/v1/tools/call",
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            headers={"Authorization": f"Bearer {denied_token}"},
+        )
+        allowed_call = client.post(
+            "/api/v1/tools/call",
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            headers={"Authorization": f"Bearer {allowed_token}"},
+        )
+
+    denied_names = {tool["name"] for tool in denied_tools.json()["tools"]}
+    assert "stock_snapshot" not in denied_names
+    assert denied_call.status_code == 403
+    assert denied_call.json()["detail"]["code"] == "tool_access_denied"
+    assert allowed_call.status_code == 200
+
+
 @pytest.mark.parametrize(
     ("extra_claims", "expected_email"),
     [
@@ -1231,6 +1341,7 @@ def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
                     subject="user-1",
                     oid="user-1",
                     email="alice@example.com",
+                    client_id="connector-client-id",
                     roles=["Tool.Viewer"],
                     groups=["HTH-MCP"],
                 ),
@@ -1245,6 +1356,8 @@ def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
             container.usage_stats_service.record_tool_call(
                 user_context=None,
                 tool_name="news_search",
+                client_id="openai-mcp",
+                client_name="ChatGPT",
             )
         )
         response = client.get("/api/v1/stats")
@@ -1253,12 +1366,20 @@ def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
     body = response.text
     assert "User usage stats" in body
     assert "alice@example.com" in body
+    assert "Tenant" in body
+    assert "tenant-1" in body
     assert "Object ID" in body
+    assert "tenant-1:user-1" in body
+    assert "connector-client-id" in body
+    assert "Roles" in body
+    assert "Groups" in body
     assert "Need a laminate quote for a coffee table" in body
     assert "stock_search" in body
     assert "stock_snapshot" in body
     assert "Anonymous user" in body
     assert "news_search" in body
+    assert "openai-mcp" in body
+    assert "ChatGPT" in body
     assert "session_id=" not in body
     assert "user_id=" not in body
 

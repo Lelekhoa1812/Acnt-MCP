@@ -25,6 +25,8 @@ class UsageStatsService:
         user_context: UserContext | None,
         query: str,
         tool_trace: list[ToolTrace],
+        client_id: str | None = None,
+        client_name: str | None = None,
     ) -> None:
         clean_query = " ".join(query.split())
         tool_names = self._extract_tool_names(tool_trace)
@@ -34,14 +36,27 @@ class UsageStatsService:
             UsageEvent(
                 recorded_at=time.time(),
                 kind="query",
+                tenant_id=self._render_tenant_id(user_context),
                 user_oid=self._render_user_oid(user_context),
+                identity_key=self._render_identity_key(user_context),
                 user_email=self._render_user_email(user_context),
+                client_id=self._render_client_id(user_context, client_id),
+                client_name=self._render_client_name(client_name),
+                roles=self._render_roles(user_context),
+                groups=self._render_groups(user_context),
                 query=clean_query or None,
                 tool_names=tool_names,
             )
         )
 
-    async def record_tool_call(self, *, user_context: UserContext | None, tool_name: str) -> None:
+    async def record_tool_call(
+        self,
+        *,
+        user_context: UserContext | None,
+        tool_name: str,
+        client_id: str | None = None,
+        client_name: str | None = None,
+    ) -> None:
         clean_tool_name = tool_name.strip()
         if not clean_tool_name:
             return
@@ -49,8 +64,14 @@ class UsageStatsService:
             UsageEvent(
                 recorded_at=time.time(),
                 kind="tool",
+                tenant_id=self._render_tenant_id(user_context),
                 user_oid=self._render_user_oid(user_context),
+                identity_key=self._render_identity_key(user_context),
                 user_email=self._render_user_email(user_context),
+                client_id=self._render_client_id(user_context, client_id),
+                client_name=self._render_client_name(client_name),
+                roles=self._render_roles(user_context),
+                groups=self._render_groups(user_context),
                 tool_names=[clean_tool_name],
             )
         )
@@ -65,8 +86,14 @@ class UsageStatsService:
             if group is None:
                 group = UsageUserGroup(
                     identity_label=self._identity_label(event),
+                    tenant_id=event.tenant_id,
                     user_oid=event.user_oid,
+                    identity_key=event.identity_key,
                     user_email=event.user_email,
+                    client_id=event.client_id,
+                    client_name=event.client_name,
+                    roles=event.roles,
+                    groups=event.groups,
                 )
                 groups_by_key[group_key] = group
             group.events.append(event)
@@ -108,11 +135,24 @@ class UsageStatsService:
             tool_names.append(tool_name)
         return tool_names
 
+    def _render_tenant_id(self, user_context: UserContext | None) -> str | None:
+        if user_context is None:
+            return None
+        rendered = user_context.tenant_id.strip() if user_context.tenant_id else ""
+        return rendered or None
+
     def _render_user_oid(self, user_context: UserContext | None) -> str | None:
         if user_context is None:
             return None
         rendered = user_context.oid.strip() if user_context.oid else ""
         return rendered or None
+
+    def _render_identity_key(self, user_context: UserContext | None) -> str | None:
+        tenant_id = self._render_tenant_id(user_context)
+        user_oid = self._render_user_oid(user_context)
+        if tenant_id and user_oid:
+            return f"{tenant_id}:{user_oid}"
+        return user_oid
 
     def _render_user_email(self, user_context: UserContext | None) -> str | None:
         if user_context is None:
@@ -120,7 +160,30 @@ class UsageStatsService:
         rendered = user_context.email.strip() if user_context.email else ""
         return rendered or None
 
+    def _render_client_id(self, user_context: UserContext | None, client_id: str | None) -> str | None:
+        rendered = (client_id or "").strip()
+        if rendered:
+            return rendered
+        if user_context is None:
+            return None
+        rendered = user_context.client_id.strip() if user_context.client_id else ""
+        return rendered or None
+
+    def _render_client_name(self, client_name: str | None) -> str | None:
+        rendered = (client_name or "").strip()
+        return rendered or None
+
+    def _render_roles(self, user_context: UserContext | None) -> list[str]:
+        return list(user_context.roles) if user_context is not None else []
+
+    def _render_groups(self, user_context: UserContext | None) -> list[str]:
+        return list(user_context.groups) if user_context is not None else []
+
     def _group_key(self, event: UsageEvent) -> tuple[str, str | None]:
+        if event.tenant_id and event.user_oid:
+            return ("tenant_oid", f"{event.tenant_id}:{event.user_oid}")
+        if event.identity_key:
+            return ("identity", event.identity_key)
         if event.user_oid:
             return ("oid", event.user_oid)
         if event.user_email:

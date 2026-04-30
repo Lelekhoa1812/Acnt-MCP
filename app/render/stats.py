@@ -189,10 +189,22 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
 
 def _render_user_group(group: UsageUserGroup) -> str:
     identity_chips: list[str] = []
+    if group.tenant_id:
+        identity_chips.append(f'<span class="chip"><strong>Tenant</strong> {escape(group.tenant_id)}</span>')
     if group.user_oid:
         identity_chips.append(f'<span class="chip"><strong>Object ID</strong> {escape(group.user_oid)}</span>')
+    if group.identity_key:
+        identity_chips.append(f'<span class="chip"><strong>Identity key</strong> {escape(group.identity_key)}</span>')
     if group.user_email:
         identity_chips.append(f'<span class="chip"><strong>Email</strong> {escape(group.user_email)}</span>')
+    if group.client_id:
+        identity_chips.append(f'<span class="chip"><strong>Client ID</strong> {escape(group.client_id)}</span>')
+    if group.client_name:
+        identity_chips.append(f'<span class="chip"><strong>Client</strong> {escape(group.client_name)}</span>')
+    if group.roles:
+        identity_chips.append(f'<span class="chip"><strong>Roles</strong> {escape(", ".join(group.roles))}</span>')
+    if group.groups:
+        identity_chips.append(f'<span class="chip"><strong>Groups</strong> {escape(", ".join(group.groups))}</span>')
     if not identity_chips:
         identity_chips.append('<span class="chip chip--muted">Anonymous</span>')
 

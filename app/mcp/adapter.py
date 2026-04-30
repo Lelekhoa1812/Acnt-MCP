@@ -59,6 +59,8 @@ class McpToolAdapter:
                 args=payload,
                 session_id=session_id,
                 user_context=user_context,
+                client_id=client_id,
+                client_name=client_name,
             )
             self._log_success(
                 result=result,

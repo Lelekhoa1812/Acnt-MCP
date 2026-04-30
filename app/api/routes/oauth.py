@@ -189,6 +189,15 @@ async def oauth_callback(request: Request, container=Depends(get_container)) -> 
             code_verifier=str(state_record.get("code_verifier") or ""),
         )
         claims = service.validate_access_token(str(token_payload["access_token"]))
+        id_token = token_payload.get("id_token")
+        if id_token:
+            id_claims = service.validate_access_token(str(id_token))
+            # Motivation vs Logic: Entra access tokens are authoritative for
+            # authorization (`tid`, `oid`, `groups`, `roles`), while ID tokens
+            # often carry better human-readable mailbox claims for audit labels.
+            for display_claim in ("email", "preferred_username", "upn", "unique_name", "name"):
+                if display_claim not in claims and id_claims.get(display_claim):
+                    claims[display_claim] = id_claims[display_claim]
     except ClaudeOAuthError as exc:
         if _wants_explicit_json(request):
             return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "error_description": exc.message})

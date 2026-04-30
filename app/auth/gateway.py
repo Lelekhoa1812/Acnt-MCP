@@ -103,6 +103,7 @@ class IdentityGateway:
     def _decode_token(self, token: str) -> dict[str, Any]:
         audience = self.settings.auth_audience or None
         issuer = self.settings.auth_issuer or None
+        last_error: Exception | None = None
         if self.settings.auth_jwt_hs256_secret:
             try:
                 return jwt.decode(
@@ -114,12 +115,7 @@ class IdentityGateway:
                     options={"require": ["exp"]},
                 )
             except InvalidTokenError as exc:
-                raise IdentityAuthError(
-                    code="invalid_token",
-                    message=f"Token validation failed: {exc}",
-                    status_code=401,
-                    mcp_error_code=-32001,
-                ) from exc
+                last_error = exc
 
         if self._jwk_client is not None:
             try:
@@ -132,27 +128,33 @@ class IdentityGateway:
                     issuer=issuer,
                     options={"require": ["exp"]},
                 )
-            except (InvalidTokenError, PyJWKClientError):
-                pass
+            except (InvalidTokenError, PyJWKClientError) as exc:
+                last_error = exc
 
         bridge_secret = self.settings.mcp_oauth_jwt_signing_secret
         if bridge_secret:
             try:
-                return jwt.decode(
+                bridge_claims = jwt.decode(
                     token,
                     bridge_secret,
                     algorithms=["HS256"],
                     audience=audience,
-                    issuer=issuer,
+                    issuer=self.settings.mcp_oauth_bridge_issuer,
                     options={"require": ["exp"]},
                 )
+                if bridge_claims.get("token_origin") == "mcp_oauth_bridge":
+                    return bridge_claims
+                last_error = InvalidTokenError("bridge token missing mcp_oauth_bridge origin")
             except InvalidTokenError as exc:
-                raise IdentityAuthError(
-                    code="invalid_token",
-                    message=f"Token validation failed: {exc}",
-                    status_code=401,
-                    mcp_error_code=-32001,
-                ) from exc
+                last_error = exc
+
+        if last_error is not None:
+            raise IdentityAuthError(
+                code="invalid_token",
+                message=f"Token validation failed: {last_error}",
+                status_code=401,
+                mcp_error_code=-32001,
+            ) from last_error
 
         raise IdentityAuthError(
             code="identity_config_error",
@@ -164,6 +166,13 @@ class IdentityGateway:
         )
 
     def _build_user_context(self, claims: dict[str, Any]) -> UserContext:
+        if claims.get("token_origin") == "mcp_oauth_bridge" and claims.get("grant_type") == "client_credentials":
+            raise IdentityAuthError(
+                code="app_only_token_denied",
+                message="Client credentials tokens cannot access user-scoped MCP tools.",
+                status_code=403,
+            )
+
         required_claims = self.settings.parsed_auth_required_claims
         missing_claims = [claim for claim in required_claims if not claims.get(claim)]
         if missing_claims:
@@ -204,6 +213,8 @@ class IdentityGateway:
             subject=subject,
             oid=oid,
             email=resolve_user_email(claims),
+            client_id=str(claims.get("azp") or claims.get("appid") or claims.get("client_id") or "").strip() or None,
+            token_origin=str(claims.get("token_origin") or "").strip() or None,
             roles=self._normalize_claim_values(claims.get("roles")),
             groups=self._normalize_claim_values(claims.get("groups")),
             claims=claims,
