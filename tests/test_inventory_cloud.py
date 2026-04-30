@@ -11,7 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from app.config import Settings, UpstreamServiceError
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
-from app.schemas import StockInventorySnapshotArgs, StockSearchCatalogueArgs
+from app.schemas import StockExtractVariantEvidenceArgs, StockInventorySnapshotArgs, StockSearchCatalogueArgs
 from app.store import AppKeyValueStore
 
 
@@ -270,6 +270,102 @@ def _build_cloud_contract_app(call_log: dict[str, Any]) -> FastAPI:
         if product is None:
             raise HTTPException(status_code=404)
         return _paginate([product], page=page, page_size=pageSize)
+
+    return app
+
+
+def _large_variant_product_payload(variant_count: int = 5, *, detail_sku: str | None = None) -> dict[str, Any]:
+    variants: list[dict[str, Any]] = []
+    for index in range(1, variant_count + 1):
+        sku = f"mega-{index}"
+        variant: dict[str, Any] = {
+            "id": f"var-mega-{index}",
+            "name": f"Mega Chair - Colour {index}",
+            "sku": sku,
+            "totalHirable": 100 - index,
+            "optionIds": [],
+        }
+        if detail_sku is None or detail_sku == sku:
+            variant["details"] = {
+                "departmentId": 3,
+                "subDepartmentId": None,
+                "isActive": True,
+                "generalRate": 45.0,
+                "expoRate": 42.0,
+                "assignedCategoryId": "cat-chair",
+                "dimensional": True,
+                "canBeSoldInPortions": False,
+                "startDate": None,
+                "endDate": None,
+                "salesNote": f"Mega chair detail {index}",
+                "length": 0.5,
+                "width": 0.5,
+                "height": 0.9,
+                "vicStock": 30 + index,
+                "vicHirable": 27 + index,
+                "nswStock": 12 + index,
+                "nswHirable": 11 + index,
+                "qldStock": 8 + index,
+                "qldHirable": 7 + index,
+                "totalStock": 50 + index,
+                "lastUpdatedDate": "2026-04-23T00:00:00Z",
+                "imageFileName": f"/stock/product-images/mega-{index}.png",
+                "cost": 10.0 + index,
+                "components": [],
+            }
+        variants.append(variant)
+    return {
+        "id": "prod-mega",
+        "name": "Mega Chair",
+        "departmentId": 3,
+        "subDepartmentId": None,
+        "categoryId": "cat-chair",
+        "isActive": True,
+        "variations": [],
+        "variants": variants,
+    }
+
+
+def _build_large_variant_cloud_contract_app(call_log: dict[str, Any]) -> FastAPI:
+    app = FastAPI()
+    catalogue_item = _large_variant_product_payload(detail_sku="not-a-real-sku")
+
+    def require_api_key(value: str | None) -> None:
+        if value != "cloud-key":
+            raise HTTPException(status_code=401)
+
+    def paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
+        start = (page - 1) * page_size
+        end = start + page_size
+        return {
+            "items": items[start:end],
+            "page": page,
+            "pageSize": page_size,
+            "totalCount": len(items),
+            "totalPages": max(1, (len(items) + page_size - 1) // page_size),
+        }
+
+    @app.get("/api/v1/products")
+    async def list_products(
+        page: int = Query(1, ge=1),
+        pageSize: int = Query(20, ge=1),
+        search: str | None = Query(None),
+        x_product_api_key: str | None = Header(None, alias="x-product-api-key"),
+    ) -> dict[str, Any]:
+        require_api_key(x_product_api_key)
+        call_log["list"] = call_log.get("list", 0) + 1
+        if search and search.lower() not in catalogue_item["name"].lower():
+            return paginate([], page=page, page_size=pageSize)
+        return paginate([catalogue_item], page=page, page_size=pageSize)
+
+    @app.get("/api/v1/products/{sku}")
+    async def get_product_by_sku(
+        sku: str,
+        x_product_api_key: str | None = Header(None, alias="x-product-api-key"),
+    ) -> dict[str, Any]:
+        require_api_key(x_product_api_key)
+        call_log.setdefault("sku", []).append(sku)
+        return paginate([_large_variant_product_payload(detail_sku=sku)], page=1, page_size=50)
 
     return app
 
@@ -552,6 +648,106 @@ async def test_inventory_snapshot_hydrates_multi_variant_rows_in_cloud_mode() ->
         await key_value_store.close()
 
 
+@pytest.mark.anyio
+async def test_inventory_snapshot_caps_large_product_family_variants_before_detail_fanout() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        max_cap_variant=2,
+    )
+    source = _LargeVariantFamilySource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.large.snapshot"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.large.snapshot"),
+    )
+
+    try:
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="mega chair"))
+        assert [row.sku for row in snapshot.rows] == ["mega-1", "mega-2"]
+        assert source.detail_skus == ["mega-1", "mega-2"]
+        assert snapshot.coverage.isPartial is True
+        assert len(snapshot.coverage.variantCaps) == 1
+        cap = snapshot.coverage.variantCaps[0]
+        assert cap.limit == 2
+        assert cap.totalVariants == 5
+        assert cap.shownVariants == 2
+        assert cap.omittedVariants == 3
+        assert any("capped at 2" in limitation for limitation in snapshot.coverage.limitations)
+        assert snapshot.guidance and "coverage.variantCaps" in snapshot.guidance
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_exact_sku_lookup_can_resolve_variant_outside_family_cap() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        max_cap_variant=2,
+    )
+    source = _LargeVariantFamilySource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.large.exact"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.large.exact"),
+    )
+
+    try:
+        evidence, _, _ = await service.extract_variant_evidence(StockExtractVariantEvidenceArgs(sku="mega-5"))
+        assert evidence.sku == "mega-5"
+        assert evidence.variant_name == "Mega Chair - Colour 5"
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+@pytest.mark.anyio
+async def test_cloud_source_hydrates_only_capped_variant_skus_for_family_lookup() -> None:
+    call_log: dict[str, Any] = {}
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        max_cap_variant=2,
+    )
+    source = HarmoniseInventorySource(settings=settings, logger=logging.getLogger("test.source.large.cap"))
+    original_client = source._client
+    source._client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_build_large_variant_cloud_contract_app(call_log)),
+        base_url=settings.cloud_harmonise_endpoint,
+        headers=settings.harmonise_client_headers,
+        timeout=settings.harmonise_timeout_seconds,
+    )
+    await original_client.aclose()
+
+    try:
+        await source.search_catalogue(page=1, page_size=50, search="mega", department_id=None, category_id=None)
+        payload, _ = await source.get_product(product_id="prod-mega", sku=None, page=1, page_size=50)
+        assert call_log["sku"] == ["mega-1", "mega-2"]
+        assert [variant["sku"] for variant in payload["items"][0]["variants"]] == ["mega-1", "mega-2"]
+    finally:
+        await source.close()
+
+
 class _ParallelStockSource:
     def __init__(self) -> None:
         self.in_flight = 0
@@ -746,6 +942,49 @@ class _PagedParallelStockSource(_ParallelStockSource):
             "totalCount": len(self._catalogue_items),
             "totalPages": total_pages,
         }, []
+
+
+class _LargeVariantFamilySource:
+    def __init__(self, variant_count: int = 5) -> None:
+        self.detail_skus: list[str] = []
+        self._catalogue_item = _large_variant_product_payload(variant_count, detail_sku="not-a-real-sku")
+
+    async def search_catalogue(
+        self,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        return {
+            "items": [self._catalogue_item],
+            "page": page,
+            "pageSize": page_size,
+            "totalCount": 1,
+            "totalPages": 1,
+        }, []
+
+    async def get_product(
+        self,
+        product_id: str | None,
+        sku: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[dict[str, Any], list[str]]:
+        if sku:
+            self.detail_skus.append(sku)
+        detail_sku = None if sku == "mega-5" else sku
+        return {
+            "items": [_large_variant_product_payload(detail_sku=detail_sku)],
+            "page": page,
+            "pageSize": page_size,
+            "totalCount": 1,
+            "totalPages": 1,
+        }, []
+
+    async def close(self) -> None:
+        return
 
 
 @pytest.mark.anyio

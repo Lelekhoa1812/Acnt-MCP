@@ -53,6 +53,7 @@ from app.schemas import (
     ToolDefinition,
     ToolResult,
     ToolTrace,
+    VariantCapMetadata,
 )
 from app.prompt.context import render_session_context, summarize_session_state
 from app.prompt.stock.furniture import furniture_capability_summary
@@ -703,8 +704,12 @@ class ToolRegistry:
             cache_statuses = list(catalogue_scan.cache_statuses)
             notes = list(catalogue_scan.notes)
             skipped_variants = 0
+            variant_caps = []
             for product in matched_products:
-                for variant in product.variants:
+                capped_product, cap_metadata = self.inventory_service.cap_product_variants(product)
+                if cap_metadata is not None:
+                    variant_caps.append(cap_metadata)
+                for variant in capped_product.variants:
                     if not variant.sku:
                         skipped_variants += 1
                         continue
@@ -719,6 +724,7 @@ class ToolRegistry:
                     notes.extend(extract_notes)
 
             limitations: list[str] = list(recovery_limitations)
+            limitations.extend(self.inventory_service.variant_cap_limitations(variant_caps))
             if skipped_variants:
                 limitations.append(f"Skipped {skipped_variants} catalogue variant(s) without SKU identifiers.")
             if not evidence_items:
@@ -732,6 +738,7 @@ class ToolRegistry:
                 "enrichedVariants": len(evidence_items),
                 "isPartial": catalogue_scan.is_partial or bool(limitations),
                 "limitations": limitations,
+                "variantCaps": [item.model_dump(mode="json") for item in variant_caps],
             }
             return evidence_items, self.inventory_service._combine_cache_statuses(cache_statuses), notes, coverage
 
@@ -744,9 +751,16 @@ class ToolRegistry:
                 "rows": [self.inventory_service._build_inventory_row(item).model_dump(mode="json") for item in evidence_items],
                 "evidence": [self._compact_snapshot_evidence(item) for item in evidence_items],
                 "coverage": coverage,
-                "guidance": (
-                    "Treat this as product-family inventory: answer availability across every returned variant/SKU, "
-                    "not only the first row."
+                "guidance": " ".join(
+                    part
+                    for part in [
+                        "Treat this as product-family inventory: answer availability across every returned variant/SKU, "
+                        "not only the first row.",
+                        self.inventory_service.variant_cap_guidance(
+                            [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
+                        ),
+                    ]
+                    if part
                 ),
             }
             trace = ToolTrace(
@@ -798,9 +812,16 @@ class ToolRegistry:
                     "limitations": limitations,
                     "isPartial": coverage["isPartial"] or bool(limitations),
                 },
-                "guidance": (
-                    "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
-                    "to resolve which variant best matches the requested stock/spec metric after the family is known."
+                "guidance": " ".join(
+                    part
+                    for part in [
+                        "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
+                        "to resolve which variant best matches the requested stock/spec metric after the family is known.",
+                        self.inventory_service.variant_cap_guidance(
+                            [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
+                        ),
+                    ]
+                    if part
                 ),
             }
             trace = ToolTrace(
@@ -1164,6 +1185,7 @@ class ToolRegistry:
             "variationNames": [
                 variation.name for variation in item.variations if (variation.name or "").strip()
             ],
+            "variantCap": item.variantCap.model_dump(mode="json") if item.variantCap else None,
             "variants": [
                 {
                     "id": variant.id,
@@ -1176,7 +1198,8 @@ class ToolRegistry:
         }
 
     def _product_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
-        return {
+        variant_caps = [item.variantCap for item in data.items if item.variantCap is not None]
+        payload = {
             "page": data.page,
             "pageSize": data.pageSize,
             "totalCount": data.totalCount,
@@ -1189,6 +1212,10 @@ class ToolRegistry:
                 for item in data.items
             ],
         }
+        guidance = self.inventory_service.variant_cap_guidance(variant_caps) if self.inventory_service else None
+        if guidance:
+            payload["guidance"] = guidance
+        return payload
 
     def _product_variant_model_view(self, variant) -> dict[str, Any]:
         details = variant.details
@@ -1256,7 +1283,7 @@ class ToolRegistry:
         }
 
     def _inventory_snapshot_model_view(self, data: InventorySnapshotResponse) -> dict[str, Any]:
-        return {
+        payload = {
             "rows": [
                 self._compact_snapshot_row(
                     row.model_dump(mode="json"),
@@ -1267,6 +1294,9 @@ class ToolRegistry:
             "coverage": data.coverage.model_dump(mode="json"),
             "evidence": [self._compact_snapshot_evidence(item) for item in data.evidence],
         }
+        if data.guidance:
+            payload["guidance"] = data.guidance
+        return payload
 
     def _compact_snapshot_row(
         self,

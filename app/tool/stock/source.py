@@ -8,6 +8,7 @@ import anyio
 import httpx
 
 from app.config import Settings, UpstreamServiceError
+from app.tool.stock.variants import cap_variants
 
 # Motivation vs Logic: Harmonise bodies can be huge; cap debug output so logs stay usable.
 _HARMONISE_LOG_MAX_CHARS = 2000
@@ -138,6 +139,7 @@ class HarmoniseInventorySource:
         sku: str | None,
         page: int,
         page_size: int,
+        required_variant_ids: list[str | None] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         if sku:
             compact_sku = sku.strip()
@@ -149,7 +151,11 @@ class HarmoniseInventorySource:
             # retrying the expensive detail route unless we have no alternative.
             catalogue_item = await self._resolve_catalogue_item_by_sku(compact_sku)
             if catalogue_item is not None:
-                hydrated = await self._hydrate_product_by_sku(catalogue_item)
+                hydrated = await self._hydrate_product_by_sku(
+                    catalogue_item,
+                    required_skus=[compact_sku],
+                    required_variant_ids=required_variant_ids,
+                )
                 paged = self._as_paged_payload(hydrated, page=page, page_size=page_size)
                 self._remember_catalogue_items(paged.get("items", []))
                 return paged, []
@@ -164,6 +170,7 @@ class HarmoniseInventorySource:
                 product_id=product_id,
                 page=page,
                 page_size=page_size,
+                required_variant_ids=required_variant_ids,
             )
 
         raise UpstreamServiceError(400, "Either product id or sku must be provided for product retrieval.")
@@ -279,7 +286,13 @@ class HarmoniseInventorySource:
         if delay_seconds > 0:
             await anyio.sleep(delay_seconds)
 
-    async def _get_product_by_id(self, product_id: str, page: int, page_size: int) -> tuple[dict[str, Any], list[str]]:
+    async def _get_product_by_id(
+        self,
+        product_id: str,
+        page: int,
+        page_size: int,
+        required_variant_ids: list[str | None] | None = None,
+    ) -> tuple[dict[str, Any], list[str]]:
         notes: list[str] = ["cloud_contract_id_lookup"]
         catalogue_item = await self._resolve_catalogue_item(product_id=product_id)
         if catalogue_item is None:
@@ -291,7 +304,10 @@ class HarmoniseInventorySource:
                 detail=f"No exact product record matched id '{product_id}'.",
             )
 
-        hydrated = await self._hydrate_product_by_sku(catalogue_item)
+        hydrated = await self._hydrate_product_by_sku(
+            catalogue_item,
+            required_variant_ids=[product_id, *(required_variant_ids or [])],
+        )
         if hydrated != catalogue_item:
             notes.append("cloud_contract_variant_hydration")
         return self._single_item_page(hydrated, page=page, page_size=page_size), notes
@@ -322,12 +338,26 @@ class HarmoniseInventorySource:
                 return None
             page += 1
 
-    async def _hydrate_product_by_sku(self, product: dict[str, Any]) -> dict[str, Any]:
+    async def _hydrate_product_by_sku(
+        self,
+        product: dict[str, Any],
+        *,
+        required_skus: list[str | None] | None = None,
+        required_variant_ids: list[str | None] | None = None,
+    ) -> dict[str, Any]:
         variants = product.get("variants", []) or []
         if not variants:
             return product
 
-        expected_skus = self._unique_variant_skus(variants)
+        capped_variants = cap_variants(
+            [variant for variant in variants if isinstance(variant, dict)],
+            limit=self.settings.max_cap_variant,
+            sku_getter=lambda variant: variant.get("sku") if isinstance(variant.get("sku"), str) else None,
+            variant_id_getter=lambda variant: variant.get("id") if isinstance(variant.get("id"), str) else None,
+            required_skus=required_skus,
+            required_variant_ids=required_variant_ids,
+        ).variants
+        expected_skus = self._unique_variant_skus(capped_variants)
         if not expected_skus:
             return product
 
@@ -359,6 +389,8 @@ class HarmoniseInventorySource:
             if detail_product is None:
                 detail_product = candidate_product
             for detail_variant in candidate_product.get("variants", []) or []:
+                if detail_variant.get("details") is None:
+                    continue
                 detail_sku = detail_variant.get("sku")
                 if detail_sku:
                     hydrated_variants[detail_sku] = detail_variant
@@ -370,7 +402,9 @@ class HarmoniseInventorySource:
                 break
 
         if not hydrated_variants:
-            return product
+            capped_product = dict(product)
+            capped_product["variants"] = capped_variants
+            return capped_product
 
         merged_product = dict(product)
         if detail_product is not None:
@@ -382,7 +416,7 @@ class HarmoniseInventorySource:
 
         merged_variants: list[dict[str, Any]] = []
         seen_skus: set[str] = set()
-        for variant in variants:
+        for variant in capped_variants:
             sku = variant.get("sku")
             if sku and sku in hydrated_variants:
                 merged = dict(hydrated_variants[sku])

@@ -60,6 +60,15 @@ class ProductVariantDto(BaseModel):
     details: ProductVariantDetailsDto | None = None
 
 
+class VariantCapMetadata(BaseModel):
+    limit: int
+    totalVariants: int
+    shownVariants: int
+    omittedVariants: int
+    productId: str | None = None
+    productName: str | None = None
+
+
 class ProductListItemDto(BaseModel):
     id: str
     name: str | None = None
@@ -69,6 +78,7 @@ class ProductListItemDto(BaseModel):
     isActive: bool
     variations: list[ProductVariationDto] = Field(default_factory=list)
     variants: list[ProductVariantDto] = Field(default_factory=list)
+    variantCap: VariantCapMetadata | None = None
 
 
 class ProductListItemDtoPagedResponse(BaseModel):
@@ -197,12 +207,14 @@ class InventorySnapshotCoverage(BaseModel):
     enrichedVariants: int = 0
     isPartial: bool = False
     limitations: list[str] = Field(default_factory=list)
+    variantCaps: list[VariantCapMetadata] = Field(default_factory=list)
 
 
 class InventorySnapshotResponse(BaseModel):
     rows: list[InventorySnapshotRow] = Field(default_factory=list)
     evidence: list[NormalizedEvidence] = Field(default_factory=list)
     coverage: InventorySnapshotCoverage = Field(default_factory=InventorySnapshotCoverage)
+    guidance: str | None = None
 
 
 class CandidateOption(BaseModel):

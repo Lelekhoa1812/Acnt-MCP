@@ -61,3 +61,10 @@ def test_settings_supports_unbounded_harmonise_timeout() -> None:
 
     bounded_settings = Settings(harmonise_timeout_ms=2500)
     assert bounded_settings.harmonise_timeout_seconds == 2.5
+
+
+def test_settings_reads_max_cap_variant_from_environment(monkeypatch) -> None:  # noqa: ANN001
+    assert Settings(_env_file=None).max_cap_variant == 20
+
+    monkeypatch.setenv("MAX_CAP_VARIANT", "7")
+    assert Settings(_env_file=None).max_cap_variant == 7

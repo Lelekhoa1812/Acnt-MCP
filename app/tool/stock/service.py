@@ -17,6 +17,7 @@ from app.text.utils import lexical_overlap, significant_tokens
 from app.tool.stock.media import build_harmonise_image_url
 from app.text.stock.names import trailing_label_after_separator
 from app.tool.stock.source import HarmoniseInventorySource
+from app.tool.stock.variants import build_variant_cap_metadata, cap_variants
 from app.schemas import (
     InventorySnapshotCoverage,
     InventorySnapshotResponse,
@@ -41,6 +42,7 @@ from app.schemas import (
     StockInventorySnapshotArgs,
     StockSearchCatalogueArgs,
     StockSnapshot,
+    VariantCapMetadata,
 )
 from app.store import AppKeyValueStore
 
@@ -165,19 +167,43 @@ class InventoryService:
         self,
         args: StockGetProductArgs,
     ) -> tuple[ProductListItemDtoPagedResponse, str, list[str]]:
+        return await self._get_product(args)
+
+    async def _get_product(
+        self,
+        args: StockGetProductArgs,
+        *,
+        required_variant_ids: list[str | None] | None = None,
+    ) -> tuple[ProductListItemDtoPagedResponse, str, list[str]]:
         cache_key = self._cache_key(args.model_dump(mode="json"))
+        source_args: dict[str, Any] = {
+            "product_id": args.id,
+            "sku": args.sku,
+            "page": args.page,
+            "page_size": self._catalogue_page_size_cap(),
+        }
+        compact_required_variant_ids = [item for item in (required_variant_ids or []) if item]
+        if compact_required_variant_ids:
+            cache_key = self._cache_key(
+                {
+                    **args.model_dump(mode="json"),
+                    "requiredVariantIds": compact_required_variant_ids,
+                }
+            )
+            source_args["required_variant_ids"] = compact_required_variant_ids
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
             key=f"stock_get_product:{cache_key}",
             ttl_seconds=self.settings.cache_ttl_seconds,
-            loader=lambda: self.source.get_product(
-                product_id=args.id,
-                sku=args.sku,
-                page=args.page,
-                page_size=self._catalogue_page_size_cap(),
-            ),
+            loader=lambda: self.source.get_product(**source_args),
         )
-        return ProductListItemDtoPagedResponse.model_validate(raw), cache_status, notes
+        product_response = ProductListItemDtoPagedResponse.model_validate(raw)
+        product_response = self._cap_product_response_variants(
+            product_response,
+            required_skus=[args.sku],
+            required_variant_ids=required_variant_ids,
+        )
+        return product_response, cache_status, notes
 
     async def extract_variant_evidence(
         self,
@@ -200,7 +226,10 @@ class InventoryService:
             sku=args.sku if args.sku else None,
             page=1,
         )
-        product_response, cache_status, notes = await self.get_product(lookup_args)
+        product_response, cache_status, notes = await self._get_product(
+            lookup_args,
+            required_variant_ids=[args.variantId],
+        )
         if not product_response.items:
             raise InventoryNotFoundError("No product record was returned for evidence extraction.")
         product = product_response.items[0]
@@ -289,9 +318,17 @@ class InventoryService:
         cache_statuses.extend(expansion_cache_statuses)
         notes.extend(expansion_notes)
         catalogue_items = self._dedupe_products(catalogue_items)
+        capped_catalogue_items: list[ProductListItemDto] = []
+        variant_caps: list[VariantCapMetadata] = []
+        for product in catalogue_items:
+            capped_product, cap_metadata = self.cap_product_variants(product)
+            capped_catalogue_items.append(capped_product)
+            if cap_metadata is not None:
+                variant_caps.append(cap_metadata)
 
         evidence_items: list[NormalizedEvidence] = []
         coverage_limitations: list[str] = self._recovery_limitations_from_notes(notes)
+        coverage_limitations.extend(self.variant_cap_limitations(variant_caps))
         enriched_products = 0
         detail_lookup_failures: list[str] = []
         # Motivation vs Logic: enriching snapshot variants requires many product
@@ -313,7 +350,7 @@ class InventoryService:
                 UpstreamServiceError | None,
             ]
             | None
-        ] = [None] * len(catalogue_items)
+        ] = [None] * len(capped_catalogue_items)
 
         async def fetch_detail(index: int, product: ProductListItemDto) -> None:
             sku = self._detail_lookup_sku(product)
@@ -343,7 +380,7 @@ class InventoryService:
                 detail_results[index] = (product, None, None, [], exc)
 
         async with anyio.create_task_group() as task_group:
-            for index, product in enumerate(catalogue_items):
+            for index, product in enumerate(capped_catalogue_items):
                 task_group.start_soon(fetch_detail, index, product)
 
         for detail_result in detail_results:
@@ -371,6 +408,8 @@ class InventoryService:
             enriched_products += 1
             seen_skus: set[str] = set()
             for variant_index, variant in enumerate(detail_product.variants):
+                if variant.sku and variant.details is None:
+                    continue
                 if variant.sku:
                     seen_skus.add(variant.sku)
                 evidence_items.append(
@@ -412,6 +451,8 @@ class InventoryService:
                     continue
                 variant_product = variant_response.items[0]
                 for variant_index, detail_variant in enumerate(variant_product.variants):
+                    if detail_variant.sku and detail_variant.details is None:
+                        continue
                     if detail_variant.sku:
                         seen_skus.add(detail_variant.sku)
                     evidence_items.append(
@@ -447,7 +488,9 @@ class InventoryService:
                 enrichedVariants=len(evidence_items),
                 isPartial=catalogue_scan.is_partial or bool(coverage_limitations),
                 limitations=coverage_limitations,
+                variantCaps=variant_caps,
             ),
+            guidance=self.variant_cap_guidance(variant_caps),
         )
         return response, self._combine_cache_statuses(cache_statuses), notes
 
@@ -736,6 +779,65 @@ class InventoryService:
         # sending any remaining items to sequential retries.
         limit = max(1, self.settings.stock_parallel_requests_limit)
         return max(1, min(limit, max(1, item_count)))
+
+    def cap_product_variants(
+        self,
+        product: ProductListItemDto,
+        *,
+        required_skus: list[str | None] | None = None,
+        required_variant_ids: list[str | None] | None = None,
+    ) -> tuple[ProductListItemDto, VariantCapMetadata | None]:
+        result = cap_variants(
+            product.variants,
+            limit=self.settings.max_cap_variant,
+            sku_getter=lambda variant: variant.sku,
+            variant_id_getter=lambda variant: variant.id,
+            required_skus=required_skus,
+            required_variant_ids=required_variant_ids,
+        )
+        raw_metadata = build_variant_cap_metadata(
+            product_id=product.id,
+            product_name=product.name,
+            result=result,
+        )
+        cap_metadata = VariantCapMetadata.model_validate(raw_metadata) if raw_metadata else None
+        return product.model_copy(update={"variants": result.variants, "variantCap": cap_metadata}), cap_metadata
+
+    def _cap_product_response_variants(
+        self,
+        response: ProductListItemDtoPagedResponse,
+        *,
+        required_skus: list[str | None] | None = None,
+        required_variant_ids: list[str | None] | None = None,
+    ) -> ProductListItemDtoPagedResponse:
+        capped_items = [
+            self.cap_product_variants(
+                item,
+                required_skus=required_skus,
+                required_variant_ids=required_variant_ids,
+            )[0]
+            for item in response.items
+        ]
+        return response.model_copy(update={"items": capped_items})
+
+    def variant_cap_limitations(self, variant_caps: list[VariantCapMetadata]) -> list[str]:
+        return [
+            (
+                f"Variant specs for {cap.productName or cap.productId or 'this product family'} were capped at "
+                f"{cap.limit}; {cap.omittedVariants} additional variant"
+                f"{'s' if cap.omittedVariants != 1 else ''} remain available for a narrower follow-up."
+            )
+            for cap in variant_caps
+        ]
+
+    def variant_cap_guidance(self, variant_caps: list[VariantCapMetadata]) -> str | None:
+        if not variant_caps:
+            return None
+        return (
+            "Use coverage.variantCaps to tell the user that variant specs were capped at the configured limit, "
+            "state how many variants remain, and invite a narrower follow-up such as a colour, finish, SKU, or request "
+            "to continue with more variants."
+        )
 
     @staticmethod
     def _catalogue_page_size_cap() -> int:

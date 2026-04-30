@@ -253,6 +253,7 @@ Start from `.env.example`. Key values:
 - `HTH_REDIS_URL`
 - `LOCAL_HARMONISE` plus either `LOCAL_HARMONISE_ENDPOINT` or `CLOUD_HARMONISE_ENDPOINT`
 - `CLOUD_HARMONISE_API` and `CLOUD_HARMONISE_IMAGE` for cloud Harmonise
+- `MAX_CAP_VARIANT` to cap per-family variant spec enrichment before prompting for a narrower follow-up (default `20`)
 - `EXCHANGE_RATE_API`, `OPEN_WEATHER_API`, and `NEWS_API` for external plugins
 
 ### 3. Run the REST companion app

@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # Motivation vs Logic: keep variant resolution fast by allowing more concurrent
     # Harmonise detail lookups; any extra items automatically wait on the semaphore.
     stock_parallel_requests_limit: int = Field(50, alias="HTH_STOCK_PARALLEL_REQUESTS_LIMIT")
+    # Motivation vs Logic: variant-rich product families can make full spec hydration
+    # slow and prompt-heavy, so cap family enrichment while preserving exact lookups.
+    max_cap_variant: int = Field(20, ge=1, alias="MAX_CAP_VARIANT")
     # Motivation vs Logic: inventory_snapshot fans out one GET per catalogue row; the
     # same cloud endpoint can return 500 under high concurrency even when each URL
     # works from Postman. This caps detail fan-out separately from compare_variants.
