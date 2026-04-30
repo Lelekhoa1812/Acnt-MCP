@@ -20,6 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from app.auth import IdentityAuthError, IdentityGateway, reset_user_context, set_user_context
 from app.auth import ClaudeOAuthService
+from app.auth.claims import resolve_user_email
 from app.mcp.server import build_mcp_server
 
 from app.api.routes.agent import router as agent_router
@@ -179,13 +180,48 @@ def _oauth_registration_response(base_url: str, client_id: str, record: dict[str
     }
 
 
-def _bridge_access_token_payload(base_url: str, settings: Settings, client_id: str, grant_type: str) -> dict[str, object]:
+def _normalize_claim_values(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [item for item in (part.strip() for part in raw.replace(",", " ").split()) if item]
+    if isinstance(raw, list):
+        values: list[str] = []
+        for item in raw:
+            if item is None:
+                continue
+            rendered = str(item).strip()
+            if rendered:
+                values.append(rendered)
+        return values
+    rendered = str(raw).strip()
+    return [rendered] if rendered else []
+
+
+def _bridge_access_token_payload(
+    base_url: str,
+    settings: Settings,
+    client_id: str,
+    grant_type: str,
+    user_claims: dict[str, object] | None = None,
+) -> dict[str, object]:
     now = int(time.time())
     audience = settings.auth_audience or _mcp_resource_url(base_url, settings)
     issuer = settings.auth_issuer or base_url
     required_group = settings.auth_required_group.strip()
-    groups = [required_group] if required_group else []
-    roles = ["Tool.Viewer"]
+    groups = _normalize_claim_values(user_claims.get("groups") if user_claims else None)
+    roles = _normalize_claim_values(user_claims.get("roles") if user_claims else None)
+    if not groups and required_group:
+        groups = [required_group]
+    if not roles:
+        roles = ["Tool.Viewer"]
+    user_tenant_id = str((user_claims or {}).get("tid") or "mcp-bridge")
+    user_id = str((user_claims or {}).get("oid") or (user_claims or {}).get("sub") or client_id)
+    subject = str((user_claims or {}).get("sub") or user_id)
+    email = resolve_user_email(user_claims or {}) if user_claims else None
+    preferred_username = str((user_claims or {}).get("preferred_username") or "").strip() if user_claims else ""
+    upn = str((user_claims or {}).get("upn") or "").strip() if user_claims else ""
+    unique_name = str((user_claims or {}).get("unique_name") or "").strip() if user_claims else ""
     return {
         "iss": issuer,
         "aud": audience,
@@ -193,9 +229,9 @@ def _bridge_access_token_payload(base_url: str, settings: Settings, client_id: s
         "nbf": now,
         "exp": now + settings.mcp_oauth_token_ttl_seconds,
         "ver": settings.auth_required_token_version or "2.0",
-        "tid": "mcp-bridge",
-        "oid": client_id,
-        "sub": client_id,
+        "tid": user_tenant_id,
+        "oid": user_id,
+        "sub": subject,
         "azp": client_id,
         "client_id": client_id,
         "grant_type": grant_type,
@@ -203,14 +239,24 @@ def _bridge_access_token_payload(base_url: str, settings: Settings, client_id: s
         "groups": groups,
         "roles": roles,
         "token_origin": "mcp_oauth_bridge",
+        **({"email": email} if email else {}),
+        **({"preferred_username": preferred_username} if preferred_username else {}),
+        **({"upn": upn} if upn else {}),
+        **({"unique_name": unique_name} if unique_name else {}),
     }
 
 
-def _bridge_access_token(base_url: str, settings: Settings, client_id: str, grant_type: str) -> str:
+def _bridge_access_token(
+    base_url: str,
+    settings: Settings,
+    client_id: str,
+    grant_type: str,
+    user_claims: dict[str, object] | None = None,
+) -> str:
     secret = settings.mcp_oauth_jwt_signing_secret
     if not secret:
         raise RuntimeError("MCP OAuth bridge token signing secret is not configured.")
-    payload = _bridge_access_token_payload(base_url, settings, client_id, grant_type)
+    payload = _bridge_access_token_payload(base_url, settings, client_id, grant_type, user_claims=user_claims)
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -596,6 +642,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not resolved_settings.mcp_browser_oauth_enabled:
             return JSONResponse(status_code=404, content={"detail": "MCP OAuth is disabled."})
 
+        base_url = _base_url_from_request(request, resolved_settings)
         params = request.query_params
         client_id = params.get("client_id")
         redirect_uri = params.get("redirect_uri")
@@ -609,25 +656,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 redirect_uri,
                 resolved_settings,
                 logger,
-            ):
+                ):
                 return JSONResponse(status_code=400, content={"error": "invalid_client"})
 
-        # Motivation vs Logic: Claude.ai web connectors require a standards-shaped
-        # OAuth handshake before they will send a bearer token to remote MCP.
-        # This bridge issues short-lived authorization codes that redeem to a
-        # server-signed JWT, keeping the connector flow self-contained while
-        # still letting the MCP transport validate the same access token.
+        # Motivation vs Logic: connector bootstrap should still produce the same
+        # short-lived MCP authorization code, but when a real browser OAuth
+        # client is configured we route the browser through the human login flow
+        # first so the eventual bridge token can carry the authenticated email.
         code = secrets.token_urlsafe(32)
+        connector_state = params.get("state")
         request.app.state.oauth_codes[code] = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "code_challenge": params.get("code_challenge"),
             "code_challenge_method": params.get("code_challenge_method") or "plain",
             "expires_at": time.time() + 300,
+            "connector_state": connector_state,
+            "user_claims": None,
         }
+        if resolved_settings.claude_oauth_enabled:
+            login_state = secrets.token_urlsafe(32)
+            request.app.state.oauth_login_states[login_state] = {
+                "expires_at": time.time() + 600,
+                "bridge_code": code,
+            }
+            return RedirectResponse(f"{base_url}/oauth/login?state={login_state}", status_code=302)
         redirect_params = {"code": code}
-        if params.get("state"):
-            redirect_params["state"] = params["state"]
+        if connector_state:
+            redirect_params["state"] = connector_state
         return RedirectResponse(f"{redirect_uri}?{urlencode(redirect_params)}", status_code=302)
 
     @app.post("/oauth/token")
@@ -641,6 +697,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         params = {key: values[-1] for key, values in parse_qs(body).items()}
         grant_type = params.get("grant_type")
         client_id: str | None = params.get("client_id")
+        user_claims: dict[str, object] | None = None
 
         if grant_type == "authorization_code":
             code = params.get("code")
@@ -658,6 +715,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 return JSONResponse(status_code=400, content={"error": "invalid_grant"})
             client_id = str(code_record["client_id"])
+            raw_claims = code_record.get("user_claims")
+            if isinstance(raw_claims, dict):
+                user_claims = raw_claims
         elif grant_type == "client_credentials":
             client = request.app.state.oauth_clients.get(client_id) if client_id else None
             if client is None and client_id is not None:
@@ -666,13 +726,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return JSONResponse(status_code=401, content={"error": "invalid_client"})
         else:
             return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
-
         return JSONResponse(
             content={
                 # Root Cause vs Logic: the connector flow must mint a real JWT so
                 # the MCP transport can validate the same access token it receives
                 # instead of failing on an opaque bearer string.
-                "access_token": _bridge_access_token(base_url, resolved_settings, client_id or "", grant_type),
+                "access_token": _bridge_access_token(
+                    base_url,
+                    resolved_settings,
+                    client_id or "",
+                    grant_type,
+                    user_claims=user_claims,
+                ),
                 "token_type": "Bearer",
                 "expires_in": resolved_settings.mcp_oauth_token_ttl_seconds,
                 "scope": "mcp",

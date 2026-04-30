@@ -4,6 +4,7 @@ from html import escape
 import secrets
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -139,10 +140,12 @@ async def oauth_login(request: Request, container=Depends(get_container)) -> Red
     # default state mirrors the standard Claude MCP connector example
     state = request.query_params.get("state") or "claude"
     authorize_url, code_verifier = service.build_authorize_url(base_url=base_url, state=state)
-    request.app.state.oauth_login_states[state] = {
+    state_record = request.app.state.oauth_login_states.get(state, {})
+    state_record.update({
         "expires_at": time.time() + 600,
         "code_verifier": code_verifier,
-    }
+    })
+    request.app.state.oauth_login_states[state] = state_record
     return RedirectResponse(authorize_url, status_code=302)
 
 
@@ -190,6 +193,27 @@ async def oauth_callback(request: Request, container=Depends(get_container)) -> 
         if _wants_explicit_json(request):
             return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "error_description": exc.message})
         return _oauth_callback_page(success=False, title="OAuth login failed", detail=exc.message)
+
+    bridge_code = str(state_record.get("bridge_code") or "").strip()
+    if bridge_code:
+        bridge_record = request.app.state.oauth_codes.get(bridge_code)
+        if bridge_record is None:
+            if _wants_explicit_json(request):
+                return JSONResponse(status_code=400, content={"error": "invalid_state", "error_description": "Bridge session missing."})
+            return _oauth_callback_page(success=False, title="OAuth login failed", detail="Bridge session missing.")
+
+        bridge_record["user_claims"] = claims
+        redirect_uri = str(bridge_record.get("redirect_uri") or "").strip()
+        if not redirect_uri:
+            if _wants_explicit_json(request):
+                return JSONResponse(status_code=400, content={"error": "invalid_state", "error_description": "Bridge redirect URI missing."})
+            return _oauth_callback_page(success=False, title="OAuth login failed", detail="Bridge redirect URI missing.")
+
+        redirect_params = {"code": bridge_code}
+        connector_state = bridge_record.get("connector_state")
+        if connector_state:
+            redirect_params["state"] = str(connector_state)
+        return RedirectResponse(f"{redirect_uri}?{urlencode(redirect_params)}", status_code=302)
 
     if _wants_explicit_json(request):
         return JSONResponse(

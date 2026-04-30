@@ -59,6 +59,13 @@ def build_client() -> TestClient:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
         mock_ui_path="./ui/mock/index.html",
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
     return TestClient(create_app(settings))
 
@@ -80,6 +87,13 @@ def build_null_data_source_client() -> TestClient:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
         mock_ui_path="./ui/mock/index.html",
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
     return TestClient(create_app(settings))
 
@@ -99,6 +113,13 @@ def build_cloud_client() -> TestClient:
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
         mock_ui_path="./ui/mock/index.html",
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
     return TestClient(create_app(settings))
 
@@ -121,6 +142,13 @@ def build_mcp_auth_client() -> TestClient:
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
         mcp_require_bearer_token=True,
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
     return TestClient(create_app(settings))
 
@@ -145,6 +173,13 @@ def build_identity_auth_settings() -> Settings:
         auth_audience="api://hth-mcp",
         auth_jwt_hs256_secret="test-secret",
         auth_required_group="HTH-MCP",
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
     return settings
 
@@ -176,6 +211,45 @@ def build_bridge_identity_client() -> TestClient:
         auth_required_group="HTH-MCP",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
+        oauth_client_id=None,
+        oauth_client_secret=None,
+        oauth_tenant_id=None,
+        oauth_authority=None,
+        oauth_audience=None,
+        oauth_scope=None,
+        oauth_redirect_uri=None,
+    )
+    return TestClient(create_app(settings))
+
+
+def build_bridge_identity_user_client() -> TestClient:
+    settings = Settings(
+        local_harmonise=True,
+        log_level="debug",
+        public_base_url="https://hth.example.test",
+        server_website_url=None,
+        server_logo_url=None,
+        mcp_allowed_hosts="testserver",
+        mock_catalog_path="./mock/product-catalog.json",
+        mock_details_path="./mock/product-details.json",
+        mock_departments_path="./mock/departments.json",
+        mock_categories_path="./mock/categories.json",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        enable_mock_ui_simulation=False,
+        identity_auth_enabled=True,
+        auth_issuer="https://hth.example.test",
+        auth_audience="https://hth.example.test/mcp",
+        auth_jwt_hs256_secret="test-bridge-secret",
+        auth_required_group="HTH-MCP",
+        mcp_bearer_token="test-mcp-token",
+        mcp_oauth_jwt_secret="test-bridge-secret",
+        oauth_client_id="claude-client-id",
+        oauth_client_secret="claude-client-secret",
+        oauth_tenant_id="tenant-1",
+        oauth_authority="https://login.microsoftonline.com/tenant-1",
+        oauth_audience="api://claude-client-id",
+        oauth_scope="api://claude-client-id/.default",
     )
     return TestClient(create_app(settings))
 
@@ -241,6 +315,7 @@ def build_claude_oauth_token(
     issuer: str = "https://login.microsoftonline.com/tenant-1/v2.0",
     audience: str = "api://claude-client-id",
     subject: str = "user-1",
+    extra_claims: dict[str, object] | None = None,
 ) -> tuple[str, rsa.RSAPublicKey]:
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
@@ -258,6 +333,8 @@ def build_claude_oauth_token(
         "roles": ["Tool.Viewer"],
         "groups": ["HTH-MCP"],
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, private_key, algorithm="RS256"), public_key
 
 
@@ -594,6 +671,13 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
         public_base_url="https://hth.example.test",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
+        oauth_client_id="",
+        oauth_client_secret="",
+        oauth_tenant_id="",
+        oauth_authority="",
+        oauth_audience="",
+        oauth_scope="",
+        oauth_redirect_uri="",
     )
 
     with TestClient(create_app(settings)) as client:
@@ -632,6 +716,132 @@ def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     )
     assert decoded["token_origin"] == "mcp_oauth_bridge"
     assert token_payload["token_type"] == "Bearer"
+
+
+def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) -> None:
+    access_token, public_key = build_claude_oauth_token(
+        extra_claims={
+            "email": "alice@example.com",
+            "preferred_username": "alice.preferred@example.com",
+        }
+    )
+    login_calls: list[dict[str, object]] = []
+
+    async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001
+        login_calls.append(
+            {
+                "base_url": base_url,
+                "code": code,
+                "code_verifier": code_verifier,
+            }
+        )
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid profile email offline_access api://claude-client-id/.default",
+        }
+
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr(
+        "app.auth.claude.PyJWKClient.get_signing_key_from_jwt",
+        lambda self, token: SimpleNamespace(key=public_key),  # noqa: ARG005
+    )
+
+    with build_bridge_identity_user_client() as client:
+        registered = client.post(
+            "/oauth/register",
+            json={"client_name": "pytest", "redirect_uris": ["https://claude.ai/callback"]},
+        )
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        login = client.get(authorized.headers["location"], follow_redirects=False)
+        login_state = parse_qs(urlparse(authorized.headers["location"]).query)["state"][0]
+        callback = client.get(
+            "/oauth/callback",
+            params={"code": "auth-code", "state": login_state},
+            follow_redirects=False,
+        )
+        bridge_code = parse_qs(urlparse(callback.headers["location"]).query)["code"][0]
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": bridge_code,
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+        mcp_initialize = client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "Anthropic/ClaudeAI", "version": "1.0.0"},
+                },
+            },
+            headers={
+                "accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {token.json()['access_token']}",
+            },
+        )
+        client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            },
+            headers={
+                "accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {token.json()['access_token']}",
+            },
+        )
+        client.post(
+            "/mcp/",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "stock_snapshot",
+                    "arguments": {"page": 1, "pageSize": 1},
+                },
+            },
+            headers={
+                "accept": "application/json, text/event-stream",
+                "Authorization": f"Bearer {token.json()['access_token']}",
+            },
+        )
+
+    decoded = jwt.decode(
+        token.json()["access_token"],
+        "test-bridge-secret",
+        algorithms=["HS256"],
+        options={"verify_aud": False, "verify_iss": False},
+    )
+
+    assert registered.status_code == 201
+    assert authorized.status_code == 302
+    assert login.status_code == 302
+    assert callback.status_code == 302
+    assert token.status_code == 200
+    assert mcp_initialize.status_code == 200
+    assert decoded["email"] == "alice@example.com"
+    assert decoded["tid"] == "tenant-1"
+    assert decoded["oid"] == "user-1"
+    assert login_calls[0]["code_verifier"]
 
 
 def test_cursor_pkce_authorization_code_exchange_succeeds() -> None:
@@ -909,6 +1119,7 @@ def test_identity_gateway_leaves_email_empty_when_claims_are_missing() -> None:
 
     context = gateway.authenticate_headers({"authorization": f"Bearer {token}"})
 
+    assert context.oid == "user-1"
     assert context.email is None
 
 
@@ -960,6 +1171,7 @@ async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: 
         reset_user_context(context_token)
 
     assert result.isError is False
+    assert "user_oid=user-1" in caplog.text
     assert "user_email=alice@example.com" in caplog.text
     assert "client_id=cursor-client-id" in caplog.text
     assert "client_name=Cursor" in caplog.text
@@ -1000,6 +1212,7 @@ async def test_mcp_adapter_logs_anonymous_stdio_clients_without_email(caplog: py
 
     assert result.isError is False
     assert "user_id=anonymous" in caplog.text
+    assert "user_oid=None" in caplog.text
     assert "user_email=None" in caplog.text
     assert "client_name=Claude Desktop" in caplog.text
 

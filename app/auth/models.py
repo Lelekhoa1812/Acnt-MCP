@@ -9,6 +9,10 @@ class UserContext(BaseModel):
     tenant_id: str
     user_id: str
     subject: str
+    # Motivation vs Logic: oid is the stable Entra object id we want to surface
+    # beside email in logs, while user_id may still fall back to subject data in
+    # other identity flows.
+    oid: str | None = None
     # Motivation vs Logic: remote OAuth connectors sometimes expose an email-like
     # claim that is useful for log correlation, so we keep it on the shared
     # user context instead of re-parsing JWT claims in each call site.
