@@ -1,0 +1,18 @@
+from __future__ import annotations
+
+from fastapi import HTTPException, Request
+
+from app.auth import IdentityAuthError, UserContext
+from app.config.settings import Settings
+
+
+def resolve_user_context_or_none(request: Request, settings: Settings) -> UserContext | None:
+    gateway = request.app.state.identity_gateway
+    if not gateway.enabled:
+        return None
+
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    try:
+        return gateway.authenticate_headers(headers)
+    except IdentityAuthError as exc:
+        raise HTTPException(status_code=exc.payload.status_code, detail=exc.to_response_payload()["error"]) from exc

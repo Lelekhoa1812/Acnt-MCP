@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import logging
 import re
@@ -1158,6 +1159,7 @@ async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: 
             tenant_id="tenant-1",
             user_id="user-1",
             subject="user-1",
+            oid="user-1",
             email="alice@example.com",
             roles=["Tool.Viewer"],
             groups=["HTH-MCP"],
@@ -1171,6 +1173,8 @@ async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: 
         reset_user_context(context_token)
 
     assert result.isError is False
+    assert "session_id=" not in caplog.text
+    assert "user_id=" not in caplog.text
     assert "user_oid=user-1" in caplog.text
     assert "user_email=alice@example.com" in caplog.text
     assert "client_id=cursor-client-id" in caplog.text
@@ -1211,10 +1215,52 @@ async def test_mcp_adapter_logs_anonymous_stdio_clients_without_email(caplog: py
         result = await adapter.call_tool("stock_snapshot", {"page": 1}, request_context=request_context)
 
     assert result.isError is False
-    assert "user_id=anonymous" in caplog.text
     assert "user_oid=None" in caplog.text
     assert "user_email=None" in caplog.text
     assert "client_name=Claude Desktop" in caplog.text
+
+
+def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
+    with build_client() as client:
+        container = client.app.state.container
+        asyncio.run(
+            container.usage_stats_service.record_query(
+                user_context=UserContext(
+                    tenant_id="tenant-1",
+                    user_id="user-1",
+                    subject="user-1",
+                    oid="user-1",
+                    email="alice@example.com",
+                    roles=["Tool.Viewer"],
+                    groups=["HTH-MCP"],
+                ),
+                query="Need a laminate quote for a coffee table",
+                tool_trace=[
+                    ToolTrace(thought="", tool="stock_search", args={}, status="ok", result_count=1),
+                    ToolTrace(thought="", tool="stock_snapshot", args={}, status="ok", result_count=1),
+                ],
+            )
+        )
+        asyncio.run(
+            container.usage_stats_service.record_tool_call(
+                user_context=None,
+                tool_name="news_search",
+            )
+        )
+        response = client.get("/api/v1/stats")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "User usage stats" in body
+    assert "alice@example.com" in body
+    assert "Object ID" in body
+    assert "Need a laminate quote for a coffee table" in body
+    assert "stock_search" in body
+    assert "stock_snapshot" in body
+    assert "Anonymous user" in body
+    assert "news_search" in body
+    assert "session_id=" not in body
+    assert "user_id=" not in body
 
 
 def test_identity_auth_mcp_requires_bearer_token() -> None:

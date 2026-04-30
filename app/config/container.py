@@ -7,6 +7,7 @@ import anyio
 
 from app.agent import AgentEngine
 from app.config.settings import Settings
+from app.stats.service import UsageStatsService
 from app.tool.currency import CurrencyService
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
@@ -30,6 +31,7 @@ class AppContainer:
     news_service: NewsService
     weather_service: WeatherService
     currency_service: CurrencyService
+    usage_stats_service: UsageStatsService
     tool_registry: ToolRegistry
     agent_engine: AgentEngine
     orchestrator_service: OrchestratorService
@@ -118,6 +120,7 @@ async def build_container(settings: Settings) -> AppContainer:
     news_service = NewsService(settings=settings, key_value_store=key_value_store, logger=logger)
     weather_service = WeatherService(settings=settings, key_value_store=key_value_store, logger=logger)
     currency_service = CurrencyService(settings=settings, key_value_store=key_value_store, logger=logger)
+    usage_stats_service = UsageStatsService(settings=settings, key_value_store=key_value_store)
     tool_registry = ToolRegistry(
         inventory_service=inventory_service,
         resolver_service=resolver_service,
@@ -134,6 +137,7 @@ async def build_container(settings: Settings) -> AppContainer:
         agent_engine=agent_engine,
         tool_registry=tool_registry,
         session_store=session_store,
+        usage_stats_service=usage_stats_service,
         logger=logger,
     )
 
@@ -147,6 +151,7 @@ async def build_container(settings: Settings) -> AppContainer:
         news_service=news_service,
         weather_service=weather_service,
         currency_service=currency_service,
+        usage_stats_service=usage_stats_service,
         tool_registry=tool_registry,
         agent_engine=agent_engine,
         orchestrator_service=orchestrator_service,

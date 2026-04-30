@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
 from app.config import get_container
-from app.render import render_mock, render_static_html
+from app.render import render_mock, render_static_html, render_usage_stats_html
 
 
 router = APIRouter()
@@ -112,3 +112,9 @@ async def mock_ui_legacy(container = Depends(get_container)) -> HTMLResponse:
 @router.get("/oauth", response_class=HTMLResponse)
 async def oauth_ui(container = Depends(get_container)) -> HTMLResponse:
     return _build_oauth_response(container)
+
+
+@router.get("/stats", response_class=HTMLResponse)
+async def stats(container = Depends(get_container)) -> HTMLResponse:
+    snapshot = await container.usage_stats_service.snapshot()
+    return HTMLResponse(render_usage_stats_html(snapshot))

@@ -62,7 +62,6 @@ class McpToolAdapter:
             )
             self._log_success(
                 result=result,
-                session_id=session_id,
                 client_id=client_id,
                 client_name=client_name,
             )
@@ -71,7 +70,6 @@ class McpToolAdapter:
             self._log_error(
                 name=name,
                 arguments=payload,
-                session_id=session_id,
                 client_id=client_id,
                 client_name=client_name,
                 exc=exc,
@@ -124,15 +122,11 @@ class McpToolAdapter:
 
         return client_id, client_name
 
-    def _resolve_user_identity(self) -> tuple[str, str | None, str | None]:
+    def _resolve_user_identity(self) -> tuple[str | None, str | None]:
         user_context = get_user_context()
         if user_context is None:
-            return "anonymous", None, None
-        # Motivation vs Logic: auth flows should provide `oid`, but some tests
-        # and local call sites only seed the broader user id, so we log the best
-        # available stable identifier instead of leaving the slot empty.
-        user_oid = user_context.oid or user_context.user_id
-        return user_context.user_id, user_oid, user_context.email
+            return None, None
+        return user_context.oid, user_context.email
 
     def _success_result(self, result: ToolResult) -> types.CallToolResult:
         envelope: dict[str, Any] = {"data": result.data}
@@ -184,18 +178,15 @@ class McpToolAdapter:
     def _log_success(
         self,
         result: ToolResult,
-        session_id: str,
         client_id: str | None,
         client_name: str | None,
     ) -> None:
-        user_id, user_oid, user_email = self._resolve_user_identity()
+        user_oid, user_email = self._resolve_user_identity()
         trace = result.trace
         if trace is None:
             self.logger.debug(
-                "mcp_tool_result tool=%s session_id=%s user_id=%s user_oid=%s user_email=%s client_id=%s client_name=%s status=%s",
+                "mcp_tool_result tool=%s user_oid=%s user_email=%s client_id=%s client_name=%s status=%s",
                 result.tool,
-                session_id,
-                user_id,
                 user_oid,
                 user_email,
                 client_id,
@@ -205,10 +196,8 @@ class McpToolAdapter:
             return
 
         self.logger.debug(
-            "mcp_tool_result tool=%s session_id=%s user_id=%s user_oid=%s user_email=%s client_id=%s client_name=%s status=%s cache_status=%s result_count=%s notes=%s",
+            "mcp_tool_result tool=%s user_oid=%s user_email=%s client_id=%s client_name=%s status=%s cache_status=%s result_count=%s notes=%s",
             result.tool,
-            session_id,
-            user_id,
             user_oid,
             user_email,
             client_id,
@@ -223,17 +212,14 @@ class McpToolAdapter:
         self,
         name: str,
         arguments: dict[str, Any],
-        session_id: str,
         client_id: str | None,
         client_name: str | None,
         exc: Exception,
     ) -> None:
-        user_id, user_oid, user_email = self._resolve_user_identity()
+        user_oid, user_email = self._resolve_user_identity()
         self.logger.warning(
-            "mcp_tool_error tool=%s session_id=%s user_id=%s user_oid=%s user_email=%s client_id=%s client_name=%s args=%s error=%s",
+            "mcp_tool_error tool=%s user_oid=%s user_email=%s client_id=%s client_name=%s args=%s error=%s",
             name,
-            session_id,
-            user_id,
             user_oid,
             user_email,
             client_id,

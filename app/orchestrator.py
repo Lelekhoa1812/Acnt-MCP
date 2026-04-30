@@ -18,6 +18,7 @@ from app.schemas import (
 )
 from app.session.store import SessionStore
 from app.session.topic import apply_virtual_pruning, derive_memory_scope, refresh_active_subject
+from app.stats.service import UsageStatsService
 from app.tool.registry import ToolRegistry
 
 
@@ -39,15 +40,17 @@ class OrchestratorService:
         agent_engine: AgentEngine,
         tool_registry: ToolRegistry,
         session_store: SessionStore,
+        usage_stats_service: UsageStatsService,
         logger: logging.Logger,
     ) -> None:
         self.settings = settings
         self.agent_engine = agent_engine
         self.tool_registry = tool_registry
         self.session_store = session_store
+        self.usage_stats_service = usage_stats_service
         self.logger = logger
 
-    async def handle_query(self, request: AgentQueryRequest) -> AgentQueryResponse:
+    async def handle_query(self, request: AgentQueryRequest, user_context: UserContext | None = None) -> AgentQueryResponse:
         session_state, _ = await self.session_store.get_state(request.sessionId)
         if request.preferences:
             session_state.preferences.update(request.preferences)
@@ -65,6 +68,11 @@ class OrchestratorService:
         )
 
         run = await self.agent_engine.run(request=request, session_state=session_state)
+        await self.usage_stats_service.record_query(
+            user_context=user_context,
+            query=request.message,
+            tool_trace=run.tool_trace,
+        )
         refresh_active_subject(
             session_state,
             request_message=request.message,
@@ -155,6 +163,7 @@ class OrchestratorService:
         result.memo_update = memo_update
         result.validation = validation
 
+        await self.usage_stats_service.record_tool_call(user_context=user_context, tool_name=tool_name)
         await self.session_store.save_state(session_state)
         return result
 
