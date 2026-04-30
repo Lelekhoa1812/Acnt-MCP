@@ -1201,6 +1201,33 @@ def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch
     assert "stock_snapshot" in tool_names
 
 
+def test_identity_auth_checks_graph_membership_when_token_groups_are_missing(monkeypatch) -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={"auth_required_group": "SG-HTH-MCP-Users"}
+    )
+    token = build_identity_token(groups=[], roles=[], extra_claims={"_claim_names": {"groups": "src1"}})
+    monkeypatch.setattr(
+        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
+        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
+    )
+    monkeypatch.setattr(
+        "app.auth.gateway.IdentityGateway._user_is_member_of_required_groups",
+        lambda self, user_id, group_ids: (
+            user_id == "user-1" and "11111111-2222-3333-4444-555555555555" in group_ids
+        ),
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+
+
 def test_identity_auth_reports_unresolved_required_group_lookup(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={"auth_required_group": "SG-HTH-MCP-Users"}

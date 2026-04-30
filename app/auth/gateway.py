@@ -229,27 +229,11 @@ class IdentityGateway:
         token_groups = set(user_context.groups)
         if token_groups & required_groups:
             return
-        should_resolve_display_names = any(self._looks_like_guid(group) for group in token_groups) and any(
-            not self._looks_like_guid(group) for group in required_groups
-        )
-        resolved_group_ids = self._resolved_group_ids() if should_resolve_display_names else set()
+        resolved_group_ids = self._resolved_group_ids()
         if token_groups & resolved_group_ids:
             return
-        unresolved_names = [
-            group
-            for group in required_groups
-            if should_resolve_display_names and not self._looks_like_guid(group) and group not in resolved_group_ids
-        ]
-        if unresolved_names:
-            raise IdentityAuthError(
-                code="required_group_unresolved",
-                message=(
-                    "Required Entra group display name could not be resolved dynamically from Microsoft Graph: "
-                    f"{', '.join(sorted(unresolved_names))}. Grant the app registration Microsoft Graph "
-                    "application permission Group.Read.All or Directory.Read.All with admin consent."
-                ),
-                status_code=500,
-            )
+        if self._user_is_member_of_required_groups(user_context.user_id, resolved_group_ids):
+            return
         required_label = ", ".join(sorted(required_groups)) or "<none>"
         token_label = ", ".join(sorted(token_groups)) or "<none>"
         raise IdentityAuthError(
@@ -287,39 +271,14 @@ class IdentityGateway:
         client_secret = self.settings.oauth_client_secret
         tenant_id = self.settings.oauth_tenant_id
         if not (client_id and client_secret and tenant_id):
-            raise IdentityAuthError(
-                code="group_lookup_config_missing",
-                message=(
-                    "Dynamic Entra group lookup requires OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and OAUTH_TENANT_ID."
-                ),
-                status_code=500,
-            )
-
-        token_url = f"https://login.microsoftonline.com/{tenant_id.strip().strip('/')}/oauth2/v2.0/token"
+            return None
         try:
             # Motivation vs Logic: Microsoft Entra group claims commonly carry
             # object IDs, but operators configure readable display names. When
             # Graph permissions are available, resolve the name once and compare
             # against the immutable object ID without making email/name claims
             # part of authorization.
-            token_response = httpx.post(
-                token_url,
-                data={
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "grant_type": "client_credentials",
-                    "scope": "https://graph.microsoft.com/.default",
-                },
-                timeout=8.0,
-            )
-            token_response.raise_for_status()
-            access_token = str(token_response.json().get("access_token") or "")
-            if not access_token:
-                raise IdentityAuthError(
-                    code="group_lookup_failed",
-                    message="Microsoft Graph token response did not include an access token.",
-                    status_code=500,
-                )
+            access_token = self._graph_app_access_token()
             escaped_name = display_name.replace("'", "''")
             graph_response = httpx.get(
                 "https://graph.microsoft.com/v1.0/groups",
@@ -338,11 +297,7 @@ class IdentityGateway:
                 rendered = str(group_id).strip() if group_id else ""
                 if rendered:
                     return rendered
-            raise IdentityAuthError(
-                code="required_group_unresolved",
-                message=f"Microsoft Graph did not find required group display name '{display_name}'.",
-                status_code=500,
-            )
+            return None
         except IdentityAuthError:
             raise
         except Exception as exc:
@@ -351,6 +306,68 @@ class IdentityGateway:
                 message=f"Microsoft Graph group lookup failed for '{display_name}': {exc}",
                 status_code=500,
             ) from exc
+
+    def _user_is_member_of_required_groups(self, user_id: str, group_ids: set[str]) -> bool:
+        if not user_id or not group_ids:
+            return False
+        access_token = self._graph_app_access_token()
+        response = httpx.post(
+            f"https://graph.microsoft.com/v1.0/directoryObjects/{user_id}/checkMemberGroups",
+            json={"groupIds": sorted(group_ids)},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=8.0,
+        )
+        try:
+            response.raise_for_status()
+            value = response.json().get("value")
+        except Exception as exc:
+            raise IdentityAuthError(
+                code="group_membership_lookup_failed",
+                message=f"Microsoft Graph membership lookup failed for user object '{user_id}': {exc}",
+                status_code=500,
+            ) from exc
+        return bool(set(value if isinstance(value, list) else []) & group_ids)
+
+    def _graph_app_access_token(self) -> str:
+        client_id = self.settings.oauth_client_id
+        client_secret = self.settings.oauth_client_secret
+        tenant_id = self.settings.oauth_tenant_id
+        if not (client_id and client_secret and tenant_id):
+            raise IdentityAuthError(
+                code="group_lookup_config_missing",
+                message=(
+                    "Dynamic Entra group lookup requires OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and OAUTH_TENANT_ID."
+                ),
+                status_code=500,
+            )
+
+        token_url = f"https://login.microsoftonline.com/{tenant_id.strip().strip('/')}/oauth2/v2.0/token"
+        try:
+            token_response = httpx.post(
+                token_url,
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "client_credentials",
+                    "scope": "https://graph.microsoft.com/.default",
+                },
+                timeout=8.0,
+            )
+            token_response.raise_for_status()
+            access_token = str(token_response.json().get("access_token") or "")
+        except Exception as exc:
+            raise IdentityAuthError(
+                code="group_lookup_failed",
+                message=f"Microsoft Graph app token request failed: {exc}",
+                status_code=500,
+            ) from exc
+        if not access_token:
+            raise IdentityAuthError(
+                code="group_lookup_failed",
+                message="Microsoft Graph token response did not include an access token.",
+                status_code=500,
+            )
+        return access_token
 
     # Department-based access is disabled for now, so the old claim lookup is
     # kept here as commented reference only.
