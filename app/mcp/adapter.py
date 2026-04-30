@@ -48,6 +48,7 @@ class McpToolAdapter:
         request_context: RequestContext[Any, Any, Any] | None = None,
     ) -> types.CallToolResult:
         session_id = self._resolve_session_id(request_context)
+        client_id, client_name = self._resolve_client_identity(request_context)
         payload = arguments or {}
         tool_name = self.orchestrator_service.tool_registry.resolve_tool_name(name)
         user_context = get_user_context()
@@ -59,10 +60,22 @@ class McpToolAdapter:
                 session_id=session_id,
                 user_context=user_context,
             )
-            self._log_success(result=result, session_id=session_id)
+            self._log_success(
+                result=result,
+                session_id=session_id,
+                client_id=client_id,
+                client_name=client_name,
+            )
             return self._success_result(result)
         except (UnsupportedToolError, ParameterMappingError, InventoryNotFoundError, UpstreamServiceError, IdentityAuthError) as exc:
-            self._log_error(name=name, arguments=payload, session_id=session_id, exc=exc)
+            self._log_error(
+                name=name,
+                arguments=payload,
+                session_id=session_id,
+                client_id=client_id,
+                client_name=client_name,
+                exc=exc,
+            )
             return self._error_result(exc)
         except Exception as exc:  # pragma: no cover - defensive fallback
             self.logger.exception("mcp_tool_unhandled_error tool=%s session_id=%s", name, session_id)
@@ -76,8 +89,12 @@ class McpToolAdapter:
         if request_context is None:
             return self.default_session_id
 
-        if request_context.meta and getattr(request_context.meta, "client_id", None):
-            return f"mcp-client:{request_context.meta.client_id}"
+        meta = getattr(request_context, "meta", None)
+        # Root Cause vs Logic: some stdio and test request contexts do not
+        # populate `meta`, so we must guard this lookup before reading the
+        # client identifier.
+        if meta is not None and getattr(meta, "client_id", None):
+            return f"mcp-client:{meta.client_id}"
 
         client_params = getattr(request_context.session, "client_params", None)
         client_info = getattr(client_params, "clientInfo", None)
@@ -85,6 +102,27 @@ class McpToolAdapter:
             return f"mcp-session:{client_info.name}:{id(request_context.session):x}"
 
         return f"mcp-session:{id(request_context.session):x}"
+
+    def _resolve_client_identity(self, request_context: RequestContext[Any, Any, Any] | None) -> tuple[str | None, str | None]:
+        # Motivation vs Logic: the same request can arrive from a remote OAuth
+        # connector or a local stdio client, so we resolve the best available
+        # connector labels once and reuse them in every log branch.
+        if request_context is None:
+            return None, None
+
+        client_id = None
+        client_name = None
+
+        meta = getattr(request_context, "meta", None)
+        if meta is not None:
+            client_id = getattr(meta, "client_id", None)
+
+        client_params = getattr(request_context.session, "client_params", None)
+        client_info = getattr(client_params, "clientInfo", None)
+        if client_info is not None:
+            client_name = getattr(client_info, "name", None)
+
+        return client_id, client_name
 
     def _success_result(self, result: ToolResult) -> types.CallToolResult:
         envelope: dict[str, Any] = {"data": result.data}
@@ -133,39 +171,64 @@ class McpToolAdapter:
             isError=True,
         )
 
-    def _log_success(self, result: ToolResult, session_id: str) -> None:
+    def _log_success(
+        self,
+        result: ToolResult,
+        session_id: str,
+        client_id: str | None,
+        client_name: str | None,
+    ) -> None:
         user_context = get_user_context()
         user_id = user_context.user_id if user_context else "anonymous"
+        user_email = user_context.email if user_context else None
         trace = result.trace
         if trace is None:
             self.logger.debug(
-                "mcp_tool_result tool=%s session_id=%s user_id=%s status=%s",
+                "mcp_tool_result tool=%s session_id=%s user_id=%s user_email=%s client_id=%s client_name=%s status=%s",
                 result.tool,
                 session_id,
                 user_id,
+                user_email,
+                client_id,
+                client_name,
                 result.status,
             )
             return
 
         self.logger.debug(
-            "mcp_tool_result tool=%s session_id=%s user_id=%s status=%s cache_status=%s result_count=%s notes=%s",
+            "mcp_tool_result tool=%s session_id=%s user_id=%s user_email=%s client_id=%s client_name=%s status=%s cache_status=%s result_count=%s notes=%s",
             result.tool,
             session_id,
             user_id,
+            user_email,
+            client_id,
+            client_name,
             result.status,
             trace.cache_status,
             trace.result_count,
             result.normalization_notes,
         )
 
-    def _log_error(self, name: str, arguments: dict[str, Any], session_id: str, exc: Exception) -> None:
+    def _log_error(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        session_id: str,
+        client_id: str | None,
+        client_name: str | None,
+        exc: Exception,
+    ) -> None:
         user_context = get_user_context()
         user_id = user_context.user_id if user_context else "anonymous"
+        user_email = user_context.email if user_context else None
         self.logger.warning(
-            "mcp_tool_error tool=%s session_id=%s user_id=%s args=%s error=%s",
+            "mcp_tool_error tool=%s session_id=%s user_id=%s user_email=%s client_id=%s client_name=%s args=%s error=%s",
             name,
             session_id,
             user_id,
+            user_email,
+            client_id,
+            client_name,
             arguments,
             exc,
         )

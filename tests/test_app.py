@@ -12,8 +12,11 @@ from uuid import uuid4
 import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
+import pytest
 
+from app.auth import IdentityGateway, UserContext, reset_user_context, set_user_context
 from app.agent.engine import AgentEngine, AgentRun
+from app.mcp.adapter import McpToolAdapter
 from app.tool.currency.service import CurrencyProviderError
 from app.config import ParameterMappingError, Settings, UpstreamServiceError
 from app.main import create_app
@@ -33,6 +36,7 @@ from app.schemas import (
     ProductVariationDto,
     ProductVariationOptionDto,
     ToolTrace,
+    ToolResult,
 )
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
@@ -121,8 +125,7 @@ def build_mcp_auth_client() -> TestClient:
     return TestClient(create_app(settings))
 
 
-
-def build_identity_auth_client() -> TestClient:
+def build_identity_auth_settings() -> Settings:
     settings = Settings(
         local_harmonise=True,
         log_level="debug",
@@ -143,6 +146,11 @@ def build_identity_auth_client() -> TestClient:
         auth_jwt_hs256_secret="test-secret",
         auth_required_group="HTH-MCP",
     )
+    return settings
+
+
+def build_identity_auth_client() -> TestClient:
+    settings = build_identity_auth_settings()
     return TestClient(create_app(settings))
 
 
@@ -201,6 +209,7 @@ def build_identity_token(
     *,
     roles: list[str] | None = None,
     groups: list[str] | None = None,
+    extra_claims: dict[str, object] | None = None,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -218,7 +227,13 @@ def build_identity_token(
         # Department-based claims are temporarily disabled.
         # "extension_departmentId": department_claim,
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, "test-secret", algorithm="HS256")
+
+
+def build_identity_gateway() -> IdentityGateway:
+    return IdentityGateway(build_identity_auth_settings())
 
 
 def build_claude_oauth_token(
@@ -852,6 +867,141 @@ def test_identity_auth_tools_enforce_group_role_access() -> None:
 
     assert denied_group_list.status_code == 403
     assert denied_group_list.json()["detail"]["code"] == "group_access_denied"
+
+
+@pytest.mark.parametrize(
+    ("extra_claims", "expected_email"),
+    [
+        ({"email": "alice@example.com"}, "alice@example.com"),
+        ({"preferred_username": "alice.preferred@example.com"}, "alice.preferred@example.com"),
+        ({"upn": "alice.upn@example.com"}, "alice.upn@example.com"),
+        ({"unique_name": "alice.unique@example.com"}, "alice.unique@example.com"),
+    ],
+)
+def test_identity_gateway_extracts_supported_email_like_claims(extra_claims: dict[str, object], expected_email: str) -> None:
+    gateway = build_identity_gateway()
+    token = build_identity_token(extra_claims=extra_claims)
+
+    context = gateway.authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert context.email == expected_email
+
+
+def test_identity_gateway_prefers_email_claim_over_fallbacks() -> None:
+    gateway = build_identity_gateway()
+    token = build_identity_token(
+        extra_claims={
+            "email": "primary@example.com",
+            "preferred_username": "secondary@example.com",
+            "upn": "tertiary@example.com",
+            "unique_name": "quaternary@example.com",
+        }
+    )
+
+    context = gateway.authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert context.email == "primary@example.com"
+
+
+def test_identity_gateway_leaves_email_empty_when_claims_are_missing() -> None:
+    gateway = build_identity_gateway()
+    token = build_identity_token()
+
+    context = gateway.authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert context.email is None
+
+
+@pytest.mark.anyio
+async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: pytest.LogCaptureFixture) -> None:
+    orchestrator_service = MagicMock()
+    orchestrator_service.tool_registry.resolve_tool_name.return_value = "stock_snapshot"
+    orchestrator_service.call_tool_with_orchestration = AsyncMock(
+        return_value=ToolResult(
+            tool="stock_snapshot",
+            data={"rows": []},
+            trace=ToolTrace(
+                thought="",
+                tool="stock_snapshot",
+                args={},
+                status="ok",
+                result_count=0,
+            ),
+        )
+    )
+    adapter = McpToolAdapter(
+        orchestrator_service=orchestrator_service,
+        default_session_id="default",
+        logger=logging.getLogger("hth.mcp"),
+    )
+    request_context = SimpleNamespace(
+        meta=SimpleNamespace(client_id="cursor-client-id"),
+        session=SimpleNamespace(
+            client_params=SimpleNamespace(
+                clientInfo=SimpleNamespace(name="Cursor", version="1.0.0"),
+            )
+        ),
+    )
+    context_token = set_user_context(
+        UserContext(
+            tenant_id="tenant-1",
+            user_id="user-1",
+            subject="user-1",
+            email="alice@example.com",
+            roles=["Tool.Viewer"],
+            groups=["HTH-MCP"],
+        )
+    )
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
+            result = await adapter.call_tool("stock_snapshot", {"page": 1}, request_context=request_context)
+    finally:
+        reset_user_context(context_token)
+
+    assert result.isError is False
+    assert "user_email=alice@example.com" in caplog.text
+    assert "client_id=cursor-client-id" in caplog.text
+    assert "client_name=Cursor" in caplog.text
+
+
+@pytest.mark.anyio
+async def test_mcp_adapter_logs_anonymous_stdio_clients_without_email(caplog: pytest.LogCaptureFixture) -> None:
+    orchestrator_service = MagicMock()
+    orchestrator_service.tool_registry.resolve_tool_name.return_value = "stock_snapshot"
+    orchestrator_service.call_tool_with_orchestration = AsyncMock(
+        return_value=ToolResult(
+            tool="stock_snapshot",
+            data={"rows": []},
+            trace=ToolTrace(
+                thought="",
+                tool="stock_snapshot",
+                args={},
+                status="ok",
+                result_count=0,
+            ),
+        )
+    )
+    adapter = McpToolAdapter(
+        orchestrator_service=orchestrator_service,
+        default_session_id="default",
+        logger=logging.getLogger("hth.mcp"),
+    )
+    request_context = SimpleNamespace(
+        session=SimpleNamespace(
+            client_params=SimpleNamespace(
+                clientInfo=SimpleNamespace(name="Claude Desktop", version="1.0.0"),
+            )
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
+        result = await adapter.call_tool("stock_snapshot", {"page": 1}, request_context=request_context)
+
+    assert result.isError is False
+    assert "user_id=anonymous" in caplog.text
+    assert "user_email=None" in caplog.text
+    assert "client_name=Claude Desktop" in caplog.text
 
 
 def test_identity_auth_mcp_requires_bearer_token() -> None:

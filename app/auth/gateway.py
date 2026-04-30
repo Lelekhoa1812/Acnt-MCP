@@ -200,10 +200,24 @@ class IdentityGateway:
             tenant_id=tenant_id,
             user_id=user_id,
             subject=subject,
+            email=self._resolve_user_email(claims),
             roles=self._normalize_claim_values(claims.get("roles")),
             groups=self._normalize_claim_values(claims.get("groups")),
             claims=claims,
         )
+
+    def _resolve_user_email(self, claims: dict[str, Any]) -> str | None:
+        # Motivation vs Logic: different connectors and identity providers expose
+        # different email-shaped claims, so we normalize the first usable value
+        # once here and let the rest of the system log the same identity string.
+        for claim_name in ("email", "preferred_username", "upn", "unique_name"):
+            raw_value = claims.get(claim_name)
+            if raw_value is None:
+                continue
+            rendered_value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip()
+            if rendered_value:
+                return rendered_value
+        return None
 
     def _enforce_identity_gating(self, user_context: UserContext) -> None:
         required_group = self.settings.auth_required_group.strip()
