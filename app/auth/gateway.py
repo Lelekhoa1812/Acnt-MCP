@@ -7,6 +7,7 @@ from threading import Lock
 from time import time
 from typing import Any
 
+import httpx
 import jwt
 from jwt import InvalidTokenError, PyJWKClient, PyJWKClientError
 
@@ -66,6 +67,7 @@ class IdentityGateway:
         self._jwk_client = PyJWKClient(settings.auth_jwks_url) if settings.auth_jwks_url else None
         self._rate_limit_lock = Lock()
         self._rate_limit_windows: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._resolved_required_group_ids: set[str] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -221,15 +223,134 @@ class IdentityGateway:
         )
 
     def _enforce_identity_gating(self, user_context: UserContext) -> None:
-        required_group = self.settings.auth_required_group.strip()
-        if not required_group:
+        required_groups = set(self.settings.parsed_auth_required_groups)
+        if not required_groups:
             return
-        if required_group not in set(user_context.groups):
+        token_groups = set(user_context.groups)
+        if token_groups & required_groups:
+            return
+        should_resolve_display_names = any(self._looks_like_guid(group) for group in token_groups) and any(
+            not self._looks_like_guid(group) for group in required_groups
+        )
+        resolved_group_ids = self._resolved_group_ids() if should_resolve_display_names else set()
+        if token_groups & resolved_group_ids:
+            return
+        unresolved_names = [
+            group
+            for group in required_groups
+            if should_resolve_display_names and not self._looks_like_guid(group) and group not in resolved_group_ids
+        ]
+        if unresolved_names:
             raise IdentityAuthError(
-                code="group_access_denied",
-                message=f"User is not in required group '{required_group}'.",
-                status_code=403,
+                code="required_group_unresolved",
+                message=(
+                    "Required Entra group display name could not be resolved dynamically from Microsoft Graph: "
+                    f"{', '.join(sorted(unresolved_names))}. Grant the app registration Microsoft Graph "
+                    "application permission Group.Read.All or Directory.Read.All with admin consent."
+                ),
+                status_code=500,
             )
+        required_label = ", ".join(sorted(required_groups)) or "<none>"
+        token_label = ", ".join(sorted(token_groups)) or "<none>"
+        raise IdentityAuthError(
+            code="group_access_denied",
+            message=(
+                f"User is not in required group '{required_label}'. Token groups were [{token_label}]. "
+                "Microsoft Entra emits group object IDs in the groups claim; this app dynamically resolves "
+                "configured display names through Microsoft Graph before comparing membership."
+            ),
+            status_code=403,
+        )
+
+    def _resolved_group_ids(self) -> set[str]:
+        if self._resolved_required_group_ids is not None:
+            return self._resolved_required_group_ids
+
+        resolved: set[str] = set()
+        for group_name in self.settings.parsed_auth_required_groups:
+            if self._looks_like_guid(group_name):
+                resolved.add(group_name)
+                continue
+            group_id = self._lookup_group_id_by_display_name(group_name)
+            if group_id:
+                resolved.add(group_id)
+        self._resolved_required_group_ids = resolved
+        return resolved
+
+    @staticmethod
+    def _looks_like_guid(value: str) -> bool:
+        parts = value.split("-")
+        return len(parts) == 5 and [len(part) for part in parts] == [8, 4, 4, 4, 12]
+
+    def _lookup_group_id_by_display_name(self, display_name: str) -> str:
+        client_id = self.settings.oauth_client_id
+        client_secret = self.settings.oauth_client_secret
+        tenant_id = self.settings.oauth_tenant_id
+        if not (client_id and client_secret and tenant_id):
+            raise IdentityAuthError(
+                code="group_lookup_config_missing",
+                message=(
+                    "Dynamic Entra group lookup requires OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and OAUTH_TENANT_ID."
+                ),
+                status_code=500,
+            )
+
+        token_url = f"https://login.microsoftonline.com/{tenant_id.strip().strip('/')}/oauth2/v2.0/token"
+        try:
+            # Motivation vs Logic: Microsoft Entra group claims commonly carry
+            # object IDs, but operators configure readable display names. When
+            # Graph permissions are available, resolve the name once and compare
+            # against the immutable object ID without making email/name claims
+            # part of authorization.
+            token_response = httpx.post(
+                token_url,
+                data={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "client_credentials",
+                    "scope": "https://graph.microsoft.com/.default",
+                },
+                timeout=8.0,
+            )
+            token_response.raise_for_status()
+            access_token = str(token_response.json().get("access_token") or "")
+            if not access_token:
+                raise IdentityAuthError(
+                    code="group_lookup_failed",
+                    message="Microsoft Graph token response did not include an access token.",
+                    status_code=500,
+                )
+            escaped_name = display_name.replace("'", "''")
+            graph_response = httpx.get(
+                "https://graph.microsoft.com/v1.0/groups",
+                params={
+                    "$filter": f"displayName eq '{escaped_name}'",
+                    "$select": "id,displayName",
+                    "$top": "1",
+                },
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=8.0,
+            )
+            graph_response.raise_for_status()
+            values = graph_response.json().get("value")
+            if isinstance(values, list) and values:
+                group_id = values[0].get("id") if isinstance(values[0], dict) else None
+                rendered = str(group_id).strip() if group_id else ""
+                if rendered:
+                    return rendered
+            raise IdentityAuthError(
+                code="required_group_unresolved",
+                message=f"Microsoft Graph did not find required group display name '{display_name}'.",
+                status_code=500,
+            )
+        except IdentityAuthError:
+            raise
+        except Exception as exc:
+            raise IdentityAuthError(
+                code="group_lookup_failed",
+                message=f"Microsoft Graph group lookup failed for '{display_name}': {exc}",
+                status_code=500,
+            ) from exc
 
     # Department-based access is disabled for now, so the old claim lookup is
     # kept here as commented reference only.

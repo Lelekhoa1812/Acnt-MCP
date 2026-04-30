@@ -152,12 +152,9 @@ class Settings(BaseSettings):
     auth_audience: str | None = Field(None, alias="HTH_AUTH_AUDIENCE")
     auth_jwks_url: str | None = Field(None, alias="HTH_AUTH_JWKS_URL")
     auth_jwt_hs256_secret: str | None = Field(None, alias="HTH_AUTH_JWT_HS256_SECRET")
-    auth_required_group: str = Field("HTH-MCP", alias="HTH_AUTH_REQUIRED_GROUP")
+    # auth_required_group: str = Field("MCP-Users", alias="HTH_AUTH_REQUIRED_GROUP")      # Production group
+    auth_required_group: str = Field("SG-HTH-MCP-Users", alias="HTH_AUTH_REQUIRED_GROUP") # Dev group
     auth_required_claims: str = Field("tid,oid", alias="HTH_AUTH_REQUIRED_CLAIMS")
-    # Motivation vs Logic: global Entra membership decides who may use the app,
-    # while this optional JSON policy narrows individual tools by Entra app roles
-    # or group object IDs without hard-coding access rules in the registry.
-    auth_tool_access_policy: str = Field("{}", alias="HTH_AUTH_TOOL_ACCESS_POLICY")
     # Department-based access is disabled for now; keep the setting commented
     # out so we can re-enable it later without reintroducing the old policy.
     # auth_department_claims: str = Field(
@@ -399,40 +396,8 @@ class Settings(BaseSettings):
         return self._split_csv(self.auth_required_claims)
 
     @property
-    def parsed_auth_tool_access_policy(self) -> dict[str, dict[str, list[str]]]:
-        try:
-            parsed: Any = json.loads(self.auth_tool_access_policy or "{}")
-        except json.JSONDecodeError:
-            return {}
-        if not isinstance(parsed, dict):
-            return {}
-
-        policy: dict[str, dict[str, list[str]]] = {}
-        for raw_tool, raw_rule in parsed.items():
-            tool_name = str(raw_tool).strip()
-            if not tool_name or not isinstance(raw_rule, dict):
-                continue
-            roles = self._coerce_policy_values(raw_rule.get("roles"))
-            groups = self._coerce_policy_values(raw_rule.get("groups"))
-            if roles or groups:
-                policy[tool_name] = {"roles": roles, "groups": groups}
-        return policy
-
-    @staticmethod
-    def _coerce_policy_values(raw: Any) -> list[str]:
-        if raw is None:
-            return []
-        if isinstance(raw, str):
-            return [item for item in (part.strip() for part in raw.replace(",", " ").split()) if item]
-        if isinstance(raw, list):
-            values: list[str] = []
-            for item in raw:
-                rendered = str(item).strip() if item is not None else ""
-                if rendered:
-                    values.append(rendered)
-            return values
-        rendered = str(raw).strip()
-        return [rendered] if rendered else []
+    def parsed_auth_required_groups(self) -> list[str]:
+        return self._split_csv(self.auth_required_group)
 
     # Department-based access is disabled for now, so there is no parser for
     # department claims in the active configuration path.

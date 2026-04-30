@@ -20,7 +20,7 @@ from app.tool.currency import (
     CurrencySymbolsArgs,
     CurrencyTimeseriesArgs,
 )
-from app.config import ParameterMappingError, Settings, UnsupportedToolError
+from app.config import ParameterMappingError, UnsupportedToolError
 from app.tool.stock.intelligence import rank_evidence_with_filters
 from app.tool.stock.media import build_harmonise_image_url
 from app.tool.stock.service import InventoryService
@@ -85,7 +85,6 @@ def _redact_args_for_tool_log(raw_args: dict[str, Any]) -> dict[str, Any]:
 class ToolRegistry:
     def __init__(
         self,
-        settings: Settings,
         inventory_service: InventoryService | None,
         resolver_service: ResolverService,
         session_store: SessionStore,
@@ -103,7 +102,6 @@ class ToolRegistry:
         self.weather_service = weather_service
         self.currency_service = currency_service
         self.logger = logger
-        self._tool_access_policy = settings.parsed_auth_tool_access_policy
         self.inventory_tools_enabled = inventory_tools_enabled and inventory_service is not None
         self._tools: dict[str, ToolSpec] = {}
         if self.inventory_tools_enabled:
@@ -226,7 +224,7 @@ class ToolRegistry:
         handler,
         *,
         visible: bool = True,
-        required_roles: tuple[str, ...] = ("Tool.Viewer",),
+        required_roles: tuple[str, ...] = (),
     ) -> None:
         self._tools[name] = ToolSpec(
             name=name,
@@ -238,13 +236,6 @@ class ToolRegistry:
         )
 
     def _is_role_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
-        policy = self._tool_access_policy.get(spec.name)
-        if policy is not None:
-            roles = set(user_context.roles)
-            groups = set(user_context.groups)
-            required_roles = set(policy.get("roles", []))
-            required_groups = set(policy.get("groups", []))
-            return bool((required_roles and roles & required_roles) or (required_groups and groups & required_groups))
         if not spec.required_roles:
             return True
         roles = set(user_context.roles)
@@ -252,17 +243,6 @@ class ToolRegistry:
 
     def _authorize_tool_access(self, spec: ToolSpec, raw_args: dict[str, Any], user_context: UserContext) -> None:
         if not self._is_role_authorized(spec, user_context):
-            policy = self._tool_access_policy.get(spec.name)
-            if policy is not None:
-                raise IdentityAuthError(
-                    code="tool_access_denied",
-                    message=(
-                        f"Tool '{spec.name}' requires one of configured roles {policy.get('roles', [])} "
-                        f"or groups {policy.get('groups', [])}; user roles were {user_context.roles} "
-                        f"and groups were {user_context.groups}."
-                    ),
-                    status_code=403,
-                )
             raise IdentityAuthError(
                 code="tool_access_denied",
                 message=(

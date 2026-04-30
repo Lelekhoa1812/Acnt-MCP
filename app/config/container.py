@@ -122,7 +122,6 @@ async def build_container(settings: Settings) -> AppContainer:
     currency_service = CurrencyService(settings=settings, key_value_store=key_value_store, logger=logger)
     usage_stats_service = UsageStatsService(settings=settings, key_value_store=key_value_store)
     tool_registry = ToolRegistry(
-        settings=settings,
         inventory_service=inventory_service,
         resolver_service=resolver_service,
         session_store=session_store,

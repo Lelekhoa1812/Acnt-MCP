@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 import pytest
 
-from app.auth import IdentityGateway, UserContext, reset_user_context, set_user_context
+from app.auth import IdentityAuthError, IdentityGateway, UserContext, reset_user_context, set_user_context
 from app.agent.engine import AgentEngine, AgentRun
 from app.mcp.adapter import McpToolAdapter
 from app.tool.currency.service import CurrencyProviderError
@@ -1160,34 +1160,70 @@ def test_identity_auth_tools_enforce_group_role_access() -> None:
     assert denied_group_list.json()["detail"]["code"] == "group_access_denied"
 
 
-def test_identity_auth_tool_policy_can_require_configured_role() -> None:
+def test_identity_auth_allows_group_member_without_tool_viewer_role() -> None:
+    token = build_identity_token(roles=[])
+
+    with build_identity_auth_client() as client:
+        tools_response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        valid_call = client.post(
+            "/api/v1/tools/call",
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert tools_response.status_code == 200
+    tool_names = {tool["name"] for tool in tools_response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+    assert valid_call.status_code == 200
+
+
+def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
-        update={"auth_tool_access_policy": '{"stock_snapshot":{"roles":["Stock.Reader"]}}'}
+        update={"auth_required_group": "SG-HTH-MCP-Users"}
     )
-    denied_token = build_identity_token(roles=["Tool.Viewer"])
-    allowed_token = build_identity_token(roles=["Stock.Reader"])
+    token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
+    monkeypatch.setattr(
+        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
+        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
+    )
 
     with TestClient(create_app(settings)) as client:
-        denied_tools = client.get(
+        response = client.get(
             "/api/v1/tools",
-            headers={"Authorization": f"Bearer {denied_token}"},
-        )
-        denied_call = client.post(
-            "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
-            headers={"Authorization": f"Bearer {denied_token}"},
-        )
-        allowed_call = client.post(
-            "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
-            headers={"Authorization": f"Bearer {allowed_token}"},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
-    denied_names = {tool["name"] for tool in denied_tools.json()["tools"]}
-    assert "stock_snapshot" not in denied_names
-    assert denied_call.status_code == 403
-    assert denied_call.json()["detail"]["code"] == "tool_access_denied"
-    assert allowed_call.status_code == 200
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+
+
+def test_identity_auth_reports_unresolved_required_group_lookup(monkeypatch) -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={"auth_required_group": "SG-HTH-MCP-Users"}
+    )
+    token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
+
+    def fail_lookup(self, display_name):  # noqa: ANN001
+        raise IdentityAuthError(
+            code="required_group_unresolved",
+            message=f"Microsoft Graph did not find required group display name '{display_name}'.",
+            status_code=500,
+        )
+
+    monkeypatch.setattr("app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name", fail_lookup)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"]["code"] == "required_group_unresolved"
 
 
 @pytest.mark.parametrize(
