@@ -47,6 +47,17 @@ class ClaudeOAuthService:
                 status_code=500,
             )
 
+    def _require_validation_enabled(self) -> None:
+        if not (
+            self.settings.oauth_client_id
+            and (self.settings.oauth_authority or self.settings.oauth_tenant_id or self.settings.auth_issuer)
+        ):
+            raise ClaudeOAuthError(
+                code="oauth_validation_not_configured",
+                message="OAuth token validation requires OAUTH_CLIENT_ID and OAUTH_TENANT_ID or OAUTH_AUTHORITY.",
+                status_code=500,
+            )
+
     def _require_authority(self) -> str:
         authority = self.settings.resolved_oauth_authority
         if not authority:
@@ -162,7 +173,7 @@ class ClaudeOAuthService:
         return payload
 
     def validate_access_token(self, token: str) -> dict[str, Any]:
-        self._require_enabled()
+        self._require_validation_enabled()
         issuer = self.settings.resolved_oauth_issuer
         audiences = self.settings.resolved_oauth_audience_variants()
         if not issuer or not audiences:

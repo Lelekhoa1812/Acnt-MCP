@@ -152,8 +152,11 @@ class Settings(BaseSettings):
     auth_audience: str | None = Field(None, alias="HTH_AUTH_AUDIENCE")
     auth_jwks_url: str | None = Field(None, alias="HTH_AUTH_JWKS_URL")
     auth_jwt_hs256_secret: str | None = Field(None, alias="HTH_AUTH_JWT_HS256_SECRET")
-    # auth_required_group: str = Field("MCP-Users", alias="HTH_AUTH_REQUIRED_GROUP")      # Production group
-    auth_required_group: str = Field("SG-HTH-MCP-Users", alias="HTH_AUTH_REQUIRED_GROUP") # Dev group
+    oauth_user_group: str = Field("SG-HTH-MCP-Users", alias="OAUTH_USER_GROUP")
+    news_pl_group: str = Field("all", alias="NEWS_PL_GROUP")
+    weather_pl_group: str = Field("all", alias="WEATHER_PL_GROUP")
+    currency_pl_group: str = Field("all", alias="CURRENCY_PL_GROUP")
+    stock_pl_group: str = Field("all", alias="STOCK_PL_GROUP")
     auth_required_claims: str = Field("tid,oid", alias="HTH_AUTH_REQUIRED_CLAIMS")
     # Department-based access is disabled for now; keep the setting commented
     # out so we can re-enable it later without reintroducing the old policy.
@@ -397,8 +400,33 @@ class Settings(BaseSettings):
         return self._split_csv(self.auth_required_claims)
 
     @property
-    def parsed_auth_required_groups(self) -> list[str]:
-        return self._split_csv(self.auth_required_group)
+    def parsed_oauth_user_groups(self) -> list[str]:
+        return self._split_csv(self.oauth_user_group)
+
+    @property
+    def parsed_news_plugin_groups(self) -> list[str]:
+        return self._split_csv(self.news_pl_group)
+
+    @property
+    def parsed_weather_plugin_groups(self) -> list[str]:
+        return self._split_csv(self.weather_pl_group)
+
+    @property
+    def parsed_currency_plugin_groups(self) -> list[str]:
+        return self._split_csv(self.currency_pl_group)
+
+    @property
+    def parsed_stock_plugin_groups(self) -> list[str]:
+        return self._split_csv(self.stock_pl_group)
+
+    def parsed_plugin_groups(self, plugin: str) -> list[str]:
+        groups_by_plugin = {
+            "news": self.parsed_news_plugin_groups,
+            "weather": self.parsed_weather_plugin_groups,
+            "currency": self.parsed_currency_plugin_groups,
+            "stock": self.parsed_stock_plugin_groups,
+        }
+        return groups_by_plugin.get(plugin, [])
 
     # Department-based access is disabled for now, so there is no parser for
     # department claims in the active configuration path.

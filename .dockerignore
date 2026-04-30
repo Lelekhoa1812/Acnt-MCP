@@ -10,6 +10,7 @@ tests
 .venv
 .claude
 .cursor
+.rtk
 
 .pytest_cache
 __pycache__

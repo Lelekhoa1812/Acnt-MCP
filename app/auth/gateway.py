@@ -68,7 +68,7 @@ class IdentityGateway:
         self._rate_limit_lock = Lock()
         self._rate_limit_windows: defaultdict[str, deque[float]] = defaultdict(deque)
         self._group_cache_lock = Lock()
-        self._resolved_required_group_ids: tuple[float, set[str]] | None = None
+        self._resolved_group_ids: dict[str, tuple[float, set[str]]] = {}
         self._group_member_ids: dict[str, tuple[float, set[str]]] = {}
 
     @property
@@ -219,7 +219,7 @@ class IdentityGateway:
                 missing_claims=["tid", "oid"],
             )
 
-        return UserContext(
+        user_context = UserContext(
             tenant_id=tenant_id,
             user_id=user_id,
             subject=subject,
@@ -231,15 +231,17 @@ class IdentityGateway:
             groups=self._normalize_claim_values(claims.get("groups")),
             claims=claims,
         )
+        user_context.plugin_permissions = self.resolve_allowed_plugins(user_context)
+        return user_context
 
     def _enforce_identity_gating(self, user_context: UserContext) -> None:
-        required_groups = set(self.settings.parsed_auth_required_groups)
+        required_groups = set(self.settings.parsed_oauth_user_groups)
         if not required_groups:
             return
         token_groups = set(user_context.groups)
         if token_groups & required_groups:
             return
-        resolved_group_ids = self._resolved_group_ids()
+        resolved_group_ids = self._resolved_oauth_user_group_ids()
         if token_groups & resolved_group_ids:
             return
         if self._user_is_member_of_required_groups(user_context.oid or user_context.user_id, resolved_group_ids):
@@ -257,7 +259,13 @@ class IdentityGateway:
         )
 
     def _resolved_group_ids(self) -> set[str]:
-        cached = self._read_group_ids_cache()
+        return self._resolve_group_ids("oauth_user", self.settings.parsed_oauth_user_groups, strict=True)
+
+    def _resolved_oauth_user_group_ids(self) -> set[str]:
+        return self._resolve_group_ids("oauth_user", self.settings.parsed_oauth_user_groups, strict=True)
+
+    def _resolve_group_ids(self, cache_key: str, group_names: list[str], *, strict: bool) -> set[str]:
+        cached = self._read_group_ids_cache(cache_key)
         if cached is not None:
             return cached
 
@@ -265,42 +273,63 @@ class IdentityGateway:
         can_resolve_display_names = bool(
             self.settings.oauth_client_id and self.settings.oauth_client_secret and self.settings.oauth_tenant_id
         )
-        for group_name in self.settings.parsed_auth_required_groups:
+        for group_name in group_names:
             if self._looks_like_guid(group_name):
                 resolved.add(group_name)
                 continue
+            if not self._plugin_group_name_requires_graph(group_name):
+                if strict:
+                    continue
+                return set()
             if not can_resolve_display_names:
-                continue
+                if not strict:
+                    return set()
+                raise IdentityAuthError(
+                    code="group_lookup_config_missing",
+                    message=(
+                        "Dynamic Entra group lookup requires OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, "
+                        "and OAUTH_TENANT_ID."
+                    ),
+                    status_code=500,
+                )
             group_id = self._lookup_group_id_by_display_name(group_name)
             if group_id:
                 resolved.add(group_id)
             else:
+                if not strict:
+                    return set()
                 raise IdentityAuthError(
                     code="required_group_unresolved",
                     message=f"Microsoft Graph did not find required group display name '{group_name}'.",
                     status_code=500,
                 )
-        self._write_group_ids_cache(resolved)
+        self._write_group_ids_cache(cache_key, resolved)
         return resolved
 
-    def _read_group_ids_cache(self) -> set[str] | None:
+    def _read_group_ids_cache(self, cache_key: str) -> set[str] | None:
         if self.settings.auth_group_cache_ttl_seconds <= 0:
             return None
         with self._group_cache_lock:
-            if self._resolved_required_group_ids is None:
+            cached = self._resolved_group_ids.get(cache_key)
+            if cached is None:
                 return None
-            expires_at, group_ids = self._resolved_required_group_ids
+            expires_at, group_ids = cached
             if expires_at <= time():
-                self._resolved_required_group_ids = None
+                self._resolved_group_ids.pop(cache_key, None)
                 return None
             return set(group_ids)
 
-    def _write_group_ids_cache(self, group_ids: set[str]) -> None:
+    def _write_group_ids_cache(self, cache_key: str, group_ids: set[str]) -> None:
         ttl_seconds = self.settings.auth_group_cache_ttl_seconds
         if ttl_seconds <= 0:
             return
         with self._group_cache_lock:
-            self._resolved_required_group_ids = (time() + ttl_seconds, set(group_ids))
+            self._resolved_group_ids[cache_key] = (time() + ttl_seconds, set(group_ids))
+
+    def clear_group_caches(self) -> None:
+        with self._group_cache_lock:
+            self._resolved_group_ids.clear()
+            self._group_member_ids.clear()
 
     @staticmethod
     def _looks_like_guid(value: str) -> bool:
@@ -344,16 +373,61 @@ class IdentityGateway:
             ) from exc
 
     def _user_is_member_of_required_groups(self, user_id: str, group_ids: set[str]) -> bool:
+        return self._user_is_member_of_groups(user_id, group_ids)
+
+    def _user_is_member_of_groups(self, user_id: str, group_ids: set[str]) -> bool:
         if not user_id or not group_ids:
             return False
-        member_ids = self._required_group_member_ids(group_ids)
+        member_ids = self._group_member_ids_for_groups(group_ids)
         return user_id.casefold() in member_ids
 
     def _required_group_member_ids(self, group_ids: set[str]) -> set[str]:
+        return self._group_member_ids_for_groups(group_ids)
+
+    def _group_member_ids_for_groups(self, group_ids: set[str]) -> set[str]:
         member_ids: set[str] = set()
         for group_id in group_ids:
             member_ids.update(self._member_ids_for_group(group_id))
         return member_ids
+
+    def resolve_allowed_plugins(self, user_context: UserContext) -> list[str]:
+        # Motivation vs Logic: MCP access and plugin/tool access have different
+        # operators now. Resolve plugin groups once per authenticated request so
+        # discovery, direct calls, and planner prompts share the same allow-list.
+        allowed: list[str] = []
+        for plugin in ("news", "weather", "currency", "stock"):
+            if self.user_can_access_plugin(user_context, plugin):
+                allowed.append(plugin)
+        return allowed
+
+    def user_can_access_plugin(self, user_context: UserContext, plugin: str) -> bool:
+        group_names = self.settings.parsed_plugin_groups(plugin)
+        if self._plugin_group_policy_all(group_names):
+            return True
+        group_ids = self._resolve_group_ids(f"plugin:{plugin}", group_names, strict=False)
+        if not group_ids:
+            return True
+        token_groups = set(user_context.groups)
+        if token_groups & set(group_names):
+            return True
+        if token_groups & group_ids:
+            return True
+        try:
+            return self._user_is_member_of_groups(user_context.oid or user_context.user_id, group_ids)
+        except IdentityAuthError as exc:
+            if exc.payload.code == "group_lookup_config_missing":
+                return False
+            raise
+
+    @staticmethod
+    def _plugin_group_policy_all(group_names: list[str]) -> bool:
+        if not group_names:
+            return True
+        return any(group.casefold() == "all" for group in group_names)
+
+    @staticmethod
+    def _plugin_group_name_requires_graph(group_name: str) -> bool:
+        return "SG" in group_name or IdentityGateway._looks_like_guid(group_name)
 
     def _member_ids_for_group(self, group_id: str) -> set[str]:
         cached = self._read_group_member_cache(group_id)

@@ -10,6 +10,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.auth.models import UserContext
+from app.auth.context import get_user_context
 from app.auth.gateway import IdentityAuthError
 from app.tool.currency import (
     CurrencyConvertArgs,
@@ -70,7 +71,7 @@ class ToolSpec:
     model: type[BaseModel]
     handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
     visible: bool = True
-    required_roles: tuple[str, ...] = ()
+    plugin: str | None = None
 
 
 # Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
@@ -122,11 +123,12 @@ class ToolRegistry:
         include_hidden: bool = True,
         user_context: UserContext | None = None,
     ) -> list[ToolDefinition]:
+        user_context = user_context or get_user_context()
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
                 continue
-            if user_context is not None and not self._is_role_authorized(spec, user_context):
+            if user_context is not None and not self._is_plugin_authorized(spec, user_context):
                 continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we
@@ -141,7 +143,6 @@ class ToolRegistry:
                     name=public_name,
                     description=spec.description,
                     input_schema=spec.model.model_json_schema(),
-                    required_roles=list(spec.required_roles),
                 )
             )
         return tools
@@ -152,11 +153,12 @@ class ToolRegistry:
         include_hidden: bool = True,
         user_context: UserContext | None = None,
     ) -> list[dict[str, Any]]:
+        user_context = user_context or get_user_context()
         payloads: list[dict[str, Any]] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
                 continue
-            if user_context is not None and not self._is_role_authorized(spec, user_context):
+            if user_context is not None and not self._is_plugin_authorized(spec, user_context):
                 continue
             public_name = self._tool_name_map.to_public(spec.name)
             # Root Cause vs Logic: keep the REST function payload signature aligned with
@@ -188,6 +190,7 @@ class ToolRegistry:
         spec = self._tools.get(tool_name)
         if spec is None:
             raise UnsupportedToolError(f"Unsupported tool '{tool_name}'.")
+        user_context = user_context or get_user_context()
         if user_context is not None:
             self._authorize_tool_access(spec, raw_args, user_context)
         try:
@@ -224,7 +227,7 @@ class ToolRegistry:
         handler,
         *,
         visible: bool = True,
-        required_roles: tuple[str, ...] = (),
+        plugin: str | None = None,
     ) -> None:
         self._tools[name] = ToolSpec(
             name=name,
@@ -232,22 +235,21 @@ class ToolRegistry:
             model=model,
             handler=handler,
             visible=visible,
-            required_roles=required_roles,
+            plugin=plugin or self._infer_plugin_name(name),
         )
 
-    def _is_role_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
-        if not spec.required_roles:
+    def _is_plugin_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
+        if not spec.plugin:
             return True
-        roles = set(user_context.roles)
-        return any(role in roles for role in spec.required_roles)
+        return spec.plugin in set(user_context.plugin_permissions)
 
     def _authorize_tool_access(self, spec: ToolSpec, raw_args: dict[str, Any], user_context: UserContext) -> None:
-        if not self._is_role_authorized(spec, user_context):
+        if not self._is_plugin_authorized(spec, user_context):
             raise IdentityAuthError(
                 code="tool_access_denied",
                 message=(
-                    f"Tool '{spec.name}' requires one of roles {list(spec.required_roles)}; "
-                    f"user roles were {user_context.roles}."
+                    f"Tool '{spec.name}' requires access to the '{spec.plugin}' plugin; "
+                    f"user plugin permissions were {user_context.plugin_permissions}."
                 ),
                 status_code=403,
             )
@@ -263,15 +265,18 @@ class ToolRegistry:
         #         status_code=403,
         #         missing_claims=["extension_departmentId|extension_department|officeLocation"],
         #     )
-        # if str(department_id).strip().lower() != str(user_context.department_claim).strip().lower():
-        #     raise IdentityAuthError(
-        #         code="department_access_denied",
-        #         message=(
-        #             f"departmentId '{department_id}' does not match token department claim "
-        #             f"'{user_context.department_claim}'."
-        #         ),
-        #         status_code=403,
-        #     )
+
+    @staticmethod
+    def _infer_plugin_name(tool_name: str) -> str | None:
+        if tool_name.startswith(("stock_", "resolver_", "session_")):
+            return "stock"
+        if tool_name.startswith("news_"):
+            return "news"
+        if tool_name.startswith("weather_"):
+            return "weather"
+        if tool_name.startswith(("fx_", "currency_")):
+            return "currency"
+        return None
 
     def _register_stock(self) -> None:
         async def get_departments(validated: StockGetDepartmentsArgs, _: str | None, thought: str) -> ToolResult:
@@ -1679,7 +1684,6 @@ class ToolRegistry:
             SessionToolArgs,
             clear_state,
             visible=False,
-            required_roles=("Tool.Admin",),
         )
 
     def _register_news(self) -> None:

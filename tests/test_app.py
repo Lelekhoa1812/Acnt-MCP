@@ -173,7 +173,7 @@ def build_identity_auth_settings() -> Settings:
         auth_issuer="https://login.microsoftonline.com/test-tenant/v2.0",
         auth_audience="api://hth-mcp",
         auth_jwt_hs256_secret="test-secret",
-        auth_required_group="HTH-MCP",
+        oauth_user_group="HTH-MCP",
         oauth_client_id="",
         oauth_client_secret="",
         oauth_tenant_id="",
@@ -209,7 +209,7 @@ def build_bridge_identity_client() -> TestClient:
         auth_issuer="https://hth.example.test",
         auth_audience="https://hth.example.test/mcp",
         auth_jwt_hs256_secret="test-bridge-secret",
-        auth_required_group="HTH-MCP",
+        oauth_user_group="HTH-MCP",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
         oauth_client_id=None,
@@ -242,7 +242,7 @@ def build_bridge_identity_user_client() -> TestClient:
         auth_issuer="https://hth.example.test",
         auth_audience="https://hth.example.test/mcp",
         auth_jwt_hs256_secret="test-bridge-secret",
-        auth_required_group="HTH-MCP",
+        oauth_user_group="HTH-MCP",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
         oauth_client_id="claude-client-id",
@@ -1108,14 +1108,90 @@ def test_oauth_ui_page_is_served_from_the_api_namespace() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
     body = response.text
-    assert "OAuth client credentials" in body
+    assert "OAuth group administration" in body
     assert "Client ID" in body
     assert "Client secret" in body
+    assert "OAUTH_USER_GROUP" in body
+    assert "NEWS_PL_GROUP" in body
+    assert "msal-browser" in body
     assert "/oauth/register" in body
     assert "Live status" not in body
     assert "Raw response" not in body
     assert "What it does" not in body
     assert "registration_access_token" not in body
+
+
+def test_oauth_admin_config_and_group_save_require_oauth_user_group(monkeypatch, tmp_path) -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "oauth_client_id": "admin-client-id",
+            "oauth_client_secret": "admin-client-secret",
+            "oauth_tenant_id": "tenant-1",
+            "oauth_authority": "https://login.microsoftonline.com/tenant-1",
+            "oauth_audience": "api://admin-client-id",
+            "oauth_scope": "api://admin-client-id/.default",
+        }
+    )
+    env_path = tmp_path / ".env"
+    env_path.write_text("OAUTH_USER_GROUP=HTH-MCP\nNEWS_PL_GROUP=all\n", encoding="utf-8")
+    claims = {
+        "ver": "2.0",
+        "tid": "tenant-1",
+        "oid": "user-1",
+        "sub": "user-1",
+        "groups": ["HTH-MCP"],
+    }
+
+    with TestClient(create_app(settings)) as client:
+        client.app.state.claude_oauth_service.validate_access_token = lambda token: claims
+        original_resolve_path = type(client.app.state.container.settings).resolve_path
+
+        def fake_resolve_path(self, raw_path):  # noqa: ANN001
+            if raw_path == ".env":
+                return env_path
+            return original_resolve_path(self, raw_path)
+
+        monkeypatch.setattr(type(client.app.state.container.settings), "resolve_path", fake_resolve_path)
+
+        public_config = client.get("/api/v1/oauth/config")
+        authed_config = client.get("/api/v1/oauth/config", headers={"Authorization": "Bearer admin-token"})
+        missing_token_save = client.put(
+            "/api/v1/oauth/groups",
+            json={
+                "OAUTH_USER_GROUP": "HTH-MCP",
+                "NEWS_PL_GROUP": "all",
+                "WEATHER_PL_GROUP": "all",
+                "CURRENCY_PL_GROUP": "all",
+                "STOCK_PL_GROUP": "all",
+            },
+        )
+        saved = client.put(
+            "/api/v1/oauth/groups",
+            json={
+                "OAUTH_USER_GROUP": "HTH-MCP",
+                "NEWS_PL_GROUP": "SG-News",
+                "WEATHER_PL_GROUP": "all",
+                "CURRENCY_PL_GROUP": "all",
+                "STOCK_PL_GROUP": "SG-Stock-A,SG-Stock-B",
+            },
+            headers={"Authorization": "Bearer admin-token"},
+        )
+
+        live_settings = client.app.state.container.settings
+
+    assert public_config.status_code == 200
+    assert public_config.json()["msal"]["clientId"] == "admin-client-id"
+    assert "groups" not in public_config.json()
+    assert authed_config.status_code == 200
+    assert authed_config.json()["groups"]["OAUTH_USER_GROUP"] == "HTH-MCP"
+    assert missing_token_save.status_code == 401
+    assert saved.status_code == 200
+    assert saved.json()["groups"]["NEWS_PL_GROUP"] == "SG-News"
+    assert live_settings.news_pl_group == "SG-News"
+    assert live_settings.stock_pl_group == "SG-Stock-A,SG-Stock-B"
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "NEWS_PL_GROUP=SG-News" in env_text
+    assert "STOCK_PL_GROUP=SG-Stock-A,SG-Stock-B" in env_text
 
 
 def test_mcp_oauth_endpoint_aliases_remain_supported() -> None:
@@ -1247,10 +1323,68 @@ def test_identity_auth_allows_group_member_without_tool_viewer_role() -> None:
     assert valid_call.status_code == 200
 
 
+def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> None:
+    stock_group_id = "11111111-2222-3333-4444-555555555555"
+    news_group_id = "22222222-3333-4444-5555-666666666666"
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "stock_pl_group": stock_group_id,
+            "news_pl_group": news_group_id,
+        }
+    )
+    token = build_identity_token(groups=["HTH-MCP", news_group_id], roles=[])
+    monkeypatch.setattr("app.auth.gateway.IdentityGateway._user_is_member_of_groups", lambda self, user_id, group_ids: False)
+
+    with TestClient(create_app(settings)) as client:
+        tools_response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        denied_call = client.post(
+            "/api/v1/tools/call",
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert tools_response.status_code == 200
+    tool_names = {tool["name"] for tool in tools_response.json()["tools"]}
+    assert "news_search" in tool_names
+    assert "weather_current" in tool_names
+    assert "fx_convert" in tool_names
+    assert "stock_snapshot" not in tool_names
+    assert all("required_roles" not in tool for tool in tools_response.json()["tools"])
+    assert denied_call.status_code == 403
+    assert denied_call.json()["detail"]["code"] == "tool_access_denied"
+
+
+@pytest.mark.parametrize("stock_group", ["all", "", "Not-A-Security-Group", "SG-Missing-Stock-Plugin"])
+def test_identity_auth_plugin_group_falls_back_to_all(monkeypatch, stock_group: str) -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "stock_pl_group": stock_group,
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
+    )
+    token = build_identity_token(groups=["HTH-MCP"], roles=[])
+    monkeypatch.setattr("app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name", lambda self, display_name: None)
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+
+
 def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",
@@ -1276,7 +1410,7 @@ def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch
 def test_identity_auth_checks_graph_membership_when_token_groups_are_missing(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",
@@ -1309,7 +1443,7 @@ def test_identity_gateway_fetches_paginated_group_member_object_ids(monkeypatch)
     group_id = "11111111-2222-3333-4444-555555555555"
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",
@@ -1367,7 +1501,7 @@ def test_identity_gateway_denies_when_oid_is_not_in_group_members(monkeypatch) -
     group_id = "11111111-2222-3333-4444-555555555555"
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",
@@ -1408,7 +1542,7 @@ def test_identity_gateway_reports_graph_member_lookup_failure_without_secret(mon
     group_id = "11111111-2222-3333-4444-555555555555"
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",
@@ -1450,7 +1584,7 @@ def test_identity_gateway_reports_graph_member_lookup_failure_without_secret(mon
 def test_identity_auth_reports_unresolved_required_group_lookup(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_user_group": "SG-HTH-MCP-Users",
             "oauth_client_id": "graph-client",
             "oauth_client_secret": "graph-secret",
             "oauth_tenant_id": "tenant-1",

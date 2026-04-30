@@ -382,7 +382,6 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
-    required_roles: list[str] = Field(default_factory=list)
 
 
 class AgentDebugIntent(BaseModel):

@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from app.agent import AgentEngine
+from app.auth import reset_user_context, set_user_context
 from app.auth.models import UserContext
 from app.config import Settings, UpstreamServiceError
 from app.text.stopwords import STOPWORDS
@@ -67,7 +68,12 @@ class OrchestratorService:
             ",".join(memory_scope.bridge_signals) or "<none>",
         )
 
-        run = await self.agent_engine.run(request=request, session_state=session_state)
+        context_token = set_user_context(user_context) if user_context is not None else None
+        try:
+            run = await self.agent_engine.run(request=request, session_state=session_state)
+        finally:
+            if context_token is not None:
+                reset_user_context(context_token)
         await self.usage_stats_service.record_query(
             user_context=user_context,
             query=request.message,

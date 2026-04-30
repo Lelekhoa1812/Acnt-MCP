@@ -1,13 +1,122 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+from pathlib import Path
+from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+from app.auth import IdentityAuthError
+from app.auth.claude import ClaudeOAuthError
 from app.config import get_container
 from app.render import render_mock, render_static_html, render_usage_stats_html
 
 
 router = APIRouter()
+
+
+class OAuthGroupSettingsPayload(BaseModel):
+    oauth_user_group: str = Field(alias="OAUTH_USER_GROUP")
+    news_pl_group: str = Field(alias="NEWS_PL_GROUP")
+    weather_pl_group: str = Field(alias="WEATHER_PL_GROUP")
+    currency_pl_group: str = Field(alias="CURRENCY_PL_GROUP")
+    stock_pl_group: str = Field(alias="STOCK_PL_GROUP")
+
+
+_GROUP_ENV_KEYS = (
+    "OAUTH_USER_GROUP",
+    "NEWS_PL_GROUP",
+    "WEATHER_PL_GROUP",
+    "CURRENCY_PL_GROUP",
+    "STOCK_PL_GROUP",
+)
+
+
+def _extract_bearer_token(request: Request) -> str | None:
+    raw = request.headers.get("authorization")
+    if not raw:
+        return None
+    token = raw.strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    return token or None
+
+
+def _oauth_admin_config(container) -> dict[str, str | None]:
+    settings = container.settings
+    return {
+        "clientId": settings.oauth_client_id,
+        "tenantId": settings.oauth_tenant_id,
+        "authority": settings.resolved_oauth_authority,
+        "scope": settings.resolved_oauth_scope(),
+    }
+
+
+def _oauth_group_config(container) -> dict[str, str]:
+    settings = container.settings
+    return {
+        "OAUTH_USER_GROUP": settings.oauth_user_group,
+        "NEWS_PL_GROUP": settings.news_pl_group,
+        "WEATHER_PL_GROUP": settings.weather_pl_group,
+        "CURRENCY_PL_GROUP": settings.currency_pl_group,
+        "STOCK_PL_GROUP": settings.stock_pl_group,
+    }
+
+
+def _require_oauth_admin_user(request: Request, container) -> None:
+    token = _extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail={"code": "missing_bearer_token", "message": "Bearer token required."})
+    try:
+        claims = request.app.state.claude_oauth_service.validate_access_token(token)
+        request.app.state.identity_gateway.authorize_claims(claims)
+    except ClaudeOAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+    except IdentityAuthError as exc:
+        raise HTTPException(status_code=exc.payload.status_code, detail=exc.to_response_payload()["error"]) from exc
+
+
+def _quote_env_value(value: str) -> str:
+    if not value:
+        return '""'
+    if any(char.isspace() for char in value) or any(char in value for char in '#"\''):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
+def _update_env_file(path: Path, updates: dict[str, str]) -> None:
+    existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    lines: list[str] = []
+    for line in existing:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            lines.append(line)
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in updates:
+            lines.append(f"{key}={_quote_env_value(updates[key])}")
+            seen.add(key)
+        else:
+            lines.append(line)
+    for key in _GROUP_ENV_KEYS:
+        if key not in seen:
+            lines.append(f"{key}={_quote_env_value(updates[key])}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _apply_group_settings(container, updates: dict[str, str]) -> None:
+    settings = container.settings
+    # Motivation vs Logic: the admin page is an operational control surface, so
+    # saving should update durable `.env` and the live Settings instance together
+    # instead of requiring an avoidable service restart for permission changes.
+    settings.oauth_user_group = updates["OAUTH_USER_GROUP"]
+    settings.news_pl_group = updates["NEWS_PL_GROUP"]
+    settings.weather_pl_group = updates["WEATHER_PL_GROUP"]
+    settings.currency_pl_group = updates["CURRENCY_PL_GROUP"]
+    settings.stock_pl_group = updates["STOCK_PL_GROUP"]
 
 
 @router.get("/health")
@@ -112,6 +221,32 @@ async def mock_ui_legacy(container = Depends(get_container)) -> HTMLResponse:
 @router.get("/oauth", response_class=HTMLResponse)
 async def oauth_ui(container = Depends(get_container)) -> HTMLResponse:
     return _build_oauth_response(container)
+
+
+@router.get("/oauth/config")
+async def oauth_config(request: Request, container = Depends(get_container)) -> dict[str, Any]:
+    payload: dict[str, Any] = {"msal": _oauth_admin_config(container), "authenticated": False}
+    if not _extract_bearer_token(request):
+        return payload
+    _require_oauth_admin_user(request, container)
+    payload["authenticated"] = True
+    payload["groups"] = _oauth_group_config(container)
+    return payload
+
+
+@router.put("/oauth/groups")
+async def oauth_groups(
+    payload: OAuthGroupSettingsPayload,
+    request: Request,
+    container = Depends(get_container),
+) -> dict[str, Any]:
+    _require_oauth_admin_user(request, container)
+    updates = payload.model_dump(by_alias=True)
+    env_path = container.settings.resolve_path(".env")
+    _update_env_file(env_path, updates)
+    _apply_group_settings(container, updates)
+    request.app.state.identity_gateway.clear_group_caches()
+    return {"status": "ok", "groups": _oauth_group_config(container)}
 
 
 @router.get("/stats", response_class=HTMLResponse)
