@@ -180,6 +180,18 @@ def _oauth_registration_response(base_url: str, client_id: str, record: dict[str
     }
 
 
+def _oauth_identity_error_response(exc: IdentityAuthError) -> JSONResponse:
+    content: dict[str, object] = {
+        "error": exc.payload.code,
+        "error_description": exc.payload.message,
+    }
+    if exc.payload.missing_claims:
+        content["missing_claims"] = exc.payload.missing_claims
+    if exc.payload.mcp_error_code is not None:
+        content["mcp_error_code"] = exc.payload.mcp_error_code
+    return JSONResponse(status_code=exc.payload.status_code, content=content)
+
+
 def _normalize_claim_values(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -728,6 +740,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         "error_description": "Authorization code is not bound to an authenticated Entra user.",
                     },
                 )
+            if resolved_settings.identity_auth_enabled and user_claims:
+                try:
+                    # Motivation vs Logic: connector token exchange is the
+                    # earliest point where we have both the OAuth client and the
+                    # signed-in Entra user. Authorizing here gives Cursor,
+                    # ChatGPT, and Claude a direct OAuth error while the MCP
+                    # transport still validates every bearer token on use.
+                    identity_gateway.authorize_claims(user_claims)
+                except IdentityAuthError as exc:
+                    return _oauth_identity_error_response(exc)
         elif grant_type == "client_credentials":
             client = request.app.state.oauth_clients.get(client_id) if client_id else None
             if client is None and client_id is not None:

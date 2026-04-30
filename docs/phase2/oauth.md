@@ -2,10 +2,11 @@
 
 This project exposes an OAuth-shaped bridge so connector UIs can register a client, obtain a client ID and secret, and complete the MCP authorization code flow.
 
-The server is not pretending to be a full identity provider for user sign-in. It is doing two narrower jobs:
+The server is not pretending to be a full identity provider for user sign-in. It is doing three narrower jobs:
 
 1. Advertising the MCP discovery metadata that connector clients expect.
 2. Issuing and recovering client registration records so the connector can be configured with a client ID and secret.
+3. When identity auth is enabled, routing the browser through Entra login so the bridge token is bound to a real user object ID.
 
 ## 1. What Is Implemented
 
@@ -111,22 +112,23 @@ The authorization flow is:
 4. The client calls `POST /oauth/token`.
 5. The server validates the code and returns the access token.
 
-For this project, the returned access token is the MCP bearer token configured in `HTH_MCP_BEARER_TOKEN`.
+For this project, the returned access token is a bridge JWT for `/mcp`.
 
-That means the OAuth bridge is a connector bootstrap mechanism, not a separate identity provider.
-The bridge issues a JWT access token signed by `HTH_MCP_OAUTH_JWT_SECRET` when it is set, or by `HTH_MCP_BEARER_TOKEN` as a compatibility fallback.
+The bridge issues a JWT access token signed by `HTH_MCP_OAUTH_JWT_SECRET` when it is set, or by `HTH_MCP_BEARER_TOKEN` as a compatibility fallback. When `HTH_IDENTITY_AUTH_ENABLED=true`, the authorization code must be bound to a signed-in Entra user with `tid` and `oid`, and `/oauth/token` verifies membership in `SG-HTH-MCP-Users` before returning the bridge JWT.
 
 ## 6. Client Credentials Flow
 
 The token endpoint also accepts `grant_type=client_credentials`.
 
-That flow is useful when the caller already has a registered client ID and secret and wants to fetch the configured bearer token directly.
+That flow is useful only when identity auth is disabled and the caller already has a registered client ID and secret.
 
 Recommended token endpoint auth method:
 
 - `client_secret_post`
 
-If a connector UI shows `none` as the default, change it to the method returned by `/oauth/register` unless you intentionally want a public client.
+If `HTH_IDENTITY_AUTH_ENABLED=true`, client credentials are denied because MCP tools are user-scoped.
+
+If a connector UI shows `none` as the default, change it to the method returned by `/oauth/register` unless you intentionally want a public client in a non-identity deployment.
 
 ## 7. How To Find The Client ID And Secret
 
@@ -161,7 +163,11 @@ The OAuth bridge and the identity layer solve different problems.
 - The OAuth bridge helps a connector get a valid client registration and a bearer token.
 - The identity layer validates the actual caller identity when `HTH_IDENTITY_AUTH_ENABLED=true`.
 
-The optional `OAUTH_*` settings are separate from the bridge. They only configure the direct Microsoft Entra login helper endpoints (`/oauth/login`, `/oauth/callback`, `/oauth/token/validate`) and are not required for GPT, Cursor, or Claude.ai MCP connector registration.
+The optional `OAUTH_*` settings configure the Microsoft Entra login helper endpoints (`/oauth/login`, `/oauth/callback`, `/oauth/token/validate`) and Microsoft Graph group lookup.
+
+For public bootstrap without user identity, the bridge can run with only `HTH_MCP_BEARER_TOKEN` plus `HTH_MCP_OAUTH_JWT_SECRET`.
+
+For user-scoped security (`HTH_IDENTITY_AUTH_ENABLED=true`), configure `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, and `OAUTH_TENANT_ID` so the bridge can authenticate the user and verify the user's object ID against `SG-HTH-MCP-Users`.
 
 If you are using Entra JWT enforcement, follow `auth.md` for the resource-server validation rules.
 
@@ -190,6 +196,27 @@ If the connector sees `invalid_grant`:
 2. Re-check that the authorization code is being exchanged only once.
 3. Re-run the authorize step and let the client follow the redirect again.
 
+If Cursor reports `missing_bearer_token`:
+
+1. Confirm the connector completed `/oauth/token`.
+2. Confirm the token response included `"token_type": "Bearer"`.
+3. Confirm the client sends `Authorization: Bearer <access_token>` to `/mcp/`.
+4. Confirm the MCP URL includes the configured path, typically `/mcp/`.
+
+If ChatGPT reports `refresh_actions 424 Failed Dependency`:
+
+1. Confirm discovery works from the public internet.
+2. Confirm CORS allows `https://chatgpt.com`.
+3. Confirm `/oauth/token` is not returning `group_access_denied`, `group_lookup_config_missing`, or `group_membership_lookup_failed`.
+4. Confirm the signed-in user's `oid` is a direct member of `SG-HTH-MCP-Users`.
+
+If Claude reports authorization failure:
+
+1. Re-register the connector or retrieve the saved registration with `registration_client_uri`.
+2. Confirm the redirect URI exactly matches the Claude callback.
+3. Confirm Entra login reaches `/oauth/callback` and redirects back to Claude with a bridge code.
+4. Confirm `/oauth/token` returns a bridge JWT rather than a group or Graph error.
+
 ## 11. Practical Setup Checklist
 
 1. Set `HTH_MCP_BEARER_TOKEN`.
@@ -197,7 +224,50 @@ If the connector sees `invalid_grant`:
 3. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
 4. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
 5. Allow `https://chatgpt.com`, `https://claude.ai`, and `https://claude.com` in `HTH_MCP_ALLOWED_ORIGINS` when hosted browser clients need CORS access to discovery or OAuth responses.
-6. Register the client with `POST /oauth/register`.
-7. Paste the returned `client_id` and `client_secret` into the connector UI.
-8. Save `registration_client_uri` and `registration_access_token`.
-9. Test one authorize redirect and one token exchange.
+6. If identity auth is enabled, set the Entra `OAUTH_*`, `HTH_AUTH_*`, and Graph permission settings described in `auth.md`.
+7. Register the client with `POST /oauth/register`.
+8. Paste the returned `client_id` and `client_secret` into the connector UI.
+9. Save `registration_client_uri` and `registration_access_token`.
+10. Test one authorize redirect, one token exchange, and one `/mcp/` initialize call with `Authorization: Bearer <access_token>`.
+
+## 12. Connector Handoff Examples
+
+Cursor PKCE exchange:
+
+```bash
+curl -sS -D - \
+  'https://<domain>/oauth/authorize?response_type=code&client_id=<client_id>&redirect_uri=https%3A%2F%2Fcursor.sh%2Foauth%2Fcallback&code_challenge=<verifier>&code_challenge_method=plain'
+
+curl -sS -X POST 'https://<domain>/oauth/token' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=authorization_code' \
+  --data-urlencode 'client_id=<client_id>' \
+  --data-urlencode 'code=<code>' \
+  --data-urlencode 'redirect_uri=https://cursor.sh/oauth/callback' \
+  --data-urlencode 'code_verifier=<verifier>'
+```
+
+ChatGPT callback:
+
+```bash
+curl -sS -X POST 'https://<domain>/oauth/register' \
+  -H 'Content-Type: application/json' \
+  -d '{"client_name":"ChatGPT","redirect_uris":["https://chatgpt.com/connector/oauth/callback"]}'
+```
+
+Claude trusted redirect:
+
+```bash
+curl -sS -D - \
+  'https://<domain>/oauth/authorize?response_type=code&client_id=<client_id>&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth%2Fcallback'
+```
+
+MCP bearer handoff:
+
+```bash
+curl -sS -X POST 'https://<domain>/mcp/' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'Authorization: Bearer <access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"debug","version":"1.0.0"}}}'
+```

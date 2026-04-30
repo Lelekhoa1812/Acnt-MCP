@@ -1,238 +1,90 @@
-## High-level Architecture
+# Phase 2: Identity Authorization
 
-[cite_start]The following table outlines the interaction flow between Claude, the Identity Provider (IdP), the custom MCP server, and downstream services[cite: 7, 8]:
+This service protects MCP tools with Microsoft Entra JWT validation plus group membership authorization.
 
-| Flow | Component | Description |
-| :--- | :--- | :--- |
-| 1 | Claude (client) | The starting point for the request. |
-| 2 | | |
-| 3 | | OAuth 2.0 (Authorization Code flow) |
-| 4 | | |
-| 5 | Azure AD (or other OAuth IdP) | Authenticates the user and issues tokens. |
-| 6 | | |
-| 7 | | Access Token (JWT) |
-| 8 | | |
-| 9 | Custom MCP Server (Python) | Hosted on Azure App Service; processes requests. |
-| 10 | | |
-| 11 | | Tool execution |
-| 12 | | |
-| 13 | Downstream services / APIs | Final destination for data processing or retrieval. |
+The intended user allow-list is `SG-HTH-MCP-Users`. The app resolves that display name to its Microsoft Graph group object ID, loads the group's direct member object IDs, and compares the signed-in user's `oid` claim against that set.
 
----
+## Required App Settings
 
-## Step 1 – Register an OAuth application (Client ID & Secret)
+| Setting | Purpose |
+| --- | --- |
+| `HTH_IDENTITY_AUTH_ENABLED=true` | Enables JWT and group enforcement for REST and `/mcp` traffic. |
+| `HTH_AUTH_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0` | Required issuer for accepted Entra access tokens. |
+| `HTH_AUTH_AUDIENCE=<api-audience>` | Required audience for accepted tokens and bridge JWTs. |
+| `HTH_AUTH_JWKS_URL=https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys` | Entra signing keys. |
+| `HTH_AUTH_REQUIRED_GROUP=SG-HTH-MCP-Users` | Display name or object ID of the allowed group. |
+| `HTH_AUTH_REQUIRED_CLAIMS=tid,oid` | Requires tenant and user object ID. |
+| `HTH_AUTH_REQUIRED_TOKEN_VERSION=2.0` | Rejects unexpected token versions. |
+| `HTH_AUTH_GROUP_CACHE_TTL_SECONDS=300` | Caches resolved group IDs and member object IDs briefly. |
+| `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TENANT_ID` | Used for Microsoft Graph app-only group lookup and Entra browser login. |
 
-[cite_start]Claude does not generate the OAuth client ID or secret; you must do this using an Identity Provider (IdP)[cite: 10].
+Use Key Vault references or platform secrets for all secrets. Do not commit bearer tokens, client secrets, Redis URLs with credentials, or API keys.
 
-### Option A (Recommended): Azure Entra ID (Azure AD)
-1. [cite_start]Go to **Azure Portal → Entra ID → App registrations**[cite: 13].
-2. [cite_start]Click **New registration**[cite: 14].
-3. [cite_start]Set the following[cite: 15, 16, 17]:
-   - **Name**: `claude-mcp-connector`
-   - **Supported account types**: Single tenant (recommended)
-4. [cite_start]Set the **Redirect URI**[cite: 18].
-5. [cite_start]Click **Register**[cite: 19].
-6. **✅ You now have**:
-   - [cite_start]Application (client) ID [cite: 21]
-   - [cite_start]Directory (tenant) ID [cite: 22]
+## Microsoft Graph Permissions
 
-### Create Client Secret
-1. [cite_start]Inside the App Registration, go to **Certificates & secrets**[cite: 24].
-2. [cite_start]Click **New client secret**[cite: 25].
-3. [cite_start]**Copy the value immediately**[cite: 26].
-4. [cite_start]**✅ This is your OAuth Client Secret**[cite: 27].
+The Entra app used by `OAUTH_CLIENT_ID` must have admin-consented application permission to read group membership.
 
-### Alternative IdPs
-[cite_start]You can also use: Auth0, Okta, Keycloak, or Cognito[cite: 28, 29, 30, 31, 32, 33]. The concept remains the same:
-- [cite_start]Client ID + Client Secret come from the IdP[cite: 35].
-- [cite_start]Redirect URI must point to your MCP server[cite: 36].
+Recommended permission:
 
----
+- `GroupMember.Read.All`
 
-## Step 2 – Store OAuth credentials in Azure App Service
+Equivalent broader permissions can work, but use least privilege where possible. Without this permission, users may complete Microsoft login but fail connector token exchange or `/mcp` authorization with a group lookup error.
 
-> [cite_start]⚠️ **Warning**: Never hard-code secrets in Python code[cite: 38].
+## Authorization Flow
 
-### Set Application Settings
-[cite_start]Go to **Azure App Service → Configuration → Application settings** and add the following keys[cite: 39, 40, 41, 42]:
+1. The connector starts the MCP OAuth bridge at `/oauth/authorize`.
+2. When `OAUTH_*` Entra login settings are present, the bridge sends the browser through `/oauth/login` and `/oauth/callback`.
+3. The callback validates the Entra access token signature, issuer, audience, expiry, `tid`, and `oid`.
+4. `/oauth/token` validates that the signed-in `oid` is a direct member of `SG-HTH-MCP-Users` before issuing the MCP bridge JWT.
+5. Every `/mcp` request validates the bearer token again and repeats authorization. Cached Graph results avoid repeated network calls during the short TTL.
 
-| Key | Value |
-| :--- | :--- |
-| `OAUTH_CLIENT_ID` | `<your-client-id>` |
-| `OAUTH_CLIENT_SECRET` | `<your-client-secret>` |
-| `OAUTH_TENANT_ID` | `<tenant-id>` |
-| `OAUTH_AUTHORITY` | `https://login.microsoftonline.com/<tenant-id>` |
+Client credentials are denied when identity auth is enabled because MCP tools are user-scoped.
 
-[cite_start]**Optional (typical settings)[cite: 43, 44]:**
-- `OAUTH_AUDIENCE`: `api://<client-id>`
-- `OAUTH_SCOPE`: `api://<client-id>/.default`
+## Troubleshooting
 
-[cite_start]✅ These settings become environment variables available in your Python code[cite: 45].
+### Cursor: `missing_bearer_token`
 
----
+Cursor reached `/mcp` without `Authorization: Bearer <access_token>`.
 
-## Step 3 – Implement OAuth endpoints in your MCP server (Python)
+Check:
 
-[cite_start]Your MCP server must expose specific OAuth endpoints for Claude to use[cite: 46, 47].
+1. The connector is configured for OAuth, not unauthenticated HTTP.
+2. `/.well-known/oauth-protected-resource` advertises the correct HTTPS `/mcp` resource.
+3. `/.well-known/oauth-authorization-server` advertises `/oauth/authorize` and `/oauth/token`.
+4. The `/oauth/token` response contains `token_type: Bearer`.
+5. Cursor is sending that returned access token to `/mcp/`.
 
-### [cite_start]Required Endpoints [cite: 48, 49]
-| Endpoint | Purpose |
-| :--- | :--- |
-| `/oauth/login` | Starts OAuth flow |
-| `/oauth/callback` | Receives authorization code |
-| `/oauth/token/validate` | Validates access token |
-| `MCP tool endpoints` | Require valid token |
+### ChatGPT: `refresh_actions 424 Failed Dependency`
 
-### [cite_start]Load OAuth Environment Variables [cite: 50, 51]
-```python
-import os
+ChatGPT usually reports this when a dependency in discovery, OAuth exchange, or MCP initialization failed.
 
-CLIENT_ID = os.environ[\"OAUTH_CLIENT_ID\"]
-CLIENT_SECRET = os.environ[\"OAUTH_CLIENT_SECRET\"]
-TENANT_ID = os.environ[\"OAUTH_TENANT_ID\"]
+Check:
 
-AUTHORITY = f\"[https://login.microsoftonline.com/](https://login.microsoftonline.com/){TENANT_ID}\"
-TOKEN_URL = f\"{AUTHORITY}/oauth2/v2.0/token\"
-AUTHORIZE_URL = f\"{AUTHORITY}/oauth2/v2.0/authorize\"
-```
-[cite_start]✅ The OAuth Client ID and Secret are read directly from the Azure App Service configuration[cite: 52].
+1. The public URL uses HTTPS and matches `HTH_PUBLIC_BASE_URL`.
+2. `https://chatgpt.com` is allowed by CORS; this is automatic when `HTH_MCP_BEARER_TOKEN` enables browser OAuth.
+3. The ChatGPT redirect URI exactly matches the registered `redirect_uris` value.
+4. `/oauth/token` is not returning `group_access_denied`, `group_lookup_config_missing`, or `group_membership_lookup_failed`.
+5. The signed-in user's Entra `oid` is a direct member of `SG-HTH-MCP-Users`.
 
----
+### Claude: authorization failed
 
-## Step 4 – OAuth login endpoint (`/oauth/login`)
+Claude's generic authorization failure usually means one of these happened:
 
-[cite_start]Claude calls this endpoint to begin authentication[cite: 53, 54].
+1. The connector registration was missing or stale.
+2. The callback exchanged an authorization code more than once.
+3. Entra login succeeded but the user was not in `SG-HTH-MCP-Users`.
+4. Microsoft Graph group lookup failed because app permissions or `OAUTH_*` settings were missing.
+5. `/mcp` rejected the bridge JWT because issuer/audience/signature settings do not match.
 
-[cite_start]**Example (FastAPI)[cite: 55, 56]:**
-```python
-from fastapi import FastAPI
-from fastapi.responses import RedirectResponse
-import urllib.parse
+Re-register the connector, retry login, then inspect the `/oauth/token` response body and application logs for the exact `error` code.
 
-app = FastAPI()
+## Security Practices Applied
 
-@app.get(\"/oauth/login\")
-def oauth_login():
-    params = {
-        \"client_id\": CLIENT_ID,
-        \"response_type\": \"code\",
-        \"redirect_uri\": \"https://<your-app>.azurewebsites.net/oauth/callback\",
-        \"response_mode\": \"query\",
-        \"scope\": \"openid profile email api://<client-id>/.default\",
-        \"state\": \"claude\",
-    }
-
-    url = AUTHORIZE_URL + \"?\" + urllib.parse.urlencode(params)
-    return RedirectResponse(url)
-```
-
----
-
-## Step 5 – OAuth callback endpoint (`/oauth/callback`)
-
-[cite_start]This endpoint receives the authorization code, exchanges it for an access token, and returns success to Claude[cite: 57, 58, 59, 60, 61].
-
-[cite_start]**Example Implementation[cite: 62]:**
-```python
-import requests
-
-@app.get(\"/oauth/callback\")
-def oauth_callback(code: str):
-    data = {
-        \"grant_type\": \"authorization_code\",
-        \"client_id\": CLIENT_ID,
-        \"client_secret\": CLIENT_SECRET,
-        \"code\": code,
-        \"redirect_uri\": \"https://<your-app>.azurewebsites.net/oauth/callback\",
-        \"scope\": \"api://<client-id>/.default\",
-    }
-
-    token_resp = requests.post(TOKEN_URL, data=data).json()
-    return token_resp
-```
-✅ **Security Note**: The Client Secret is used ONLY here (server-side). [cite_start]Never expose it to Claude or browsers[cite: 63].
-
----
-
-## Step 6 – Token validation middleware
-
-[cite_start]Claude sends the access token in the header[cite: 64, 65, 66]:
-`Authorization: Bearer <access_token>`
-
-[cite_start]Add middleware to validate the JSON Web Tokens (JWT)[cite: 67, 68]:
-```python
-from jose import jwt
-
-def validate_token(token: str):
-    payload = jwt.decode(
-        token,
-        key=PUBLIC_KEYS,
-        audience=\"api://<client-id>\",
-        issuer=AUTHORITY,
-    )
-    return payload
-```
-[cite_start]Note: You typically fetch Azure AD public keys from[cite: 69, 70]:
-`https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys`
-
----
-
-## Step 7 – Expose MCP endpoints secured by OAuth
-
-[cite_start]Example of securing an MCP tool endpoint[cite: 71, 72, 73]:
-```python
-from fastapi import Depends, Header, HTTPException
-
-def auth(authorization: str = Header(...)):
-    token = authorization.replace(\"Bearer \", \"\")
-    validate_token(token)
-
-@app.post(\"/mcp/tools/search\", dependencies=[Depends(auth)])
-def search_tool(query: dict):
-    return {\"result\": \"secure data\"}
-```
-
----
-
-## Step 8 – Configure Claude Custom Connector (MCP)
-
-[cite_start]In Claude (or Claude Enterprise config), use the following configuration[cite: 74, 75, 76]:
-
-```json
-{
-  \"name\": \"azure-mcp\",
-  \"transport\": {
-    \"type\": \"http\",
-    \"base_url\": \"https://<your-app>.azurewebsites.net\"
-  },
-  \"auth\": {
-    \"type\": \"oauth2\",
-    \"authorization_url\": \"https://<your-app>.azurewebsites.net/oauth/login\",
-    \"token_validation_url\": \"https://<your-app>.azurewebsites.net/oauth/token/validate\"
-  }
-}
-```
-[cite_start]✅ Claude never stores your client secret; it only interacts via OAuth redirects and access tokens[cite: 77].
-
----
-
-## Summary: Where Credentials Live
-
-| Location | Client ID | Client Secret |
-| :--- | :--- | :--- |
-| Azure Entra ID | ✅ Issued | ✅ Issued |
-| Azure App Service → App Settings | ✅ Stored | ✅ Stored |
-| Python MCP code | ✅ Read from env | ✅ Read from env |
-| Claude | ❌ No | ❌ No |
-
-[cite_start][cite: 78, 79]
-
----
-
-## [cite_start]Common Mistakes to Avoid [cite: 80, 81]
-
-- ❌ Putting client secret in Claude configuration.
-- ❌ Hard-coding secrets in Python code.
-- ❌ Forgetting HTTPS (OAuth requires it).
-- ❌ Missing redirect URI registration.
-- ❌ Not validating JWT audience/issuer.
+- JWTs must validate issuer, audience, signature, expiry, token version, `tid`, and `oid`.
+- Group authorization uses immutable Entra object IDs, not email addresses or display names.
+- `SG-HTH-MCP-Users` can be configured as a display name for operators, but it is resolved to its object ID before authorization.
+- Microsoft Graph app credentials stay server-side.
+- OAuth callback pages never render access tokens or refresh tokens.
+- Bridge JWTs are signed with `HTH_MCP_OAUTH_JWT_SECRET` when set, otherwise the bearer token compatibility fallback is used.
+- Client credentials cannot access user-scoped MCP tools when identity auth is enabled.
+- Short group caches reduce Graph traffic without becoming a long-lived authorization source.

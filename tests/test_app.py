@@ -873,6 +873,7 @@ def test_mcp_oauth_bridge_merges_display_email_from_id_token(monkeypatch) -> Non
             "tid": "tenant-1",
             "oid": "user-1",
             "sub": "user-1",
+            "ver": "2.0",
             "groups": ["HTH-MCP"],
             "roles": ["Tool.Viewer"],
         }
@@ -923,6 +924,72 @@ def test_mcp_oauth_bridge_merges_display_email_from_id_token(monkeypatch) -> Non
     assert decoded["oid"] == "user-1"
     assert decoded["email"] == "alice.idtoken@example.com"
     assert decoded["preferred_username"] == "alice.preferred@example.com"
+
+
+def test_mcp_oauth_bridge_rejects_non_group_member_before_issuing_token(monkeypatch) -> None:
+    async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001, ARG001
+        return {
+            "access_token": "access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": "openid profile email offline_access api://claude-client-id/.default",
+        }
+
+    def fake_validate(self, token):  # noqa: ANN001, ARG001
+        return {
+            "tid": "tenant-1",
+            "oid": "user-1",
+            "sub": "user-1",
+            "ver": "2.0",
+            "groups": ["Other_Group"],
+            "roles": ["Tool.Viewer"],
+        }
+
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_access_token", fake_validate)
+    monkeypatch.setattr(
+        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
+        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
+    )
+    monkeypatch.setattr(
+        "app.auth.gateway.IdentityGateway._user_is_member_of_required_groups",
+        lambda self, user_id, group_ids: False,
+    )
+
+    with build_bridge_identity_user_client() as client:
+        registered = client.post(
+            "/oauth/register",
+            json={"client_name": "pytest", "redirect_uris": ["https://claude.ai/callback"]},
+        )
+        client_payload = registered.json()
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": client_payload["client_id"],
+                "redirect_uri": "https://claude.ai/callback",
+            },
+            follow_redirects=False,
+        )
+        login_state = parse_qs(urlparse(authorized.headers["location"]).query)["state"][0]
+        callback = client.get(
+            "/oauth/callback",
+            params={"code": "auth-code", "state": login_state},
+            follow_redirects=False,
+        )
+        bridge_code = parse_qs(urlparse(callback.headers["location"]).query)["code"][0]
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": bridge_code,
+                "redirect_uri": "https://claude.ai/callback",
+            },
+        )
+
+    assert token.status_code == 403
+    assert token.json()["error"] == "group_access_denied"
+    assert "client_secret" not in token.text
 
 
 def test_cursor_pkce_authorization_code_exchange_succeeds() -> None:
@@ -1182,7 +1249,12 @@ def test_identity_auth_allows_group_member_without_tool_viewer_role() -> None:
 
 def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
-        update={"auth_required_group": "SG-HTH-MCP-Users"}
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
     )
     token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
     monkeypatch.setattr(
@@ -1203,7 +1275,12 @@ def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch
 
 def test_identity_auth_checks_graph_membership_when_token_groups_are_missing(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
-        update={"auth_required_group": "SG-HTH-MCP-Users"}
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
     )
     token = build_identity_token(groups=[], roles=[], extra_claims={"_claim_names": {"groups": "src1"}})
     monkeypatch.setattr(
@@ -1228,9 +1305,156 @@ def test_identity_auth_checks_graph_membership_when_token_groups_are_missing(mon
     assert "stock_snapshot" in tool_names
 
 
+def test_identity_gateway_fetches_paginated_group_member_object_ids(monkeypatch) -> None:
+    group_id = "11111111-2222-3333-4444-555555555555"
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
+    )
+    token = build_identity_token(groups=[], roles=[])
+    graph_calls: list[str] = []
+
+    class FakeGraphResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self.payload
+
+    def fake_post(url, **kwargs):  # noqa: ANN001
+        assert url == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token"
+        assert kwargs["data"]["scope"] == "https://graph.microsoft.com/.default"
+        return FakeGraphResponse({"access_token": "graph-token"})
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):  # noqa: ANN001, ARG001
+        graph_calls.append(str(url))
+        assert headers == {"Authorization": "Bearer graph-token"}
+        if str(url) == "https://graph.microsoft.com/v1.0/groups":
+            assert params["$filter"] == "displayName eq 'SG-HTH-MCP-Users'"
+            return FakeGraphResponse({"value": [{"id": group_id, "displayName": "SG-HTH-MCP-Users"}]})
+        if str(url) == f"https://graph.microsoft.com/v1.0/groups/{group_id}/members":
+            return FakeGraphResponse(
+                {
+                    "value": [{"id": "00000000-0000-0000-0000-000000000000"}],
+                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/groups/page-2",
+                }
+            )
+        if str(url) == "https://graph.microsoft.com/v1.0/groups/page-2":
+            return FakeGraphResponse({"value": [{"id": "user-1"}]})
+        raise AssertionError(f"unexpected Graph URL: {url}")
+
+    monkeypatch.setattr("app.auth.gateway.httpx.post", fake_post)
+    monkeypatch.setattr("app.auth.gateway.httpx.get", fake_get)
+
+    context = IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert context.oid == "user-1"
+    assert graph_calls == [
+        "https://graph.microsoft.com/v1.0/groups",
+        f"https://graph.microsoft.com/v1.0/groups/{group_id}/members",
+        "https://graph.microsoft.com/v1.0/groups/page-2",
+    ]
+
+
+def test_identity_gateway_denies_when_oid_is_not_in_group_members(monkeypatch) -> None:
+    group_id = "11111111-2222-3333-4444-555555555555"
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
+    )
+    token = build_identity_token(groups=[], roles=[])
+
+    class FakeGraphResponse:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return self.payload
+
+    monkeypatch.setattr(
+        "app.auth.gateway.httpx.post",
+        lambda *args, **kwargs: FakeGraphResponse({"access_token": "graph-token"}),
+    )
+    monkeypatch.setattr(
+        "app.auth.gateway.httpx.get",
+        lambda url, **kwargs: FakeGraphResponse(
+            {"value": [{"id": group_id}]}
+            if str(url) == "https://graph.microsoft.com/v1.0/groups"
+            else {"value": [{"id": "someone-else"}]}
+        ),
+    )
+
+    with pytest.raises(IdentityAuthError) as exc_info:
+        IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert exc_info.value.payload.code == "group_access_denied"
+
+
+def test_identity_gateway_reports_graph_member_lookup_failure_without_secret(monkeypatch) -> None:
+    group_id = "11111111-2222-3333-4444-555555555555"
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
+    )
+    token = build_identity_token(groups=[], roles=[])
+
+    class FakeGraphResponse:
+        def __init__(self, payload: dict[str, object], *, fail: bool = False) -> None:
+            self.payload = payload
+            self.fail = fail
+
+        def raise_for_status(self) -> None:
+            if self.fail:
+                raise RuntimeError("403 Forbidden")
+
+        def json(self) -> dict[str, object]:
+            return self.payload
+
+    def fake_get(url, **kwargs):  # noqa: ANN001, ARG001
+        if str(url) == "https://graph.microsoft.com/v1.0/groups":
+            return FakeGraphResponse({"value": [{"id": group_id}]})
+        return FakeGraphResponse({}, fail=True)
+
+    monkeypatch.setattr(
+        "app.auth.gateway.httpx.post",
+        lambda *args, **kwargs: FakeGraphResponse({"access_token": "graph-token"}),
+    )
+    monkeypatch.setattr("app.auth.gateway.httpx.get", fake_get)
+
+    with pytest.raises(IdentityAuthError) as exc_info:
+        IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
+
+    assert exc_info.value.payload.code == "group_membership_lookup_failed"
+    assert "graph-secret" not in exc_info.value.payload.message
+    assert "graph-token" not in exc_info.value.payload.message
+
+
 def test_identity_auth_reports_unresolved_required_group_lookup(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
-        update={"auth_required_group": "SG-HTH-MCP-Users"}
+        update={
+            "auth_required_group": "SG-HTH-MCP-Users",
+            "oauth_client_id": "graph-client",
+            "oauth_client_secret": "graph-secret",
+            "oauth_tenant_id": "tenant-1",
+        }
     )
     token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
 

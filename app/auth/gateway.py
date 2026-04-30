@@ -67,7 +67,9 @@ class IdentityGateway:
         self._jwk_client = PyJWKClient(settings.auth_jwks_url) if settings.auth_jwks_url else None
         self._rate_limit_lock = Lock()
         self._rate_limit_windows: defaultdict[str, deque[float]] = defaultdict(deque)
-        self._resolved_required_group_ids: set[str] | None = None
+        self._group_cache_lock = Lock()
+        self._resolved_required_group_ids: tuple[float, set[str]] | None = None
+        self._group_member_ids: dict[str, tuple[float, set[str]]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -76,9 +78,17 @@ class IdentityGateway:
     def authenticate_headers(self, headers: Mapping[str, str]) -> UserContext:
         token = self._extract_bearer_token(headers)
         claims = self._decode_token(token)
+        user_context = self.authorize_claims(claims)
+        self._enforce_rate_limit(user_context)
+        return user_context
+
+    def authorize_claims(self, claims: dict[str, Any]) -> UserContext:
+        # Motivation vs Logic: OAuth bridge callbacks already validate the
+        # Entra JWT before copying claims into a bridge token. Reusing the same
+        # authorization path here lets the token endpoint reject non-members
+        # before issuing MCP credentials, while `/mcp` remains the final gate.
         user_context = self._build_user_context(claims)
         self._enforce_identity_gating(user_context)
-        self._enforce_rate_limit(user_context)
         return user_context
 
     def _extract_bearer_token(self, headers: Mapping[str, str]) -> str:
@@ -232,7 +242,7 @@ class IdentityGateway:
         resolved_group_ids = self._resolved_group_ids()
         if token_groups & resolved_group_ids:
             return
-        if self._user_is_member_of_required_groups(user_context.user_id, resolved_group_ids):
+        if self._user_is_member_of_required_groups(user_context.oid or user_context.user_id, resolved_group_ids):
             return
         required_label = ", ".join(sorted(required_groups)) or "<none>"
         token_label = ", ".join(sorted(token_groups)) or "<none>"
@@ -247,31 +257,57 @@ class IdentityGateway:
         )
 
     def _resolved_group_ids(self) -> set[str]:
-        if self._resolved_required_group_ids is not None:
-            return self._resolved_required_group_ids
+        cached = self._read_group_ids_cache()
+        if cached is not None:
+            return cached
 
         resolved: set[str] = set()
+        can_resolve_display_names = bool(
+            self.settings.oauth_client_id and self.settings.oauth_client_secret and self.settings.oauth_tenant_id
+        )
         for group_name in self.settings.parsed_auth_required_groups:
             if self._looks_like_guid(group_name):
                 resolved.add(group_name)
                 continue
+            if not can_resolve_display_names:
+                continue
             group_id = self._lookup_group_id_by_display_name(group_name)
             if group_id:
                 resolved.add(group_id)
-        self._resolved_required_group_ids = resolved
+            else:
+                raise IdentityAuthError(
+                    code="required_group_unresolved",
+                    message=f"Microsoft Graph did not find required group display name '{group_name}'.",
+                    status_code=500,
+                )
+        self._write_group_ids_cache(resolved)
         return resolved
+
+    def _read_group_ids_cache(self) -> set[str] | None:
+        if self.settings.auth_group_cache_ttl_seconds <= 0:
+            return None
+        with self._group_cache_lock:
+            if self._resolved_required_group_ids is None:
+                return None
+            expires_at, group_ids = self._resolved_required_group_ids
+            if expires_at <= time():
+                self._resolved_required_group_ids = None
+                return None
+            return set(group_ids)
+
+    def _write_group_ids_cache(self, group_ids: set[str]) -> None:
+        ttl_seconds = self.settings.auth_group_cache_ttl_seconds
+        if ttl_seconds <= 0:
+            return
+        with self._group_cache_lock:
+            self._resolved_required_group_ids = (time() + ttl_seconds, set(group_ids))
 
     @staticmethod
     def _looks_like_guid(value: str) -> bool:
         parts = value.split("-")
         return len(parts) == 5 and [len(part) for part in parts] == [8, 4, 4, 4, 12]
 
-    def _lookup_group_id_by_display_name(self, display_name: str) -> str:
-        client_id = self.settings.oauth_client_id
-        client_secret = self.settings.oauth_client_secret
-        tenant_id = self.settings.oauth_tenant_id
-        if not (client_id and client_secret and tenant_id):
-            return None
+    def _lookup_group_id_by_display_name(self, display_name: str) -> str | None:
         try:
             # Motivation vs Logic: Microsoft Entra group claims commonly carry
             # object IDs, but operators configure readable display names. When
@@ -310,23 +346,82 @@ class IdentityGateway:
     def _user_is_member_of_required_groups(self, user_id: str, group_ids: set[str]) -> bool:
         if not user_id or not group_ids:
             return False
+        member_ids = self._required_group_member_ids(group_ids)
+        return user_id.casefold() in member_ids
+
+    def _required_group_member_ids(self, group_ids: set[str]) -> set[str]:
+        member_ids: set[str] = set()
+        for group_id in group_ids:
+            member_ids.update(self._member_ids_for_group(group_id))
+        return member_ids
+
+    def _member_ids_for_group(self, group_id: str) -> set[str]:
+        cached = self._read_group_member_cache(group_id)
+        if cached is not None:
+            return cached
+        member_ids = self._fetch_group_member_object_ids(group_id)
+        self._write_group_member_cache(group_id, member_ids)
+        return member_ids
+
+    def _read_group_member_cache(self, group_id: str) -> set[str] | None:
+        if self.settings.auth_group_cache_ttl_seconds <= 0:
+            return None
+        with self._group_cache_lock:
+            cached = self._group_member_ids.get(group_id)
+            if cached is None:
+                return None
+            expires_at, member_ids = cached
+            if expires_at <= time():
+                self._group_member_ids.pop(group_id, None)
+                return None
+            return set(member_ids)
+
+    def _write_group_member_cache(self, group_id: str, member_ids: set[str]) -> None:
+        ttl_seconds = self.settings.auth_group_cache_ttl_seconds
+        if ttl_seconds <= 0:
+            return
+        with self._group_cache_lock:
+            self._group_member_ids[group_id] = (time() + ttl_seconds, set(member_ids))
+
+    def _fetch_group_member_object_ids(self, group_id: str) -> set[str]:
         access_token = self._graph_app_access_token()
-        response = httpx.post(
-            f"https://graph.microsoft.com/v1.0/directoryObjects/{user_id}/checkMemberGroups",
-            json={"groupIds": sorted(group_ids)},
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=8.0,
-        )
+        member_ids: set[str] = set()
+        url: str | None = f"https://graph.microsoft.com/v1.0/groups/{group_id}/members"
+        params: dict[str, str] | None = {"$select": "id", "$top": "999"}
         try:
-            response.raise_for_status()
-            value = response.json().get("value")
+            while url:
+                # Root Cause vs Logic: Entra tokens may omit `groups` when the
+                # user belongs to many groups, and `checkMemberGroups` hides the
+                # actual allow-list we are enforcing. We fetch the configured
+                # group's direct member object IDs and compare the signed-in
+                # user's stable `oid` against that explicit set.
+                response = httpx.get(
+                    url,
+                    params=params,
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=8.0,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                values = payload.get("value")
+                if isinstance(values, list):
+                    for item in values:
+                        if not isinstance(item, dict):
+                            continue
+                        member_id = item.get("id")
+                        rendered = str(member_id).strip().casefold() if member_id else ""
+                        if rendered:
+                            member_ids.add(rendered)
+                next_link = payload.get("@odata.nextLink")
+                url = str(next_link).strip() if next_link else None
+                params = None
         except Exception as exc:
             raise IdentityAuthError(
                 code="group_membership_lookup_failed",
-                message=f"Microsoft Graph membership lookup failed for user object '{user_id}': {exc}",
+                message=f"Microsoft Graph direct-member lookup failed for required group '{group_id}': {exc}",
                 status_code=500,
             ) from exc
-        return bool(set(value if isinstance(value, list) else []) & group_ids)
+        return member_ids
 
     def _graph_app_access_token(self) -> str:
         client_id = self.settings.oauth_client_id

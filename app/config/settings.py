@@ -163,6 +163,7 @@ class Settings(BaseSettings):
     # )
     auth_required_token_version: str | None = Field("2.0", alias="HTH_AUTH_REQUIRED_TOKEN_VERSION")
     auth_rate_limit_per_minute: int = Field(50, ge=0, alias="HTH_AUTH_RATE_LIMIT_PER_MINUTE")
+    auth_group_cache_ttl_seconds: int = Field(300, ge=0, alias="HTH_AUTH_GROUP_CACHE_TTL_SECONDS")
     oauth_client_id: str | None = Field(None, alias="OAUTH_CLIENT_ID")
     oauth_client_secret: str | None = Field(None, alias="OAUTH_CLIENT_SECRET")
     oauth_tenant_id: str | None = Field(None, alias="OAUTH_TENANT_ID")
