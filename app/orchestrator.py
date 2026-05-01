@@ -147,7 +147,15 @@ class OrchestratorService:
                 thought=thought,
                 user_context=user_context,
             )
-        except Exception:
+        except Exception as exc:
+            await self.usage_stats_service.record_tool_error(
+                user_context=user_context,
+                tool_name=tool_name,
+                tool_args=args,
+                error=exc,
+                client_id=client_id,
+                client_name=client_name,
+            )
             await self.session_store.save_state(session_state)
             raise
 

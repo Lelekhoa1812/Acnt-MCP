@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import isclose
+from urllib.parse import urlencode
 
 import httpx
 
@@ -27,6 +28,7 @@ class CurrencyProviderError(Exception):
     message: str
     code: str | None = None
     payload: dict[str, object] | None = None
+    request: str | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -309,11 +311,18 @@ class CurrencyService:
                 status_code=503,
                 message="EXCHANGE_RATE_API is not configured in the environment.",
                 code="missing_api_key",
+                request=self._request_label(path, params),
             )
         response = await self._primary.get(path, params={"access_key": self.settings.exchange_rate_api_key, **params})
         payload = self._parse_json(response)
         if response.status_code >= 400:
-            raise self._provider_error_from_response("exchangeratesapi", response.status_code, payload, response.text)
+            raise self._provider_error_from_response(
+                "exchangeratesapi",
+                response.status_code,
+                payload,
+                response.text,
+                request=self._request_label(path, params),
+            )
         if isinstance(payload, dict) and payload.get("success") is False:
             error = payload.get("error")
             if isinstance(error, dict):
@@ -323,18 +332,21 @@ class CurrencyService:
                     message=str(error.get("message") or "Currency provider request failed."),
                     code=str(error.get("code")) if error.get("code") is not None else None,
                     payload=payload,
+                    request=self._request_label(path, params),
                 )
             raise CurrencyProviderError(
                 provider="exchangeratesapi",
                 status_code=response.status_code or 400,
                 message=json.dumps(payload),
                 payload=payload,
+                request=self._request_label(path, params),
             )
         if not isinstance(payload, dict):
             raise CurrencyProviderError(
                 provider="exchangeratesapi",
                 status_code=502,
                 message="Currency provider returned a non-object payload.",
+                request=self._request_label(path, params),
             )
         return payload
 
@@ -342,12 +354,19 @@ class CurrencyService:
         response = await self._fallback.get(path, params=params)
         payload = self._parse_json(response)
         if response.status_code >= 400:
-            raise self._provider_error_from_response("frankfurter", response.status_code, payload, response.text)
+            raise self._provider_error_from_response(
+                "frankfurter",
+                response.status_code,
+                payload,
+                response.text,
+                request=self._request_label(path, params),
+            )
         if not isinstance(payload, dict):
             raise CurrencyProviderError(
                 provider="frankfurter",
                 status_code=502,
                 message="Fallback currency provider returned a non-object payload.",
+                request=self._request_label(path, params),
             )
         return payload
 
@@ -536,7 +555,11 @@ class CurrencyService:
             f"Currency providers failed. Primary ({primary_error.provider}): {primary_error.message}. "
             f"Fallback ({fallback_error.provider}): {fallback_error.message}."
         )
-        return UpstreamServiceError(max(primary_error.status_code, fallback_error.status_code), detail)
+        return UpstreamServiceError(
+            max(primary_error.status_code, fallback_error.status_code),
+            detail,
+            request=fallback_error.request or primary_error.request,
+        )
 
     def _provider_error_from_response(
         self,
@@ -544,11 +567,12 @@ class CurrencyService:
         status_code: int,
         payload: object,
         fallback_text: str,
+        request: str | None = None,
     ) -> CurrencyProviderError:
         if isinstance(payload, dict):
             if provider == "frankfurter":
                 message = str(payload.get("message") or fallback_text)
-                return CurrencyProviderError(provider=provider, status_code=status_code, message=message, payload=payload)
+                return CurrencyProviderError(provider=provider, status_code=status_code, message=message, payload=payload, request=request)
             error = payload.get("error")
             if isinstance(error, dict):
                 return CurrencyProviderError(
@@ -557,8 +581,20 @@ class CurrencyService:
                     message=str(error.get("message") or fallback_text),
                     code=str(error.get("code")) if error.get("code") is not None else None,
                     payload=payload,
+                    request=request,
                 )
-        return CurrencyProviderError(provider=provider, status_code=status_code, message=fallback_text, payload=payload if isinstance(payload, dict) else None)
+        return CurrencyProviderError(
+            provider=provider,
+            status_code=status_code,
+            message=fallback_text,
+            payload=payload if isinstance(payload, dict) else None,
+            request=request,
+        )
+
+    @staticmethod
+    def _request_label(path: str, params: dict[str, object]) -> str:
+        query = urlencode({key: value for key, value in params.items() if value is not None and key != "access_key"}, doseq=True)
+        return f"GET {path}?{query}" if query else f"GET {path}"
 
     def _parse_json(self, response: httpx.Response) -> object:
         try:

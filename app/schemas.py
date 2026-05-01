@@ -353,6 +353,8 @@ class ToolTrace(BaseModel):
     tool: str
     args: dict[str, Any] = Field(default_factory=dict)
     status: str
+    error_status_code: int | None = None
+    error_request: str | None = None
     cache_status: str | None = None
     source_data: str | None = None
     result_count: int | None = None

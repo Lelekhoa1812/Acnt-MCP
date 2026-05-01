@@ -3,18 +3,22 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 
-from app.stats.models import UsageEvent, UsageStatsSnapshot, UsageUserGroup
+from app.stats.models import UsageEvent, UsageStatsSnapshot, UsageToolErrorSummary, UsageUserGroup
 
 
 def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
-    sections = "\n".join(_render_user_group(group) for group in snapshot.groups)
+    # Anonymous users are intentionally hidden from the stats page for now. Keep
+    # the model data intact so we can re-enable this section later if needed.
+    registered_groups = [group for group in snapshot.groups if group.identity_label != "Anonymous user"]
+    sections = "\n".join(_render_user_group(group) for group in registered_groups)
     if not sections:
         sections = """
         <section class="empty-state">
-          <h2>No usage yet</h2>
-          <p>Recent query and tool activity will appear here once users start working with the app.</p>
+          <h2>No registered usage yet</h2>
+          <p>Recent query and tool activity will appear here once registered users start working with the app.</p>
         </section>
         """
+    error_sections = _render_tool_errors(snapshot.tool_errors)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -106,6 +110,81 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
       .chip--muted {{
         color: var(--muted);
       }}
+      .chip--access {{
+        background: #e8f3ec;
+        border-color: #c8dfd0;
+      }}
+      .chip--tool {{
+        background: #f5efe3;
+        border-color: #e5d2ad;
+        font-weight: 600;
+      }}
+      .chip--error {{
+        background: #fcebea;
+        border-color: #efb6b2;
+        color: #7f1d1d;
+      }}
+      .chip--ai-claude {{
+        background: #f3e8dd;
+        border-color: #dec1a6;
+      }}
+      .chip--ai-openai {{
+        background: #e5f4ef;
+        border-color: #b8ded0;
+      }}
+      .chip--ai-chatgpt {{
+        background: #e3f2fd;
+        border-color: #b7d7f4;
+      }}
+      .chip--ai-codex {{
+        background: #ede7f6;
+        border-color: #cabce5;
+      }}
+      .chip--ai-cursor {{
+        background: #eceff8;
+        border-color: #c3c9e6;
+      }}
+      .chip--ai-other {{
+        background: #eef2f6;
+        border-color: #d8dde3;
+      }}
+      .summary-grid {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 16px;
+        margin: 14px 0 18px;
+      }}
+      .summary-card {{
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px;
+        background: #fbfcfd;
+        display: grid;
+        gap: 10px;
+      }}
+      .summary-title {{
+        margin: 0;
+        color: var(--accent);
+        font-size: 14px;
+        font-weight: 700;
+      }}
+      .tool-list {{
+        display: grid;
+        gap: 10px;
+      }}
+      .tool-row {{
+        display: grid;
+        gap: 8px;
+      }}
+      .tool-row + .tool-row {{
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }}
+      .tool-clients {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }}
       .events {{
         display: grid;
         gap: 12px;
@@ -149,6 +228,33 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
         color: var(--muted);
         font-size: 13px;
       }}
+      .error-section {{
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 20px;
+        margin-top: 18px;
+      }}
+      .error-list {{
+        display: grid;
+        gap: 12px;
+      }}
+      .error-card {{
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+        display: grid;
+        gap: 8px;
+      }}
+      .error-card:first-child {{
+        border-top: 0;
+        padding-top: 0;
+      }}
+      .error-request {{
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }}
       .empty-state {{
         background: var(--panel);
         border: 1px dashed var(--line);
@@ -171,6 +277,9 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
         .group-head {{
           flex-direction: column;
         }}
+        .summary-grid {{
+          grid-template-columns: 1fr;
+        }}
       }}
     </style>
   </head>
@@ -178,10 +287,13 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
     <div class="wrap">
       <header>
         <h1>User usage stats</h1>
-        <p class="intro">Recent user queries and the tool names they triggered, grouped by the best available identity. Only meaningful identity fields are shown here, and tool parameters are intentionally omitted.</p>
+        <p class="intro">Recent user queries and tool usage, grouped by user identity. Access groups are narrowed to configured OAuth/plugin groups only, client apps are stacked by AI family, and tool parameters are intentionally omitted.</p>
         <div class="snapshot-time">Updated {escape(_format_time(snapshot.generated_at))}</div>
       </header>
-      <main>{sections}</main>
+      <main>
+        {sections}
+        {error_sections}
+      </main>
     </div>
   </body>
 </html>"""
@@ -197,14 +309,13 @@ def _render_user_group(group: UsageUserGroup) -> str:
         identity_chips.append(f'<span class="chip"><strong>Identity key</strong> {escape(group.identity_key)}</span>')
     if group.user_email:
         identity_chips.append(f'<span class="chip"><strong>Email</strong> {escape(group.user_email)}</span>')
-    if group.client_id:
-        identity_chips.append(f'<span class="chip"><strong>Client ID</strong> {escape(group.client_id)}</span>')
-    if group.client_name:
-        identity_chips.append(f'<span class="chip"><strong>Client</strong> {escape(group.client_name)}</span>')
     if group.roles:
         identity_chips.append(f'<span class="chip"><strong>Roles</strong> {escape(", ".join(group.roles))}</span>')
-    if group.groups:
-        identity_chips.append(f'<span class="chip"><strong>Groups</strong> {escape(", ".join(group.groups))}</span>')
+    if group.matched_groups:
+        for matched_group in group.matched_groups:
+            identity_chips.append(f'<span class="chip chip--access"><strong>Access group</strong> {escape(matched_group)}</span>')
+    else:
+        identity_chips.append('<span class="chip chip--muted">No configured OAuth/PL group matched</span>')
     if not identity_chips:
         identity_chips.append('<span class="chip chip--muted">Anonymous</span>')
 
@@ -217,7 +328,105 @@ def _render_user_group(group: UsageUserGroup) -> str:
             <div class="chips">{''.join(identity_chips)}</div>
           </div>
         </div>
+        <div class="summary-grid">
+          {_render_client_summary(group)}
+          {_render_tool_summary(group)}
+        </div>
         <div class="events">{events}</div>
+      </article>
+    """
+
+
+def _render_client_summary(group: UsageUserGroup) -> str:
+    if not group.clients:
+        chips = '<span class="chip chip--muted">No AI client recorded</span>'
+    else:
+        chips = "".join(
+            f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(client.label)}'
+            f' <strong>{client.count}</strong></span>'
+            for client in group.clients
+        )
+    return f"""
+      <section class="summary-card">
+        <p class="summary-title">AI clients</p>
+        <div class="chips">{chips}</div>
+      </section>
+    """
+
+
+def _render_tool_summary(group: UsageUserGroup) -> str:
+    if not group.tools:
+        body = '<span class="chip chip--muted">No tool usage recorded</span>'
+    else:
+        rows = []
+        for tool in group.tools:
+            client_chips = "".join(
+                f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(client.label)}'
+                f' <strong>{client.count}</strong></span>'
+                for client in tool.clients
+            )
+            rows.append(
+                f"""
+                <div class="tool-row">
+                  <div class="chips"><span class="chip chip--tool">{escape(tool.name)} <strong>{tool.count}</strong></span></div>
+                  <div class="tool-clients">{client_chips}</div>
+                </div>
+                """
+            )
+        body = f'<div class="tool-list">{"".join(rows)}</div>'
+    return f"""
+      <section class="summary-card">
+        <p class="summary-title">Tool used</p>
+        {body}
+      </section>
+    """
+
+
+def _render_tool_errors(errors: list[UsageToolErrorSummary]) -> str:
+    if not errors:
+        return """
+          <section class="error-section">
+            <div class="group-head">
+              <div>
+                <h2 class="group-title">Tool call errors</h2>
+                <p class="intro">No tool call errors have been recorded.</p>
+              </div>
+            </div>
+          </section>
+        """
+
+    cards = "\n".join(_render_tool_error(error) for error in errors)
+    return f"""
+      <section class="error-section">
+        <div class="group-head">
+          <div>
+            <h2 class="group-title">Tool call errors</h2>
+            <p class="intro">Recent tool failures include the user query or upstream request that triggered the error.</p>
+          </div>
+        </div>
+        <div class="error-list">{cards}</div>
+      </section>
+    """
+
+
+def _render_tool_error(error: UsageToolErrorSummary) -> str:
+    status = f"HTTP {error.error_status_code}" if error.error_status_code is not None else "Error"
+    query = error.query or "No user query recorded."
+    request = error.error_request or error.query or "No request recorded."
+    message = error.error_message or "No error message recorded."
+    return f"""
+      <article class="error-card">
+        <div class="event-row">
+          <div class="chips">
+            <span class="chip chip--error">{escape(status)}</span>
+            <span class="chip chip--tool">{escape(error.tool_name)}</span>
+            <span class="chip {_ai_chip_class(error.ai_key)}">{escape(error.client_label)}</span>
+          </div>
+          <div class="event-time">{escape(_format_time(error.recorded_at))}</div>
+        </div>
+        <p class="event-query"><strong>User/query</strong> {escape(_truncate_query(query, limit=260))}</p>
+        <p class="error-request"><strong>Triggered</strong> {escape(request)}</p>
+        <p class="event-query"><strong>Error</strong> {escape(_truncate_query(message, limit=320))}</p>
       </article>
     """
 
@@ -264,3 +473,9 @@ def _truncate_query(value: str, limit: int = 180) -> str:
 
 def _format_time(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).astimezone().strftime("%d %b %Y, %H:%M")
+
+
+def _ai_chip_class(ai_key: str) -> str:
+    allowed = {"claude", "openai", "chatgpt", "codex", "cursor", "other"}
+    key = ai_key if ai_key in allowed else "other"
+    return f"chip--ai-{key}"

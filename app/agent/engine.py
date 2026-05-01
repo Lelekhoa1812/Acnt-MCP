@@ -538,6 +538,8 @@ class AgentEngine:
                         tool=tool_name,
                         args=normalized_args,
                         status="error",
+                        error_status_code=exc.status_code if isinstance(exc, UpstreamServiceError) else None,
+                        error_request=getattr(exc, "request", None),
                         normalization_notes=[str(exc)],
                     )
                     traces.append(error_trace)

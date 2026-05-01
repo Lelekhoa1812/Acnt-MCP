@@ -347,12 +347,30 @@ Covered areas:
 - Tool validation and structured error responses
 - Inventory normalization, cache behavior, and fallback handling
 
-## Important files
+## Harmonise Product API debugs:
 
-- `app/main.py` (REST diagnostics and mock UI)
-- `app/mcp/server.py` (stdio MCP transport)
-- `app/mcp/adapter.py` (MCP schema/result translation)
-- `app/tool/registry.py` (tool catalog)
-- `app/tool/stock/source.py` (Harmonise transport and retries)
-- `app/agent/engine.py` (planner, retrieval, validation, composition)
-- `app/session/store.py` and `app/store.py` (Redis-backed persistence)
+Navigate to [Harmonise AS](https://portal.azure.com/#@harrythehirer.com.au/resource/subscriptions/db0ada2c-ba7c-4171-987d-e8645fef57ba/resourceGroups/Harmonise-Sales-dev/providers/Microsoft.Insights/components/appi-shared-Sales-dev-australiasoutheast/logs). 
+
+Preview Monitoring/Logs -> KQL mode -> Run:
+```sql
+requests 
+| where
+1==1
+and name startswith "GET api/v1/products"
+and timestamp > ago(10m)
+| order by timestamp desc
+| extend 
+duration,
+performanceBucket
+```
+
+To list error request:
+```sql
+requests 
+| where name startswith "GET api/v1/products"
+| where toint(resultCode) >= 500
+| order by timestamp desc
+| project timestamp, name, resultCode, duration, performanceBucket
+```
+
+> Review `duration`, `resultCode` and carried parameters + frequencies a user hit.

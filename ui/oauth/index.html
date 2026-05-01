@@ -360,6 +360,7 @@
       let msalConfig;
       let activeAccount;
       let toastTimer;
+      signInButton.disabled = true;
 
       function normalizeRedirectUris(text) {
         return text
@@ -479,6 +480,11 @@
       }
 
       async function signIn() {
+        if (!msalClient) {
+          // Root Cause vs Logic: loginPopup runs before `msalClient` is assigned because init is async; wait until the client is ready before showing the popup.
+          showToast("error", "Authentication is still initializing.");
+          return;
+        }
         try {
           const response = await msalClient.loginPopup({ scopes: ["openid", "profile", "email"] });
           setSignedIn(response.account);
@@ -535,6 +541,7 @@
       }
 
       async function init() {
+        signInButton.disabled = true;
         const payload = await fetchJson(configEndpoint);
         msalConfig = payload.msal || {};
         if (!msalConfig.clientId || !msalConfig.tenantId) {
@@ -553,6 +560,8 @@
             cacheLocation: "sessionStorage",
           },
         });
+
+        signInButton.disabled = false;
 
         const existing = msalClient.getAllAccounts()[0];
         if (existing) {

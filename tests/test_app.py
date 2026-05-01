@@ -1815,7 +1815,8 @@ def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
                     email="alice@example.com",
                     client_id="connector-client-id",
                     roles=["Tool.Viewer"],
-                    groups=["HTH-MCP"],
+                    groups=["group-id-1"],
+                    group_names=["SG-HTH-MCP-Users"],
                 ),
                 query="Need a laminate quote for a coffee table",
                 tool_trace=[
@@ -1844,14 +1845,12 @@ def test_usage_stats_page_groups_users_and_hides_null_identity_fields() -> None:
     assert "tenant-1:user-1" in body
     assert "connector-client-id" in body
     assert "Roles" in body
-    assert "Groups" in body
+    assert "Access group" in body
+    assert "SG-HTH-MCP-Users" in body
     assert "Need a laminate quote for a coffee table" in body
     assert "stock_search" in body
     assert "stock_snapshot" in body
-    assert "Anonymous user" in body
-    assert "news_search" in body
-    assert "openai-mcp" in body
-    assert "ChatGPT" in body
+    assert "Anonymous user" not in body
     assert "session_id=" not in body
     assert "user_id=" not in body
 

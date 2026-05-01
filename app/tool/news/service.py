@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from urllib.parse import urlencode
 
 import httpx
 
@@ -64,11 +65,16 @@ class NewsService:
 
     async def _get(self, path: str, params: dict[str, object]) -> tuple[dict[str, object], list[str]]:
         if not self.settings.news_api_key:
-            raise UpstreamServiceError(503, "NEWS_API is not configured in the environment.")
+            raise UpstreamServiceError(503, "NEWS_API is not configured in the environment.", request=self._request_label(path, params))
         response = await self._client.get(path, params=params)
         if response.status_code >= 400:
-            raise UpstreamServiceError(response.status_code, response.text)
+            raise UpstreamServiceError(response.status_code, response.text, request=self._request_label(path, params))
         payload = response.json()
         if payload.get("status") == "error":
-            raise UpstreamServiceError(response.status_code or 400, json.dumps(payload))
+            raise UpstreamServiceError(response.status_code or 400, json.dumps(payload), request=self._request_label(path, params))
         return payload, []
+
+    @staticmethod
+    def _request_label(path: str, params: dict[str, object]) -> str:
+        query = urlencode({key: value for key, value in params.items() if value is not None}, doseq=True)
+        return f"GET {path}?{query}" if query else f"GET {path}"

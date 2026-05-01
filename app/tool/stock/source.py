@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 import anyio
 import httpx
@@ -78,6 +79,7 @@ class HarmoniseInventorySource:
                     "Department metadata is unavailable in cloud Harmonise mode. "
                     "Use product catalogue tools for scoped product Q&A."
                 ),
+                request="GET /api/v1/common/departments",
             )
         payload = await self._get(
             "/api/v1/common/departments",
@@ -96,6 +98,7 @@ class HarmoniseInventorySource:
                     "Category metadata is unavailable in cloud Harmonise mode. "
                     "Use stock_search_catalogue with supported cloud query filters."
                 ),
+                request="GET /api/v1/stock/categories",
             )
         payload = await self._get(
             "/api/v1/stock/categories",
@@ -144,7 +147,7 @@ class HarmoniseInventorySource:
         if sku:
             compact_sku = sku.strip()
             if not compact_sku:
-                raise UpstreamServiceError(400, "A non-empty sku must be provided for product retrieval.")
+                raise UpstreamServiceError(400, "A non-empty sku must be provided for product retrieval.", request="GET /api/v1/products/{sku}")
             # Root Cause vs Logic: SKU detail payloads can be very large, and the
             # cloud endpoint sometimes returns 5xx under that load. Reuse any
             # already-cached catalogue row first so we can answer quickly without
@@ -173,7 +176,11 @@ class HarmoniseInventorySource:
                 required_variant_ids=required_variant_ids,
             )
 
-        raise UpstreamServiceError(400, "Either product id or sku must be provided for product retrieval.")
+        raise UpstreamServiceError(
+            400,
+            "Either product id or sku must be provided for product retrieval.",
+            request="GET /api/v1/products/{id-or-sku}",
+        )
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -188,7 +195,11 @@ class HarmoniseInventorySource:
     async def _get(self, path: str, params: dict[str, Any], max_attempts: int | None = None) -> Any:
         response = await self._request_with_retry(path=path, params=params, max_attempts=max_attempts)
         if response.status_code >= 400:
-            raise UpstreamServiceError(status_code=response.status_code, detail=response.text)
+            raise UpstreamServiceError(
+                status_code=response.status_code,
+                detail=response.text,
+                request=self._request_label(path, params),
+            )
         data = response.json()
         # Motivation vs Logic: pair with registry `tool_call` logs; show upstream shape without full payloads.
         self.logger.debug("harmonise_response path=%s body=%s", path, _trim_harmonise_log_body(data))
@@ -221,6 +232,7 @@ class HarmoniseInventorySource:
                 raise UpstreamServiceError(
                     status_code=504,
                     detail=f"Harmonise request timed out for path '{path}' after {max_attempts} attempts.",
+                    request=self._request_label(path, params),
                 ) from exc
             except httpx.HTTPError as exc:
                 if attempt < max_attempts and self._should_retry_transport_error(exc):
@@ -235,6 +247,7 @@ class HarmoniseInventorySource:
                 raise UpstreamServiceError(
                     status_code=502,
                     detail=f"Harmonise request failed for path '{path}': {exc}",
+                    request=self._request_label(path, params),
                 ) from exc
 
             if response.status_code in {500, 502, 503, 504} and attempt < max_attempts:
@@ -253,7 +266,17 @@ class HarmoniseInventorySource:
         raise UpstreamServiceError(
             status_code=502,
             detail=f"Harmonise request failed for path '{path}' after retry attempts were exhausted.",
+            request=self._request_label(path, params),
         )
+
+    @staticmethod
+    def _request_label(path: str, params: dict[str, Any] | None = None) -> str:
+        cleaned_path = path if path.startswith("/") else f"/{path}"
+        query = urlencode(
+            {key: value for key, value in (params or {}).items() if value is not None},
+            doseq=True,
+        )
+        return f"GET {cleaned_path}?{query}" if query else f"GET {cleaned_path}"
 
     def _should_retry_transport_error(self, exc: httpx.HTTPError) -> bool:
         return isinstance(exc, httpx.TransportError)
@@ -302,6 +325,7 @@ class HarmoniseInventorySource:
             raise UpstreamServiceError(
                 status_code=404,
                 detail=f"No exact product record matched id '{product_id}'.",
+                request=f"GET /api/v1/products/{product_id}",
             )
 
         hydrated = await self._hydrate_product_by_sku(

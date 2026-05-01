@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import httpx
 
@@ -121,7 +122,11 @@ class WeatherService:
         if args.query:
             matches = await self._geocode(args.query, max(1, args.limit))
             if not matches:
-                raise UpstreamServiceError(404, f"No OpenWeather geocoding match was found for '{args.query}'.")
+                raise UpstreamServiceError(
+                    404,
+                    f"No OpenWeather geocoding match was found for '{args.query}'.",
+                    request=self._request_label("/geo/1.0/direct", {"q": args.query, "limit": args.limit}),
+                )
             return matches[0]
         return {"lat": args.lat, "lon": args.lon}
 
@@ -132,11 +137,16 @@ class WeatherService:
         return await self._get("/geo/1.0/reverse", {"lat": lat, "lon": lon, "limit": limit})
 
     async def _get(self, path: str, params: dict[str, object]) -> object:
+        request_params = {"appid": self.settings.open_weather_api_key, **params}
         if not self.settings.open_weather_api_key:
-            raise UpstreamServiceError(503, "OPEN_WEATHER_API is not configured in the environment.")
-        response = await self._client.get(path, params={"appid": self.settings.open_weather_api_key, **params})
+            raise UpstreamServiceError(
+                503,
+                "OPEN_WEATHER_API is not configured in the environment.",
+                request=self._request_label(path, params),
+            )
+        response = await self._client.get(path, params=request_params)
         if response.status_code >= 400:
-            raise UpstreamServiceError(response.status_code, response.text)
+            raise UpstreamServiceError(response.status_code, response.text, request=self._request_label(path, params))
         return response.json()
 
     async def _history_call(
@@ -170,9 +180,14 @@ class WeatherService:
             response = await self._history.get(url, params=params)
             if response.status_code < 400:
                 return response.json()
-            last_error = UpstreamServiceError(response.status_code, response.text)
+            last_error = UpstreamServiceError(response.status_code, response.text, request=self._request_label(url, params))
         assert last_error is not None
         raise last_error
+
+    @staticmethod
+    def _request_label(path: str, params: dict[str, object]) -> str:
+        query = urlencode({key: value for key, value in params.items() if value is not None and key != "appid"}, doseq=True)
+        return f"GET {path}?{query}" if query else f"GET {path}"
 
     def _history_points(self, args: WeatherHistoryArgs) -> list[int]:
         if args.dt is not None:
