@@ -29,6 +29,7 @@ from app.schemas import (
     AgentDebugPlan,
     AgentDebugPlanStep,
     AgentDebugRetrieval,
+    AgentQueryResponse,
     MemoCache,
     PlanStatus,
     PlanStep,
@@ -37,6 +38,7 @@ from app.schemas import (
     ProductVariantDto,
     ProductVariationDto,
     ProductVariationOptionDto,
+    SessionState,
     ToolTrace,
     ToolResult,
 )
@@ -1976,6 +1978,35 @@ def test_query_route_returns_structured_error() -> None:
     payload = response.json()
     assert payload["status"] == "error"
     assert payload["limitations"] and "invalid metadata" in payload["limitations"][0]
+
+
+def test_chat_ui_and_query_remain_public_when_identity_auth_is_enabled() -> None:
+    orchestrator = AsyncMock(
+        return_value=AgentQueryResponse(
+            status="answered",
+            answer="Public chat response",
+            thoughts=[],
+            tool_trace=[],
+            limitations=[],
+            resolved_items=[],
+            session_state=SessionState(session_id="public-chat"),
+        )
+    )
+
+    settings = build_identity_auth_settings().model_copy(update={"enable_mock_ui_simulation": True})
+    with TestClient(create_app(settings)) as client:
+        client.app.state.container.orchestrator_service.handle_query = orchestrator
+        chat_response = client.get("/api/v1/chat")
+        asset_response = client.get("/api/v1/chat/assets/app.js")
+        logo_response = client.get("/api/v1/chat/public/hth.jpeg")
+        query_response = client.post("/api/v1/query", json={"message": "hello"})
+
+    assert chat_response.status_code == 200
+    assert asset_response.status_code == 200
+    assert logo_response.status_code == 200
+    assert query_response.status_code == 200
+    assert query_response.json()["answer"] == "Public chat response"
+    assert orchestrator.await_args.kwargs["user_context"] is None
 
 
 def test_rest_tool_call_persists_plan_todo_and_memo_cache_across_session_calls() -> None:

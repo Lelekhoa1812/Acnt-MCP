@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from app.api.auth import resolve_user_context_or_none
+from app.api.auth import resolve_optional_user_context
 from app.agent.engine import AgentRun
 from app.config import (
     InventoryNotFoundError,
@@ -22,7 +22,7 @@ logger = logging.getLogger("hth")
 
 @router.post("/query")
 async def query_agent(payload: AgentQueryRequest, request: Request, container = Depends(get_container)) -> dict[str, object]:
-    user_context = resolve_user_context_or_none(request, container.settings)
+    user_context = resolve_optional_user_context(request, container.settings)
     logger.info(
         "ui_query_received session_id=%s message_preview=%s",
         payload.sessionId or "new",
