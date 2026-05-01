@@ -366,7 +366,7 @@ performanceBucket
 
 To list error request:
 ```sql
-requests 
+requests  
 | where name startswith "GET api/v1/products"
 | where toint(resultCode) >= 500
 | order by timestamp desc

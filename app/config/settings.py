@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     # a backward-compatible fallback for existing deployments.
     mcp_oauth_jwt_secret: str | None = Field(None, alias="HTH_MCP_OAUTH_JWT_SECRET")
     mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
-        "chatgpt.com,claude.ai,claude.com",
+        "chatgpt.com,openai.com,claude.ai,claude.com",
         alias="AUTO_TRUSTED_DOMAINS",
     )
     identity_auth_enabled: bool = Field(False, alias="HTH_IDENTITY_AUTH_ENABLED")
@@ -384,6 +384,7 @@ class Settings(BaseSettings):
         # known ChatGPT/Claude web origins unless the deployment overrides them.
         recommended_origins = [
             "https://chatgpt.com",
+            "https://chat.openai.com",
             "https://claude.ai",
             "https://claude.com",
         ]

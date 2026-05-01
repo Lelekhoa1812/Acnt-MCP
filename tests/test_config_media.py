@@ -68,3 +68,10 @@ def test_settings_reads_max_cap_variant_from_environment(monkeypatch) -> None:  
 
     monkeypatch.setenv("MAX_CAP_VARIANT", "7")
     assert Settings(_env_file=None).max_cap_variant == 7
+
+
+def test_settings_trusts_chatgpt_openai_oauth_hosts() -> None:
+    settings = Settings(_env_file=None, mcp_bearer_token="test-token")
+
+    assert "openai.com" in settings.parsed_mcp_oauth_auto_trusted_redirect_domains
+    assert "https://chat.openai.com" in settings.parsed_mcp_allowed_origins
