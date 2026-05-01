@@ -169,10 +169,12 @@ class Settings(BaseSettings):
     auth_group_cache_ttl_seconds: int = Field(300, ge=0, alias="HTH_AUTH_GROUP_CACHE_TTL_SECONDS")
     oauth_client_id: str | None = Field(None, alias="OAUTH_CLIENT_ID")
     oauth_client_secret: str | None = Field(None, alias="OAUTH_CLIENT_SECRET")
+    oauth_client_auth_method: str | None = Field(None, alias="OAUTH_CLIENT_AUTH_METHOD")
     oauth_tenant_id: str | None = Field(None, alias="OAUTH_TENANT_ID")
     oauth_authority: str | None = Field(None, alias="OAUTH_AUTHORITY")
     oauth_audience: str | None = Field(None, alias="OAUTH_AUDIENCE")
     oauth_scope: str | None = Field(None, alias="OAUTH_SCOPE")
+    oauth_graph_scopes: str = Field("User.Read Group.Read.All", alias="OAUTH_GRAPH_SCOPES")
     oauth_redirect_uri: str | None = Field(None, alias="OAUTH_REDIRECT_URI")
 
     @property
@@ -350,9 +352,9 @@ class Settings(BaseSettings):
             or self.oauth_tenant_id
             or self.auth_issuer
         ):
-            if not (self.oauth_client_id and self.oauth_client_secret):
+            if not self.oauth_client_id:
                 notes.append(
-                    "Claude OAuth login is partially configured. Set both OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET."
+                    "Claude OAuth login is partially configured. Set OAUTH_CLIENT_ID."
                 )
             if not (self.oauth_authority or self.oauth_tenant_id or self.auth_issuer):
                 notes.append(
@@ -456,9 +458,19 @@ class Settings(BaseSettings):
     def claude_oauth_enabled(self) -> bool:
         return bool(
             self.oauth_client_id
-            and self.oauth_client_secret
             and (self.oauth_authority or self.oauth_tenant_id or self.auth_issuer)
         )
+
+    @property
+    def resolved_oauth_client_auth_method(self) -> str:
+        configured = (self.oauth_client_auth_method or "").strip().casefold()
+        if configured in {"none", "client_secret_post"}:
+            return configured
+        return "client_secret_post" if self.oauth_client_secret else "none"
+
+    @property
+    def parsed_oauth_graph_scopes(self) -> list[str]:
+        return [part.strip() for part in self.oauth_graph_scopes.replace(",", " ").split() if part.strip()]
 
     @property
     def resolved_oauth_authority(self) -> str | None:

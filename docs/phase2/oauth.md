@@ -6,7 +6,7 @@ The server is not pretending to be a full identity provider for user sign-in. It
 
 1. Advertising the MCP discovery metadata that connector clients expect.
 2. Issuing and recovering client registration records so the connector can be configured with a client ID and secret.
-3. When identity auth is enabled, routing the browser through Entra login so the bridge token is bound to a real user object ID.
+3. When identity auth is enabled, routing the browser through Entra login so the bridge token is bound to a real user object ID and that user's Graph group memberships.
 
 ## 1. What Is Implemented
 
@@ -114,7 +114,13 @@ The authorization flow is:
 
 For this project, the returned access token is a bridge JWT for `/mcp`.
 
-The bridge issues a JWT access token signed by `HTH_MCP_OAUTH_JWT_SECRET` when it is set, or by `HTH_MCP_BEARER_TOKEN` as a compatibility fallback. When `HTH_IDENTITY_AUTH_ENABLED=true`, the authorization code must be bound to a signed-in Entra user with `tid` and `oid`, and `/oauth/token` verifies membership in `SG-HTH-MCP-Users` before returning the bridge JWT.
+The bridge issues a JWT access token signed by `HTH_MCP_OAUTH_JWT_SECRET` when it is set, or by `HTH_MCP_BEARER_TOKEN` as a compatibility fallback. When `HTH_IDENTITY_AUTH_ENABLED=true`, the authorization code must be bound to a signed-in Entra user with `tid` and `oid`, and `/oauth/token` verifies that the user's delegated Graph memberships include `OAUTH_USER_GROUP` before returning the bridge JWT.
+
+The bridge JWT includes the normalized authorization data used by `/mcp`:
+
+- `groups`: Entra group object IDs for the signed-in user.
+- `group_names`: Entra group display names for the signed-in user.
+- `plugin_permissions`: plugin keys allowed by the `*_PL_GROUP` settings.
 
 ## 6. Client Credentials Flow
 
@@ -163,11 +169,13 @@ The OAuth bridge and the identity layer solve different problems.
 - The OAuth bridge helps a connector get a valid client registration and a bearer token.
 - The identity layer validates the actual caller identity when `HTH_IDENTITY_AUTH_ENABLED=true`.
 
-The optional `OAUTH_*` settings configure the Microsoft Entra login helper endpoints (`/oauth/login`, `/oauth/callback`, `/oauth/token/validate`) and Microsoft Graph group lookup.
+The optional `OAUTH_*` settings configure the Microsoft Entra login helper endpoints (`/oauth/login`, `/oauth/callback`, `/oauth/token/validate`) and delegated Microsoft Graph membership lookup.
 
 For public bootstrap without user identity, the bridge can run with only `HTH_MCP_BEARER_TOKEN` plus `HTH_MCP_OAUTH_JWT_SECRET`.
 
-For user-scoped security (`HTH_IDENTITY_AUTH_ENABLED=true`), configure `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, and `OAUTH_TENANT_ID` so the bridge can authenticate the user and verify the user's object ID against `SG-HTH-MCP-Users`.
+For user-scoped security (`HTH_IDENTITY_AUTH_ENABLED=true`), configure `OAUTH_CLIENT_ID`, `OAUTH_TENANT_ID`, optional `OAUTH_CLIENT_SECRET`, and delegated `OAUTH_GRAPH_SCOPES` so the bridge can authenticate the user and compare the user's own group memberships against `OAUTH_USER_GROUP` and each `*_PL_GROUP`.
+
+Do not paste the server-side Entra `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` into GPT, Claude, or Cursor as MCP connector credentials. Connector clients should use the bridge `client_id` and `client_secret` returned by `POST /oauth/register`.
 
 If you are using Entra JWT enforcement, follow `auth.md` for the resource-server validation rules.
 
@@ -207,15 +215,16 @@ If ChatGPT reports `refresh_actions 424 Failed Dependency`:
 
 1. Confirm discovery works from the public internet.
 2. Confirm CORS allows `https://chatgpt.com`.
-3. Confirm `/oauth/token` is not returning `group_access_denied`, `group_lookup_config_missing`, or `group_membership_lookup_failed`.
-4. Confirm the signed-in user's `oid` is a direct member of `SG-HTH-MCP-Users`.
+3. Confirm `/oauth/token` is not returning `group_access_denied`.
+4. Confirm application logs do not show `Microsoft Graph delegated user membership lookup failed`.
+5. Confirm the signed-in user's Graph memberships include `OAUTH_USER_GROUP` by object ID or display name.
 
 If Claude reports authorization failure:
 
 1. Re-register the connector or retrieve the saved registration with `registration_client_uri`.
 2. Confirm the redirect URI exactly matches the Claude callback.
 3. Confirm Entra login reaches `/oauth/callback` and redirects back to Claude with a bridge code.
-4. Confirm `/oauth/token` returns a bridge JWT rather than a group or Graph error.
+4. Confirm `/oauth/token` returns a bridge JWT rather than `group_access_denied` or a delegated Graph lookup error.
 
 ## 11. Practical Setup Checklist
 
@@ -224,7 +233,7 @@ If Claude reports authorization failure:
 3. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
 4. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
 5. Allow `https://chatgpt.com`, `https://claude.ai`, and `https://claude.com` in `HTH_MCP_ALLOWED_ORIGINS` when hosted browser clients need CORS access to discovery or OAuth responses.
-6. If identity auth is enabled, set the Entra `OAUTH_*`, `HTH_AUTH_*`, and Graph permission settings described in `auth.md`.
+6. If identity auth is enabled, set the Entra `OAUTH_*`, `HTH_AUTH_*`, `OAUTH_GRAPH_SCOPES`, and delegated Graph permission settings described in `auth.md`.
 7. Register the client with `POST /oauth/register`.
 8. Paste the returned `client_id` and `client_secret` into the connector UI.
 9. Save `registration_client_uri` and `registration_access_token`.

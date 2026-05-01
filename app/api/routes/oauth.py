@@ -188,16 +188,22 @@ async def oauth_callback(request: Request, container=Depends(get_container)) -> 
             code=code,
             code_verifier=str(state_record.get("code_verifier") or ""),
         )
-        claims = service.validate_access_token(str(token_payload["access_token"]))
+        access_token = str(token_payload["access_token"])
         id_token = token_payload.get("id_token")
         if id_token:
-            id_claims = service.validate_access_token(str(id_token))
-            # Motivation vs Logic: Entra access tokens are authoritative for
-            # authorization (`tid`, `oid`, `groups`, `roles`), while ID tokens
-            # often carry better human-readable mailbox claims for audit labels.
-            for display_claim in ("email", "preferred_username", "upn", "unique_name", "name"):
-                if display_claim not in claims and id_claims.get(display_claim):
-                    claims[display_claim] = id_claims[display_claim]
+            claims = service.validate_id_token(str(id_token))
+        elif container.settings.identity_auth_enabled:
+            raise ClaudeOAuthError(
+                code="missing_id_token",
+                message="The OAuth token response did not include an ID token for user identity validation.",
+                status_code=502,
+            )
+        else:
+            claims = service.validate_access_token(access_token)
+        if container.settings.identity_auth_enabled:
+            memberships = await service.fetch_user_group_memberships(access_token)
+            claims["groups"] = memberships["groups"]
+            claims["group_names"] = memberships["group_names"]
     except ClaudeOAuthError as exc:
         if _wants_explicit_json(request):
             return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "error_description": exc.message})

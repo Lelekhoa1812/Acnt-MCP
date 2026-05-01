@@ -49,7 +49,8 @@ def _oauth_admin_config(container) -> dict[str, str | None]:
         "clientId": settings.oauth_client_id,
         "tenantId": settings.oauth_tenant_id,
         "authority": settings.resolved_oauth_authority,
-        "scope": settings.resolved_oauth_scope(),
+        "scope": " ".join(["openid", "profile", "email", "offline_access", *settings.parsed_oauth_graph_scopes]),
+        "clientAuthMethod": settings.resolved_oauth_client_auth_method,
     }
 
 

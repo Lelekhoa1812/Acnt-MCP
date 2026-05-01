@@ -221,6 +221,8 @@ def _bridge_access_token_payload(
     audience = settings.auth_audience or _mcp_resource_url(base_url, settings)
     issuer = settings.mcp_oauth_bridge_issuer or base_url
     groups = _normalize_claim_values(user_claims.get("groups") if user_claims else None)
+    group_names = _normalize_claim_values(user_claims.get("group_names") if user_claims else None)
+    plugin_permissions = _normalize_claim_values(user_claims.get("plugin_permissions") if user_claims else None)
     roles = _normalize_claim_values(user_claims.get("roles") if user_claims else None)
     user_tenant_id = str((user_claims or {}).get("tid") or "").strip()
     user_id = str((user_claims or {}).get("oid") or "").strip()
@@ -245,6 +247,8 @@ def _bridge_access_token_payload(
         **({"oid": user_id} if user_id else {}),
         **({"sub": subject} if subject else {}),
         **({"groups": groups} if groups else {}),
+        **({"group_names": group_names} if group_names else {}),
+        **({"plugin_permissions": plugin_permissions} if plugin_permissions else {}),
         **({"roles": roles} if roles else {}),
         **({"email": email} if email else {}),
         **({"preferred_username": preferred_username} if preferred_username else {}),
@@ -747,7 +751,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     # signed-in Entra user. Authorizing here gives Cursor,
                     # ChatGPT, and Claude a direct OAuth error while the MCP
                     # transport still validates every bearer token on use.
-                    identity_gateway.authorize_claims(user_claims)
+                    authorized_user = identity_gateway.authorize_claims(user_claims)
+                    user_claims["plugin_permissions"] = authorized_user.plugin_permissions
                 except IdentityAuthError as exc:
                     return _oauth_identity_error_response(exc)
         elif grant_type == "client_credentials":

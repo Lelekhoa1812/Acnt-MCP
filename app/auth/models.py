@@ -21,6 +21,7 @@ class UserContext(BaseModel):
     token_origin: str | None = None
     roles: list[str] = Field(default_factory=list)
     groups: list[str] = Field(default_factory=list)
+    group_names: list[str] = Field(default_factory=list)
     plugin_permissions: list[str] = Field(default_factory=list)
     # Department-based access is disabled for now, so the claim is kept
     # commented out rather than removed.

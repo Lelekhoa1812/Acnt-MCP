@@ -41,8 +41,8 @@ class ClaudeOAuthService:
             raise ClaudeOAuthError(
                 code="oauth_not_configured",
                 message=(
-                    "Claude OAuth login is not configured. Set OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, "
-                    "and either OAUTH_AUTHORITY or OAUTH_TENANT_ID."
+                    "Claude OAuth login is not configured. Set OAUTH_CLIENT_ID and either "
+                    "OAUTH_AUTHORITY or OAUTH_TENANT_ID."
                 ),
                 status_code=500,
             )
@@ -84,14 +84,14 @@ class ClaudeOAuthService:
         return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     def _login_scope(self) -> str:
-        scope = self.settings.resolved_oauth_scope()
-        if not scope:
+        graph_scopes = self.settings.parsed_oauth_graph_scopes
+        if not graph_scopes:
             raise ClaudeOAuthError(
                 code="oauth_scope_missing",
-                message="Claude OAuth scope is missing. Set OAUTH_SCOPE or OAUTH_CLIENT_ID.",
+                message="OAuth Graph scopes are missing. Set OAUTH_GRAPH_SCOPES.",
                 status_code=500,
             )
-        return f"openid profile email offline_access {scope}"
+        return " ".join(["openid", "profile", "email", "offline_access", *graph_scopes])
 
     def build_authorize_url(self, *, base_url: str, state: str) -> tuple[str, str]:
         self._require_enabled()
@@ -130,9 +130,9 @@ class ClaudeOAuthService:
                 status_code=500,
             )
 
-        # Root Cause vs Logic: this Entra app is configured as a public client
-        # for PKCE-based code redemption, so the token request must not send a
-        # client secret or Azure rejects it as a confidential-client exchange.
+        # Root Cause vs Logic: deployments may use either a SPA/public Entra
+        # client or a confidential web client. The auth method setting keeps
+        # PKCE in both cases while only sending the secret for web-client apps.
         data = {
             "client_id": self.settings.oauth_client_id,
             "grant_type": "authorization_code",
@@ -140,13 +140,17 @@ class ClaudeOAuthService:
             "redirect_uri": self._require_redirect_uri(base_url),
             "scope": self._login_scope(),
         }
+        if (
+            self.settings.resolved_oauth_client_auth_method == "client_secret_post"
+            and self.settings.oauth_client_secret
+        ):
+            data["client_secret"] = self.settings.oauth_client_secret
         if code_verifier:
             data["code_verifier"] = code_verifier
 
         headers = {
-            # Root Cause vs Logic: Entra treats this app registration as SPA-
-            # style redemption, so the token request must present a browser
-            # origin even though the exchange is orchestrated server-side.
+            # Root Cause vs Logic: SPA-style Entra registrations require a
+            # browser origin for code redemption; confidential clients ignore it.
             "Origin": base_url.rstrip("/"),
         }
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -171,6 +175,51 @@ class ClaudeOAuthService:
                 status_code=502,
             )
         return payload
+
+    async def fetch_user_group_memberships(self, access_token: str) -> dict[str, list[str]]:
+        # Motivation vs Logic: authorization should follow the signed-in user,
+        # not a configured group. The delegated Graph token can read only this
+        # user's transitive memberships, which lets us compare local allow-lists
+        # without enumerating group members or using app-only directory access.
+        ids: list[str] = []
+        names: list[str] = []
+        url: str | None = "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.group"
+        params: dict[str, str] | None = {"$select": "id,displayName", "$top": "999"}
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            while url:
+                response = await client.get(url, params=params, headers=headers)
+                if response.status_code >= 400:
+                    try:
+                        error_payload = response.json()
+                    except ValueError:
+                        error_payload = {"error": "graph_membership_lookup_failed", "error_description": response.text}
+                    raise ClaudeOAuthError(
+                        code=str(error_payload.get("error") or "graph_membership_lookup_failed"),
+                        message=(
+                            "Microsoft Graph delegated user membership lookup failed. "
+                            "Ensure the Entra app has admin-consented delegated Graph membership scopes."
+                        ),
+                        status_code=response.status_code,
+                    )
+                payload = response.json()
+                values = payload.get("value")
+                if isinstance(values, list):
+                    for item in values:
+                        if not isinstance(item, dict):
+                            continue
+                        group_id = str(item.get("id") or "").strip()
+                        display_name = str(item.get("displayName") or "").strip()
+                        if group_id:
+                            ids.append(group_id)
+                        if display_name:
+                            names.append(display_name)
+                next_link = payload.get("@odata.nextLink")
+                url = str(next_link).strip() if next_link else None
+                params = None
+
+        return {"groups": self._dedupe(ids), "group_names": self._dedupe(names)}
 
     def validate_access_token(self, token: str) -> dict[str, Any]:
         self._require_validation_enabled()
@@ -207,6 +256,54 @@ class ClaudeOAuthService:
                 message=f"Token validation failed: {exc}",
                 status_code=401,
             ) from exc
+
+    def validate_id_token(self, token: str) -> dict[str, Any]:
+        self._require_validation_enabled()
+        issuer = self.settings.resolved_oauth_issuer
+        audiences = [aud for aud in [self.settings.oauth_client_id, *self.settings.resolved_oauth_audience_variants()] if aud]
+        if not issuer or not audiences:
+            raise ClaudeOAuthError(
+                code="oauth_validation_config_missing",
+                message="OAuth ID token validation settings are incomplete.",
+                status_code=500,
+            )
+
+        try:
+            if self._jwk_client is None:
+                raise ClaudeOAuthError(
+                    code="oauth_jwks_missing",
+                    message="OAuth JWKS endpoint is not configured.",
+                    status_code=500,
+                )
+            signing_key = self._jwk_client.get_signing_key_from_jwt(token).key
+            return jwt.decode(
+                token,
+                signing_key,
+                algorithms=["RS256", "RS384", "RS512"],
+                audience=audiences,
+                issuer=issuer,
+                options={"require": ["exp"]},
+            )
+        except ClaudeOAuthError:
+            raise
+        except (InvalidTokenError, PyJWKClientError) as exc:
+            raise ClaudeOAuthError(
+                code="invalid_token",
+                message=f"ID token validation failed: {exc}",
+                status_code=401,
+            ) from exc
+
+    @staticmethod
+    def _dedupe(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for value in values:
+            key = value.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(value)
+        return deduped
 
     @staticmethod
     def extract_bearer_token(headers: dict[str, str]) -> str | None:

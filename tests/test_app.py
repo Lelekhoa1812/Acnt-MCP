@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.auth import IdentityAuthError, IdentityGateway, UserContext, reset_user_context, set_user_context
+from app.auth.claude import ClaudeOAuthError, ClaudeOAuthService
 from app.agent.engine import AgentEngine, AgentRun
 from app.mcp.adapter import McpToolAdapter
 from app.tool.currency.service import CurrencyProviderError
@@ -174,6 +175,10 @@ def build_identity_auth_settings() -> Settings:
         auth_audience="api://hth-mcp",
         auth_jwt_hs256_secret="test-secret",
         oauth_user_group="HTH-MCP",
+        news_pl_group="all",
+        weather_pl_group="all",
+        currency_pl_group="all",
+        stock_pl_group="all",
         oauth_client_id="",
         oauth_client_secret="",
         oauth_tenant_id="",
@@ -210,6 +215,10 @@ def build_bridge_identity_client() -> TestClient:
         auth_audience="https://hth.example.test/mcp",
         auth_jwt_hs256_secret="test-bridge-secret",
         oauth_user_group="HTH-MCP",
+        news_pl_group="all",
+        weather_pl_group="all",
+        currency_pl_group="all",
+        stock_pl_group="all",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
         oauth_client_id=None,
@@ -243,6 +252,10 @@ def build_bridge_identity_user_client() -> TestClient:
         auth_audience="https://hth.example.test/mcp",
         auth_jwt_hs256_secret="test-bridge-secret",
         oauth_user_group="HTH-MCP",
+        news_pl_group="all",
+        weather_pl_group="all",
+        currency_pl_group="all",
+        stock_pl_group="all",
         mcp_bearer_token="test-mcp-token",
         mcp_oauth_jwt_secret="test-bridge-secret",
         oauth_client_id="claude-client-id",
@@ -448,12 +461,17 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
         )
         return {
             "access_token": access_token,
+            "id_token": access_token,
             "token_type": "Bearer",
             "expires_in": 3600,
-            "scope": "openid profile email offline_access api://claude-client-id/.default",
+            "scope": "openid profile email offline_access User.Read Group.Read.All",
         }
 
+    async def fake_memberships(self, access_token):  # noqa: ANN001, ARG001
+        return {"groups": ["group-id-1"], "group_names": ["HTH-MCP"]}
+
     monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.fetch_user_group_memberships", fake_memberships)
     monkeypatch.setattr(
         "app.auth.claude.PyJWKClient.get_signing_key_from_jwt",
         lambda self, token: SimpleNamespace(key=public_key),  # noqa: ARG005
@@ -546,6 +564,7 @@ def test_claude_oauth_defaults_to_guid_resource_identifier() -> None:
 
     assert settings.resolved_oauth_audience() == "73371819-b9f4-4bec-95f5-3303f3a3b0de"
     assert settings.resolved_oauth_scope() == "73371819-b9f4-4bec-95f5-3303f3a3b0de/.default"
+    assert settings.parsed_oauth_graph_scopes == ["User.Read", "Group.Read.All"]
 
 
 def test_claude_callback_errors_render_safe_browser_page() -> None:
@@ -739,12 +758,17 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
         )
         return {
             "access_token": access_token,
+            "id_token": access_token,
             "token_type": "Bearer",
             "expires_in": 3600,
-            "scope": "openid profile email offline_access api://claude-client-id/.default",
+            "scope": "openid profile email offline_access User.Read Group.Read.All",
         }
 
+    async def fake_memberships(self, access_token):  # noqa: ANN001, ARG001
+        return {"groups": ["group-id-1"], "group_names": ["HTH-MCP"]}
+
     monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.fetch_user_group_memberships", fake_memberships)
     monkeypatch.setattr(
         "app.auth.claude.PyJWKClient.get_signing_key_from_jwt",
         lambda self, token: SimpleNamespace(key=public_key),  # noqa: ARG005
@@ -845,41 +869,41 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
     assert decoded["oid"] == "user-1"
     assert decoded["iss"] == "https://hth.example.test"
     assert decoded["azp"] == client_payload["client_id"]
-    assert decoded["groups"] == ["HTH-MCP"]
+    assert decoded["groups"] == ["group-id-1"]
+    assert decoded["group_names"] == ["HTH-MCP"]
+    assert decoded["plugin_permissions"] == ["news", "weather", "currency", "stock"]
     assert decoded["roles"] == ["Tool.Viewer"]
     assert login_calls[0]["code_verifier"]
 
 
-def test_mcp_oauth_bridge_merges_display_email_from_id_token(monkeypatch) -> None:
+def test_mcp_oauth_bridge_uses_id_token_identity_and_graph_memberships(monkeypatch) -> None:
     async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001, ARG001
         return {
             "access_token": "access-token",
             "id_token": "id-token",
             "token_type": "Bearer",
             "expires_in": 3600,
-            "scope": "openid profile email offline_access api://claude-client-id/.default",
+            "scope": "openid profile email offline_access User.Read Group.Read.All",
         }
 
     def fake_validate(self, token):  # noqa: ANN001, ARG001
-        if token == "id-token":
-            return {
-                "tid": "tenant-1",
-                "oid": "ignored-id-token-oid",
-                "sub": "ignored-id-token-sub",
-                "email": "alice.idtoken@example.com",
-                "preferred_username": "alice.preferred@example.com",
-            }
+        assert token == "id-token"
         return {
             "tid": "tenant-1",
-            "oid": "user-1",
-            "sub": "user-1",
+            "oid": "id-token-oid",
+            "sub": "id-token-sub",
             "ver": "2.0",
-            "groups": ["HTH-MCP"],
+            "email": "alice.idtoken@example.com",
+            "preferred_username": "alice.preferred@example.com",
             "roles": ["Tool.Viewer"],
         }
 
+    async def fake_memberships(self, access_token):  # noqa: ANN001, ARG001
+        return {"groups": ["group-id-1"], "group_names": ["HTH-MCP"]}
+
     monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
-    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_access_token", fake_validate)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_id_token", fake_validate)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.fetch_user_group_memberships", fake_memberships)
 
     with build_bridge_identity_user_client() as client:
         registered = client.post(
@@ -921,40 +945,39 @@ def test_mcp_oauth_bridge_merges_display_email_from_id_token(monkeypatch) -> Non
 
     assert token.status_code == 200
     assert decoded["tid"] == "tenant-1"
-    assert decoded["oid"] == "user-1"
+    assert decoded["oid"] == "id-token-oid"
     assert decoded["email"] == "alice.idtoken@example.com"
     assert decoded["preferred_username"] == "alice.preferred@example.com"
+    assert decoded["groups"] == ["group-id-1"]
+    assert decoded["group_names"] == ["HTH-MCP"]
 
 
 def test_mcp_oauth_bridge_rejects_non_group_member_before_issuing_token(monkeypatch) -> None:
     async def fake_exchange(self, *, base_url, code, code_verifier=None):  # noqa: ANN001, ARG001
         return {
             "access_token": "access-token",
+            "id_token": "id-token",
             "token_type": "Bearer",
             "expires_in": 3600,
-            "scope": "openid profile email offline_access api://claude-client-id/.default",
+            "scope": "openid profile email offline_access User.Read Group.Read.All",
         }
 
     def fake_validate(self, token):  # noqa: ANN001, ARG001
+        assert token == "id-token"
         return {
             "tid": "tenant-1",
             "oid": "user-1",
             "sub": "user-1",
             "ver": "2.0",
-            "groups": ["Other_Group"],
             "roles": ["Tool.Viewer"],
         }
 
+    async def fake_memberships(self, access_token):  # noqa: ANN001, ARG001
+        return {"groups": ["other-group-id"], "group_names": ["Other_Group"]}
+
     monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.exchange_code_for_token", fake_exchange)
-    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_access_token", fake_validate)
-    monkeypatch.setattr(
-        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
-        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
-    )
-    monkeypatch.setattr(
-        "app.auth.gateway.IdentityGateway._user_is_member_of_required_groups",
-        lambda self, user_id, group_ids: False,
-    )
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.validate_id_token", fake_validate)
+    monkeypatch.setattr("app.auth.claude.ClaudeOAuthService.fetch_user_group_memberships", fake_memberships)
 
     with build_bridge_identity_user_client() as client:
         registered = client.post(
@@ -1333,7 +1356,6 @@ def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> 
         }
     )
     token = build_identity_token(groups=["HTH-MCP", news_group_id], roles=[])
-    monkeypatch.setattr("app.auth.gateway.IdentityGateway._user_is_member_of_groups", lambda self, user_id, group_ids: False)
 
     with TestClient(create_app(settings)) as client:
         tools_response = client.get(
@@ -1357,18 +1379,39 @@ def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> 
     assert denied_call.json()["detail"]["code"] == "tool_access_denied"
 
 
-@pytest.mark.parametrize("stock_group", ["all", "", "Not-A-Security-Group", "SG-Missing-Stock-Plugin"])
-def test_identity_auth_plugin_group_falls_back_to_all(monkeypatch, stock_group: str) -> None:
+def test_identity_auth_matches_plugin_group_display_names_without_graph_lookup() -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "stock_pl_group": " h2-developers ",
+            "news_pl_group": "News Users",
+        }
+    )
+    token = build_identity_token(
+        groups=["HTH-MCP"],
+        roles=[],
+        extra_claims={"group_names": ["H2-Developers"]},
+    )
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+    assert "news_search" not in tool_names
+
+
+@pytest.mark.parametrize("stock_group", ["all", ""])
+def test_identity_auth_plugin_group_all_or_empty_allows_authenticated_users(stock_group: str) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
             "stock_pl_group": stock_group,
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
-            "oauth_tenant_id": "tenant-1",
         }
     )
     token = build_identity_token(groups=["HTH-MCP"], roles=[])
-    monkeypatch.setattr("app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name", lambda self, display_name: None)
 
     with TestClient(create_app(settings)) as client:
         response = client.get(
@@ -1381,234 +1424,183 @@ def test_identity_auth_plugin_group_falls_back_to_all(monkeypatch, stock_group: 
     assert "stock_snapshot" in tool_names
 
 
-def test_identity_auth_resolves_required_group_object_id_dynamically(monkeypatch) -> None:
+def test_identity_auth_denies_plugin_when_configured_group_is_not_in_user_memberships() -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
-            "oauth_tenant_id": "tenant-1",
+            "stock_pl_group": "H2-Developers",
         }
     )
-    token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
-    monkeypatch.setattr(
-        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
-        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
-    )
+    token = build_identity_token(groups=["HTH-MCP"], roles=[], extra_claims={"group_names": ["Other Group"]})
 
     with TestClient(create_app(settings)) as client:
-        response = client.get(
+        tools_response = client.get(
             "/api/v1/tools",
             headers={"Authorization": f"Bearer {token}"},
         )
-
-    assert response.status_code == 200
-    tool_names = {tool["name"] for tool in response.json()["tools"]}
-    assert "stock_snapshot" in tool_names
-
-
-def test_identity_auth_checks_graph_membership_when_token_groups_are_missing(monkeypatch) -> None:
-    settings = build_identity_auth_settings().model_copy(
-        update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
-            "oauth_tenant_id": "tenant-1",
-        }
-    )
-    token = build_identity_token(groups=[], roles=[], extra_claims={"_claim_names": {"groups": "src1"}})
-    monkeypatch.setattr(
-        "app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name",
-        lambda self, display_name: "11111111-2222-3333-4444-555555555555",
-    )
-    monkeypatch.setattr(
-        "app.auth.gateway.IdentityGateway._user_is_member_of_required_groups",
-        lambda self, user_id, group_ids: (
-            user_id == "user-1" and "11111111-2222-3333-4444-555555555555" in group_ids
-        ),
-    )
-
-    with TestClient(create_app(settings)) as client:
-        response = client.get(
-            "/api/v1/tools",
+        denied_call = client.post(
+            "/api/v1/tools/call",
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    assert response.status_code == 200
-    tool_names = {tool["name"] for tool in response.json()["tools"]}
-    assert "stock_snapshot" in tool_names
+    assert tools_response.status_code == 200
+    tool_names = {tool["name"] for tool in tools_response.json()["tools"]}
+    assert "stock_snapshot" not in tool_names
+    assert denied_call.status_code == 403
+    assert denied_call.json()["detail"]["code"] == "tool_access_denied"
 
 
-def test_identity_gateway_fetches_paginated_group_member_object_ids(monkeypatch) -> None:
+def test_identity_auth_matches_required_group_object_id_from_user_memberships() -> None:
     group_id = "11111111-2222-3333-4444-555555555555"
     settings = build_identity_auth_settings().model_copy(
         update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
-            "oauth_tenant_id": "tenant-1",
+            "oauth_user_group": group_id,
         }
     )
-    token = build_identity_token(groups=[], roles=[])
-    graph_calls: list[str] = []
+    token = build_identity_token(groups=[group_id], roles=[])
 
-    class FakeGraphResponse:
-        def __init__(self, payload: dict[str, object]) -> None:
-            self.payload = payload
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, object]:
-            return self.payload
-
-    def fake_post(url, **kwargs):  # noqa: ANN001
-        assert url == "https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token"
-        assert kwargs["data"]["scope"] == "https://graph.microsoft.com/.default"
-        return FakeGraphResponse({"access_token": "graph-token"})
-
-    def fake_get(url, *, params=None, headers=None, timeout=None):  # noqa: ANN001, ARG001
-        graph_calls.append(str(url))
-        assert headers == {"Authorization": "Bearer graph-token"}
-        if str(url) == "https://graph.microsoft.com/v1.0/groups":
-            assert params["$filter"] == "displayName eq 'SG-HTH-MCP-Users'"
-            return FakeGraphResponse({"value": [{"id": group_id, "displayName": "SG-HTH-MCP-Users"}]})
-        if str(url) == f"https://graph.microsoft.com/v1.0/groups/{group_id}/members":
-            return FakeGraphResponse(
-                {
-                    "value": [{"id": "00000000-0000-0000-0000-000000000000"}],
-                    "@odata.nextLink": "https://graph.microsoft.com/v1.0/groups/page-2",
-                }
-            )
-        if str(url) == "https://graph.microsoft.com/v1.0/groups/page-2":
-            return FakeGraphResponse({"value": [{"id": "user-1"}]})
-        raise AssertionError(f"unexpected Graph URL: {url}")
-
-    monkeypatch.setattr("app.auth.gateway.httpx.post", fake_post)
-    monkeypatch.setattr("app.auth.gateway.httpx.get", fake_get)
-
-    context = IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
-
-    assert context.oid == "user-1"
-    assert graph_calls == [
-        "https://graph.microsoft.com/v1.0/groups",
-        f"https://graph.microsoft.com/v1.0/groups/{group_id}/members",
-        "https://graph.microsoft.com/v1.0/groups/page-2",
-    ]
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
 
 
-def test_identity_gateway_denies_when_oid_is_not_in_group_members(monkeypatch) -> None:
-    group_id = "11111111-2222-3333-4444-555555555555"
+def test_identity_auth_matches_required_group_display_name_from_user_memberships() -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
-            "oauth_tenant_id": "tenant-1",
+            "oauth_user_group": "sg-hth-mcp-users",
         }
     )
+    token = build_identity_token(groups=[], roles=[], extra_claims={"group_names": ["SG-HTH-MCP-Users"]})
+
+    with TestClient(create_app(settings)) as client:
+        response = client.get(
+            "/api/v1/tools",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200
+    tool_names = {tool["name"] for tool in response.json()["tools"]}
+    assert "stock_snapshot" in tool_names
+
+
+def test_identity_auth_rejects_missing_required_group_without_graph_lookup() -> None:
+    settings = build_identity_auth_settings().model_copy(
+        update={"oauth_user_group": "SG-HTH-MCP-Users"}
+    )
     token = build_identity_token(groups=[], roles=[])
-
-    class FakeGraphResponse:
-        def __init__(self, payload: dict[str, object]) -> None:
-            self.payload = payload
-
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, object]:
-            return self.payload
-
-    monkeypatch.setattr(
-        "app.auth.gateway.httpx.post",
-        lambda *args, **kwargs: FakeGraphResponse({"access_token": "graph-token"}),
-    )
-    monkeypatch.setattr(
-        "app.auth.gateway.httpx.get",
-        lambda url, **kwargs: FakeGraphResponse(
-            {"value": [{"id": group_id}]}
-            if str(url) == "https://graph.microsoft.com/v1.0/groups"
-            else {"value": [{"id": "someone-else"}]}
-        ),
-    )
 
     with pytest.raises(IdentityAuthError) as exc_info:
         IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
 
     assert exc_info.value.payload.code == "group_access_denied"
+    assert "does not enumerate configured group members" in exc_info.value.payload.message
 
 
-def test_identity_gateway_reports_graph_member_lookup_failure_without_secret(monkeypatch) -> None:
-    group_id = "11111111-2222-3333-4444-555555555555"
+def test_oauth_fetches_paginated_user_group_memberships(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
+            "oauth_client_id": "client-id",
             "oauth_tenant_id": "tenant-1",
+            "oauth_authority": "https://login.microsoftonline.com/tenant-1",
         }
     )
-    token = build_identity_token(groups=[], roles=[])
+    oauth_service = ClaudeOAuthService(settings)
+    calls: list[tuple[str, dict[str, str] | None]] = []
 
-    class FakeGraphResponse:
-        def __init__(self, payload: dict[str, object], *, fail: bool = False) -> None:
-            self.payload = payload
-            self.fail = fail
-
-        def raise_for_status(self) -> None:
-            if self.fail:
-                raise RuntimeError("403 Forbidden")
+    class FakeResponse:
+        def __init__(self, payload: dict[str, object], status_code: int = 200) -> None:
+            self._payload = payload
+            self.status_code = status_code
+            self.text = "response text"
 
         def json(self) -> dict[str, object]:
-            return self.payload
+            return self._payload
 
-    def fake_get(url, **kwargs):  # noqa: ANN001, ARG001
-        if str(url) == "https://graph.microsoft.com/v1.0/groups":
-            return FakeGraphResponse({"value": [{"id": group_id}]})
-        return FakeGraphResponse({}, fail=True)
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            return None
 
-    monkeypatch.setattr(
-        "app.auth.gateway.httpx.post",
-        lambda *args, **kwargs: FakeGraphResponse({"access_token": "graph-token"}),
-    )
-    monkeypatch.setattr("app.auth.gateway.httpx.get", fake_get)
+        async def __aenter__(self):  # noqa: ANN001
+            return self
 
-    with pytest.raises(IdentityAuthError) as exc_info:
-        IdentityGateway(settings).authenticate_headers({"authorization": f"Bearer {token}"})
+        async def __aexit__(self, *args) -> None:  # noqa: ANN002
+            return None
 
-    assert exc_info.value.payload.code == "group_membership_lookup_failed"
-    assert "graph-secret" not in exc_info.value.payload.message
-    assert "graph-token" not in exc_info.value.payload.message
+        async def get(self, url, *, params=None, headers=None):  # noqa: ANN001
+            assert headers == {"Authorization": "Bearer graph-token"}
+            calls.append((str(url), params))
+            if len(calls) == 1:
+                return FakeResponse(
+                    {
+                        "value": [{"id": "group-id-1", "displayName": "SG-HTH-MCP-Users"}],
+                        "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/page-2",
+                    }
+                )
+            return FakeResponse({"value": [{"id": "group-id-2", "displayName": "H2-Developers"}]})
+
+    monkeypatch.setattr("app.auth.claude.httpx.AsyncClient", FakeAsyncClient)
+
+    memberships = asyncio.run(oauth_service.fetch_user_group_memberships("graph-token"))
+
+    assert memberships == {
+        "groups": ["group-id-1", "group-id-2"],
+        "group_names": ["SG-HTH-MCP-Users", "H2-Developers"],
+    }
+    assert calls == [
+        (
+            "https://graph.microsoft.com/v1.0/me/transitiveMemberOf/microsoft.graph.group",
+            {"$select": "id,displayName", "$top": "999"},
+        ),
+        ("https://graph.microsoft.com/v1.0/me/transitiveMemberOf/page-2", None),
+    ]
 
 
-def test_identity_auth_reports_unresolved_required_group_lookup(monkeypatch) -> None:
+def test_oauth_user_membership_lookup_error_is_sanitized(monkeypatch) -> None:
     settings = build_identity_auth_settings().model_copy(
         update={
-            "oauth_user_group": "SG-HTH-MCP-Users",
-            "oauth_client_id": "graph-client",
-            "oauth_client_secret": "graph-secret",
+            "oauth_client_id": "client-id",
+            "oauth_client_secret": "secret-value",
             "oauth_tenant_id": "tenant-1",
+            "oauth_authority": "https://login.microsoftonline.com/tenant-1",
         }
     )
-    token = build_identity_token(groups=["11111111-2222-3333-4444-555555555555"], roles=[])
+    oauth_service = ClaudeOAuthService(settings)
 
-    def fail_lookup(self, display_name):  # noqa: ANN001
-        raise IdentityAuthError(
-            code="required_group_unresolved",
-            message=f"Microsoft Graph did not find required group display name '{display_name}'.",
-            status_code=500,
-        )
+    class FakeResponse:
+        status_code = 403
+        text = "forbidden graph-token secret-value"
 
-    monkeypatch.setattr("app.auth.gateway.IdentityGateway._lookup_group_id_by_display_name", fail_lookup)
+        def json(self) -> dict[str, object]:
+            return {"error": "Forbidden"}
 
-    with TestClient(create_app(settings)) as client:
-        response = client.get(
-            "/api/v1/tools",
-            headers={"Authorization": f"Bearer {token}"},
-        )
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            return None
 
-    assert response.status_code == 500
-    assert response.json()["detail"]["code"] == "required_group_unresolved"
+        async def __aenter__(self):  # noqa: ANN001
+            return self
+
+        async def __aexit__(self, *args) -> None:  # noqa: ANN002
+            return None
+
+        async def get(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return FakeResponse()
+
+    monkeypatch.setattr("app.auth.claude.httpx.AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ClaudeOAuthError) as exc_info:
+        asyncio.run(oauth_service.fetch_user_group_memberships("graph-token"))
+
+    assert exc_info.value.status_code == 403
+    assert "delegated user membership lookup failed" in exc_info.value.message
+    assert "secret-value" not in exc_info.value.message
+    assert "graph-token" not in exc_info.value.message
 
 
 @pytest.mark.parametrize(
