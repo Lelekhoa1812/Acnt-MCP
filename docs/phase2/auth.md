@@ -17,8 +17,8 @@ The app does not query configured groups by display name and does not enumerate 
 | `OAUTH_USER_GROUP=SG-HTH-MCP-Users` | Display name or object ID of the group allowed to use the MCP. |
 | `NEWS_PL_GROUP`, `WEATHER_PL_GROUP`, `CURRENCY_PL_GROUP`, `STOCK_PL_GROUP` | Display name, object ID, `all`, or empty value for each plugin. |
 | `OAUTH_CLIENT_ID`, `OAUTH_TENANT_ID` | Entra app used for browser login. |
-| `OAUTH_CLIENT_SECRET` | Optional secret for confidential web-client redemption. |
-| `OAUTH_CLIENT_AUTH_METHOD` | Optional `client_secret_post` or `none`; defaults to `client_secret_post` when a secret exists, otherwise `none`. |
+| `OAUTH_CLIENT_SECRET` | Optional secret for confidential web-client redemption. Leave unused for public/SPA app registrations. |
+| `OAUTH_CLIENT_AUTH_METHOD` | Optional `none` or `client_secret_post`; defaults to `none` for PKCE/public-client compatibility. |
 | `OAUTH_GRAPH_SCOPES=User.Read Group.Read.All` | Delegated Graph scopes requested at login so the app can read the signed-in user's groups. |
 | `HTH_AUTH_REQUIRED_CLAIMS=tid,oid` | Requires tenant and user object ID. |
 | `HTH_AUTH_REQUIRED_TOKEN_VERSION=2.0` | Rejects unexpected token versions. |

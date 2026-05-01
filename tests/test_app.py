@@ -565,6 +565,63 @@ def test_claude_oauth_defaults_to_guid_resource_identifier() -> None:
     assert settings.resolved_oauth_audience() == "73371819-b9f4-4bec-95f5-3303f3a3b0de"
     assert settings.resolved_oauth_scope() == "73371819-b9f4-4bec-95f5-3303f3a3b0de/.default"
     assert settings.parsed_oauth_graph_scopes == ["User.Read", "Group.Read.All"]
+    assert settings.resolved_oauth_client_auth_method == "none"
+
+
+def test_claude_oauth_client_secret_is_opt_in_for_confidential_clients(monkeypatch) -> None:
+    captured_requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"access_token": "entra-token"}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            return None
+
+        async def __aenter__(self):  # noqa: ANN001
+            return self
+
+        async def __aexit__(self, *args) -> None:  # noqa: ANN002
+            return None
+
+        async def post(self, url, *, data=None, headers=None):  # noqa: ANN001
+            captured_requests.append({"url": str(url), "data": dict(data or {}), "headers": headers})
+            return FakeResponse()
+
+    monkeypatch.setattr("app.auth.claude.httpx.AsyncClient", FakeAsyncClient)
+    settings = build_identity_auth_settings().model_copy(
+        update={
+            "oauth_client_id": "client-id",
+            "oauth_client_secret": "secret-value",
+            "oauth_tenant_id": "tenant-1",
+            "oauth_authority": "https://login.microsoftonline.com/tenant-1",
+            "oauth_client_auth_method": "none",
+        }
+    )
+
+    asyncio.run(
+        ClaudeOAuthService(settings).exchange_code_for_token(
+            base_url="https://hth.example.test",
+            code="code",
+            code_verifier="verifier",
+        )
+    )
+
+    assert "client_secret" not in captured_requests[0]["data"]
+
+    settings.oauth_client_auth_method = "client_secret_post"
+    asyncio.run(
+        ClaudeOAuthService(settings).exchange_code_for_token(
+            base_url="https://hth.example.test",
+            code="code",
+            code_verifier="verifier",
+        )
+    )
+
+    assert captured_requests[1]["data"]["client_secret"] == "secret-value"
 
 
 def test_claude_callback_errors_render_safe_browser_page() -> None:

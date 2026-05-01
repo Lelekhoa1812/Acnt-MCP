@@ -466,7 +466,7 @@ class Settings(BaseSettings):
         configured = (self.oauth_client_auth_method or "").strip().casefold()
         if configured in {"none", "client_secret_post"}:
             return configured
-        return "client_secret_post" if self.oauth_client_secret else "none"
+        return "none"
 
     @property
     def parsed_oauth_graph_scopes(self) -> list[str]:

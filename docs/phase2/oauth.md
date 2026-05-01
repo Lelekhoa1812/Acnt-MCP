@@ -173,7 +173,7 @@ The optional `OAUTH_*` settings configure the Microsoft Entra login helper endpo
 
 For public bootstrap without user identity, the bridge can run with only `HTH_MCP_BEARER_TOKEN` plus `HTH_MCP_OAUTH_JWT_SECRET`.
 
-For user-scoped security (`HTH_IDENTITY_AUTH_ENABLED=true`), configure `OAUTH_CLIENT_ID`, `OAUTH_TENANT_ID`, optional `OAUTH_CLIENT_SECRET`, and delegated `OAUTH_GRAPH_SCOPES` so the bridge can authenticate the user and compare the user's own group memberships against `OAUTH_USER_GROUP` and each `*_PL_GROUP`.
+For user-scoped security (`HTH_IDENTITY_AUTH_ENABLED=true`), configure `OAUTH_CLIENT_ID`, `OAUTH_TENANT_ID`, optional `OAUTH_CLIENT_SECRET`, and delegated `OAUTH_GRAPH_SCOPES` so the bridge can authenticate the user and compare the user's own group memberships against `OAUTH_USER_GROUP` and each `*_PL_GROUP`. Public/SPA Entra app registrations must use `OAUTH_CLIENT_AUTH_METHOD=none`; confidential web-client registrations can opt into `OAUTH_CLIENT_AUTH_METHOD=client_secret_post`.
 
 Do not paste the server-side Entra `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` into GPT, Claude, or Cursor as MCP connector credentials. Connector clients should use the bridge `client_id` and `client_secret` returned by `POST /oauth/register`.
 
