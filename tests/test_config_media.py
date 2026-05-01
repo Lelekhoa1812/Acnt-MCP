@@ -75,3 +75,5 @@ def test_settings_trusts_chatgpt_openai_oauth_hosts() -> None:
 
     assert "openai.com" in settings.parsed_mcp_oauth_auto_trusted_redirect_domains
     assert "https://chat.openai.com" in settings.parsed_mcp_allowed_origins
+    assert "mistral.ai" in settings.parsed_mcp_oauth_auto_trusted_redirect_domains
+    assert "https://chat.mistral.ai" in settings.parsed_mcp_allowed_origins

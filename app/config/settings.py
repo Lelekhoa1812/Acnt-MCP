@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     # a backward-compatible fallback for existing deployments.
     mcp_oauth_jwt_secret: str | None = Field(None, alias="HTH_MCP_OAUTH_JWT_SECRET")
     mcp_oauth_auto_trusted_redirect_domains: str | None = Field(
-        "chatgpt.com,openai.com,claude.ai,claude.com",
+        "chatgpt.com,openai.com,claude.ai,claude.com,mistral.ai",
         alias="AUTO_TRUSTED_DOMAINS",
     )
     identity_auth_enabled: bool = Field(False, alias="HTH_IDENTITY_AUTH_ENABLED")
@@ -387,6 +387,7 @@ class Settings(BaseSettings):
             "https://chat.openai.com",
             "https://claude.ai",
             "https://claude.com",
+            "https://chat.mistral.ai",
         ]
         merged = list(configured)
         for origin in recommended_origins:

@@ -157,7 +157,7 @@ The project can auto-register trusted browser-based connector hosts.
 Use `AUTO_TRUSTED_DOMAINS` to allow known domains:
 
 ```bash
-AUTO_TRUSTED_DOMAINS=chatgpt.com,openai.com,claude.ai,claude.com
+AUTO_TRUSTED_DOMAINS=chatgpt.com,openai.com,claude.ai,claude.com,mistral.ai
 ```
 
 When a client from one of those domains calls `/oauth/authorize`, the server can create a registration record automatically instead of forcing a manual pre-register step.
@@ -232,7 +232,7 @@ If Claude reports authorization failure:
 2. Prefer setting `HTH_MCP_OAUTH_JWT_SECRET` so the bridge has a dedicated signing key.
 3. Set `HTH_PUBLIC_BASE_URL` to the public HTTPS origin.
 4. Set `AUTO_TRUSTED_DOMAINS` if you want trusted browser connectors to auto-register.
-5. Allow `https://chatgpt.com`, `https://chat.openai.com`, `https://claude.ai`, and `https://claude.com` in `HTH_MCP_ALLOWED_ORIGINS` when hosted browser clients need CORS access to discovery or OAuth responses.
+5. Allow `https://chatgpt.com`, `https://chat.openai.com`, `https://claude.ai`, `https://claude.com`, and `https://chat.mistral.ai` in `HTH_MCP_ALLOWED_ORIGINS` when hosted browser clients need CORS access to discovery or OAuth responses.
 6. If identity auth is enabled, set the Entra `OAUTH_*`, `HTH_AUTH_*`, `OAUTH_GRAPH_SCOPES`, and delegated Graph permission settings described in `auth.md`.
 7. Register the client with `POST /oauth/register`.
 8. Paste the returned `client_id` and `client_secret` into the connector UI.
@@ -269,6 +269,13 @@ Claude trusted redirect:
 ```bash
 curl -sS -D - \
   'https://<domain>/oauth/authorize?response_type=code&client_id=<client_id>&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth%2Fcallback'
+```
+
+Mistral Le Chat trusted redirect:
+
+```bash
+curl -sS -D - \
+  'https://<domain>/oauth/authorize?response_type=code&client_id=<client_id>&redirect_uri=https%3A%2F%2Fchat.mistral.ai%2Foauth%2Fcallback'
 ```
 
 MCP bearer handoff:

@@ -497,6 +497,13 @@ class AgentEngine:
                         tool_name=tool_name,
                         tool_args=normalized_args,
                         result=result,
+                        # Root Cause vs Logic: complex chat turns can call several
+                        # stock tools, and running a separate LLM validator for
+                        # every stock result quickly hits Azure 429 limits. Stock
+                        # payloads already have deterministic row/evidence
+                        # extraction, so reserve the model validator for
+                        # non-stock tools that lack a richer local normalizer.
+                        use_model_validator=not tool_name.startswith("stock_"),
                     )
                     phase_timings_ms["validator"] += int((perf_counter() - validator_started_at) * 1000)
                     limitations.extend(validation_limitations)
@@ -2747,30 +2754,45 @@ class AgentEngine:
     async def _post_chat_completion(self, payload: dict[str, Any], endpoint_name: str) -> dict[str, Any]:
         if self._client is None:
             raise UpstreamServiceError(503, "Azure AI Foundry is not configured.")
-        # Motivation vs Logic: Azure read timeouts tend to be transient, so we
-        # retry the request with exponential backoff before surfacing a 5xx error.
         response: httpx.Response | None = None
-        for attempt in range(1, self.settings.foundry_max_attempts + 1):
+        timeout_attempt = 1
+        rate_limit_attempt = 1
+        while True:
             try:
                 response = await self._client.post("/chat/completions", json=payload)
+                if response.status_code == 429:
+                    delay = self._foundry_response_retry_delay_seconds(response, rate_limit_attempt)
+                    # Root Cause vs Logic: Azure 429s are quota pacing, not a bad
+                    # user request. Chat UX should wait through rate pressure and
+                    # resume automatically instead of returning a failed answer.
+                    self.logger.warning(
+                        "Azure AI Foundry rate limited `%s`; retrying until success (attempt %s) in %.1fs.",
+                        endpoint_name,
+                        rate_limit_attempt,
+                        delay,
+                    )
+                    await anyio.sleep(delay)
+                    rate_limit_attempt += 1
+                    continue
                 break
             except httpx.ReadTimeout as exc:
-                if attempt >= self.settings.foundry_max_attempts:
+                if timeout_attempt >= self.settings.foundry_max_attempts:
                     raise UpstreamServiceError(
                         504,
                         f"Azure AI Foundry timed out while handling `{endpoint_name}`.",
                     ) from exc
-                delay = self._foundry_retry_delay_seconds(attempt)
+                delay = self._foundry_retry_delay_seconds(timeout_attempt)
                 # Root Cause vs Logic: we expose the retry so operators know we
                 # are waiting through transient network hiccups instead of failing.
                 self.logger.warning(
                     "Azure AI Foundry timed out while handling `%s`; retry %s/%s in %.1fs.",
                     endpoint_name,
-                    attempt,
+                    timeout_attempt,
                     self.settings.foundry_max_attempts,
                     delay,
                 )
                 await anyio.sleep(delay)
+                timeout_attempt += 1
             except httpx.HTTPError as exc:
                 raise UpstreamServiceError(
                     502,
@@ -2795,6 +2817,15 @@ class AgentEngine:
     def _foundry_retry_delay_seconds(self, attempt: int) -> float:
         delay = self.settings.foundry_retry_backoff_seconds * (2 ** (attempt - 1))
         return min(delay, self.settings.foundry_retry_backoff_cap_seconds)
+
+    def _foundry_response_retry_delay_seconds(self, response: httpx.Response, attempt: int) -> float:
+        retry_after = response.headers.get("retry-after")
+        if retry_after:
+            try:
+                return min(float(retry_after), self.settings.foundry_retry_backoff_cap_seconds)
+            except ValueError:
+                pass
+        return self._foundry_retry_delay_seconds(attempt)
 
     def _capture(
         self,

@@ -848,7 +848,6 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
             },
             follow_redirects=False,
         )
-        login = client.get(authorized.headers["location"], follow_redirects=False)
         login_state = parse_qs(urlparse(authorized.headers["location"]).query)["state"][0]
         callback = client.get(
             "/oauth/callback",
@@ -919,7 +918,7 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
 
     assert registered.status_code == 201
     assert authorized.status_code == 302
-    assert login.status_code == 302
+    assert urlparse(authorized.headers["location"]).netloc == "login.microsoftonline.com"
     assert callback.status_code == 302
     assert token.status_code == 200
     assert mcp_initialize.status_code == 200
@@ -933,6 +932,29 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
     assert decoded["plugin_permissions"] == ["news", "weather", "currency", "stock"]
     assert decoded["roles"] == ["Tool.Viewer"]
     assert login_calls[0]["code_verifier"]
+
+
+def test_chatgpt_auto_registration_redirects_directly_to_entra_login() -> None:
+    with build_bridge_identity_user_client() as client:
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "chatgpt-auto-client",
+                "redirect_uri": "https://chatgpt.com/connector/oauth/0_EXexAMrewP",
+            },
+            follow_redirects=False,
+        )
+
+    location = authorized.headers["location"]
+    parsed = urlparse(location)
+    query = parse_qs(parsed.query)
+
+    assert authorized.status_code == 302
+    assert parsed.netloc == "login.microsoftonline.com"
+    assert parsed.path == "/tenant-1/oauth2/v2.0/authorize"
+    assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
+    assert query["state"][0]
 
 
 def test_mcp_oauth_bridge_uses_id_token_identity_and_graph_memberships(monkeypatch) -> None:
@@ -1175,6 +1197,33 @@ def test_claude_trusted_domain_auto_registration_uses_bridge_flow() -> None:
                 "client_id": "claude-auto-client",
                 "code": query["code"][0],
                 "redirect_uri": "https://claude.ai/api/mcp/auth/callback",
+            },
+        )
+
+    assert authorized.status_code == 302
+    assert token.status_code == 200
+    assert token.json()["token_type"] == "Bearer"
+
+
+def test_mistral_trusted_domain_auto_registration_uses_bridge_flow() -> None:
+    with build_mcp_auth_client() as client:
+        authorized = client.get(
+            "/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "mistral-auto-client",
+                "redirect_uri": "https://chat.mistral.ai/oauth/callback",
+            },
+            follow_redirects=False,
+        )
+        query = parse_qs(urlparse(authorized.headers["location"]).query)
+        token = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": "mistral-auto-client",
+                "code": query["code"][0],
+                "redirect_uri": "https://chat.mistral.ai/oauth/callback",
             },
         )
 

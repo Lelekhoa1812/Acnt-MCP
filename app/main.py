@@ -18,7 +18,7 @@ from starlette.types import Receive, Scope, Send
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
-from app.auth import IdentityAuthError, IdentityGateway, reset_user_context, set_user_context
+from app.auth import ClaudeOAuthError, IdentityAuthError, IdentityGateway, reset_user_context, set_user_context
 from app.auth import ClaudeOAuthService
 from app.auth.claims import resolve_user_email
 from app.mcp.server import build_mcp_server
@@ -688,11 +688,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
         if resolved_settings.claude_oauth_enabled:
             login_state = secrets.token_urlsafe(32)
+            try:
+                # Root Cause vs Logic: ChatGPT accepts the connector authorization
+                # URL but does not reliably surface the follow-up `/oauth/login`
+                # redirect as a browser login. Building the Entra authorize URL
+                # here keeps the bridge state intact while sending the connector
+                # straight to Microsoft for the human sign-in step.
+                oauth_service = request.app.state.claude_oauth_service
+                authorize_url, code_verifier = oauth_service.build_authorize_url(base_url=base_url, state=login_state)
+            except ClaudeOAuthError as exc:
+                return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "error_description": exc.message})
             request.app.state.oauth_login_states[login_state] = {
                 "expires_at": time.time() + 600,
                 "bridge_code": code,
+                "code_verifier": code_verifier,
             }
-            return RedirectResponse(f"{base_url}/oauth/login?state={login_state}", status_code=302)
+            return RedirectResponse(authorize_url, status_code=302)
         redirect_params = {"code": code}
         if connector_state:
             redirect_params["state"] = connector_state
