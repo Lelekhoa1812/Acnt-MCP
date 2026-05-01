@@ -9,6 +9,7 @@ from app.config.settings import Settings
 from app.schemas import ToolTrace
 from app.store import AppKeyValueStore
 from app.stats.models import (
+    ToolDurationRecord,
     UsageClientSummary,
     UsageEvent,
     UsageStatsSnapshot,
@@ -18,6 +19,7 @@ from app.stats.models import (
     UsageUserGroup,
 )
 
+TOOL_DURATION_HISTORY_LIMIT = 200
 
 class UsageStatsService:
     # Motivation vs Logic: admin review needs a compact, human-readable record
@@ -67,6 +69,21 @@ class UsageStatsService:
             )
         )
         await self._append_events(events)
+        if events:
+            client_label = self._client_label(events[0])
+            ai_key = self._ai_key(client_label)
+            recorded = events[0].recorded_at
+            for trace in tool_trace:
+                duration = trace.duration_seconds
+                if duration is None:
+                    continue
+                await self._record_tool_duration(
+                    tool=trace.tool,
+                    duration=duration,
+                    client_label=client_label,
+                    ai_key=ai_key,
+                    recorded_at=recorded,
+                )
 
     async def record_tool_call(
         self,
@@ -75,26 +92,35 @@ class UsageStatsService:
         tool_name: str,
         client_id: str | None = None,
         client_name: str | None = None,
+        duration_seconds: float | None = None,
     ) -> None:
         clean_tool_name = tool_name.strip()
         if not clean_tool_name:
             return
-        await self._append_event(
-            UsageEvent(
-                recorded_at=time.time(),
-                kind="tool",
-                tenant_id=self._render_tenant_id(user_context),
-                user_oid=self._render_user_oid(user_context),
-                identity_key=self._render_identity_key(user_context),
-                user_email=self._render_user_email(user_context),
-                client_id=self._render_client_id(user_context, client_id),
-                client_name=self._render_client_name(client_name),
-                roles=self._render_roles(user_context),
-                groups=self._render_groups(user_context),
-                group_names=self._render_group_names(user_context),
-                tool_names=[clean_tool_name],
-            )
+        event = UsageEvent(
+            recorded_at=time.time(),
+            kind="tool",
+            tenant_id=self._render_tenant_id(user_context),
+            user_oid=self._render_user_oid(user_context),
+            identity_key=self._render_identity_key(user_context),
+            user_email=self._render_user_email(user_context),
+            client_id=self._render_client_id(user_context, client_id),
+            client_name=self._render_client_name(client_name),
+            roles=self._render_roles(user_context),
+            groups=self._render_groups(user_context),
+            group_names=self._render_group_names(user_context),
+            tool_names=[clean_tool_name],
         )
+        await self._append_event(event)
+        client_label = self._client_label(event)
+        if duration_seconds is not None:
+            await self._record_tool_duration(
+                tool=clean_tool_name,
+                duration=duration_seconds,
+                client_label=client_label,
+                ai_key=self._ai_key(client_label),
+                recorded_at=event.recorded_at,
+            )
 
     async def record_tool_error(
         self,
@@ -185,6 +211,59 @@ class UsageStatsService:
             value=[item.model_dump(mode="json") for item in events],
             ttl_seconds=None,
         )
+
+    async def tool_duration_snapshot(self, limit: int = 100) -> list[ToolDurationRecord]:
+        raw, _ = await self.key_value_store.get_json("usage_stats", "tool_durations")
+        records = self._load_duration_records(raw)
+        if limit <= 0:
+            return records
+        return records[-limit:]
+
+    async def _append_duration_record(self, record: ToolDurationRecord) -> None:
+        raw, _ = await self.key_value_store.get_json("usage_stats", "tool_durations")
+        records = self._load_duration_records(raw)
+        records.append(record)
+        if len(records) > TOOL_DURATION_HISTORY_LIMIT:
+            records = records[-TOOL_DURATION_HISTORY_LIMIT:]
+        await self.key_value_store.set_json(
+            namespace="usage_stats",
+            key="tool_durations",
+            value=[item.model_dump(mode="json") for item in records],
+            ttl_seconds=None,
+        )
+
+    def _load_duration_records(self, raw: Any) -> list[ToolDurationRecord]:
+        if not isinstance(raw, list):
+            return []
+        records: list[ToolDurationRecord] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                records.append(ToolDurationRecord.model_validate(item))
+            except Exception:
+                continue
+        return records
+
+    async def _record_tool_duration(
+        self,
+        *,
+        tool: str,
+        duration: float,
+        client_label: str | None,
+        ai_key: str,
+        recorded_at: float | None = None,
+    ) -> None:
+        if duration < 0:
+            return
+        record = ToolDurationRecord(
+            recorded_at=recorded_at or time.time(),
+            tool=tool,
+            duration_seconds=duration,
+            client_label=client_label,
+            ai_key=ai_key or "other",
+        )
+        await self._append_duration_record(record)
 
     def _load_events(self, raw: Any) -> list[UsageEvent]:
         if not isinstance(raw, list):

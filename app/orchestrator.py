@@ -140,7 +140,7 @@ class OrchestratorService:
         self.agent_engine.persist_plan_state(session_state, plan_status)
 
         try:
-            result = await self.tool_registry.call_tool(
+        result = await self.tool_registry.call_tool(
                 tool_name,
                 args,
                 session_id=session_state.session_id,
@@ -184,6 +184,7 @@ class OrchestratorService:
             tool_name=tool_name,
             client_id=client_id,
             client_name=client_name,
+            duration_seconds=result.trace.duration_seconds if result.trace else None,
         )
         await self.session_store.save_state(session_state)
         return result

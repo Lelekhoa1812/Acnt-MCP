@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -197,7 +198,14 @@ class ToolRegistry:
             validated = spec.model.model_validate(raw_args)
         except ValidationError as exc:
             raise ParameterMappingError(self._format_validation_error(tool_name, exc)) from exc
-        return await spec.handler(validated, session_id, thought)
+        start = time.perf_counter()
+        result = await spec.handler(validated, session_id, thought)
+        duration_seconds = time.perf_counter() - start
+        if duration_seconds < 0:
+            duration_seconds = 0.0
+        if result.trace is not None:
+            result.trace.duration_seconds = duration_seconds
+        return result
 
     def resolve_tool_name(self, tool_name: str) -> str:
         # Root Cause vs Logic: `/query`, REST function payloads, and MCP all need

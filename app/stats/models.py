@@ -76,3 +76,11 @@ class UsageStatsSnapshot(BaseModel):
     generated_at: float
     groups: list[UsageUserGroup] = Field(default_factory=list)
     tool_errors: list[UsageToolErrorSummary] = Field(default_factory=list)
+
+
+class ToolDurationRecord(BaseModel):
+    recorded_at: float
+    tool: str
+    duration_seconds: float
+    client_label: str | None = None
+    ai_key: str = Field(default="other")

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from app.auth import IdentityAuthError
@@ -254,3 +255,17 @@ async def oauth_groups(
 async def stats(container = Depends(get_container)) -> HTMLResponse:
     snapshot = await container.usage_stats_service.snapshot()
     return HTMLResponse(render_usage_stats_html(snapshot))
+
+
+@router.get("/stats/durations")
+async def stats_tool_durations(
+    container = Depends(get_container),
+    limit: int = 120,
+) -> JSONResponse:
+    safe_limit = max(0, min(limit, 500))
+    records = await container.usage_stats_service.tool_duration_snapshot(limit=safe_limit)
+    payload = {
+        "generated_at": time.time(),
+        "records": [record.model_dump(mode="json") for record in records],
+    }
+    return JSONResponse(content=payload)

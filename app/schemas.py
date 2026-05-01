@@ -359,6 +359,7 @@ class ToolTrace(BaseModel):
     source_data: str | None = None
     result_count: int | None = None
     normalization_notes: list[str] = Field(default_factory=list)
+    duration_seconds: float | None = None
 
 
 class McpImageContent(BaseModel):

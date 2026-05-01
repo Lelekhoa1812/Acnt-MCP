@@ -364,6 +364,15 @@ duration,
 performanceBucket
 ```
 
+Focus View:
+```sql
+requests 
+| where name startswith "GET api/v1/products"
+| where timestamp > ago(10m)
+| order by timestamp desc
+| project id, name, url, resultCode, timestamp
+```
+
 To list error request:
 ```sql
 requests  

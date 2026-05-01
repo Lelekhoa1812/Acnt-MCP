@@ -19,6 +19,152 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
         </section>
         """
     error_sections = _render_tool_errors(snapshot.tool_errors)
+    duration_script = """
+    <script>
+      (function () {
+        const canvas = document.getElementById("toolDurationChart");
+        const legend = document.getElementById("toolDurationLegend");
+        const status = document.getElementById("toolDurationStatus");
+        if (!canvas || !legend || !status) {
+          return;
+        }
+        const ctx = canvas.getContext("2d");
+        const palette = [
+          "#335c81",
+          "#f97316",
+          "#10b981",
+          "#6366f1",
+          "#ec4899",
+          "#14b8a6",
+          "#facc15",
+          "#0ea5e9",
+        ];
+        const colorMap = new Map();
+        let colorIndex = 0;
+
+        function colorFor(tool) {
+          if (!colorMap.has(tool)) {
+            colorMap.set(tool, palette[colorIndex % palette.length]);
+            colorIndex += 1;
+          }
+          return colorMap.get(tool);
+        }
+
+        function groupRecords(records) {
+          const buckets = new Map();
+          records.forEach((record) => {
+            if (!record.tool || typeof record.duration_seconds !== "number") {
+              return;
+            }
+            const normalized = record.tool;
+            const bucket = buckets.get(normalized) || [];
+            bucket.push(record);
+            buckets.set(normalized, bucket);
+          });
+          const series = [];
+          buckets.forEach((items, tool) => {
+            const sorted = items
+              .slice()
+              .sort((a, b) => a.recorded_at - b.recorded_at)
+              .slice(-40);
+            series.push({ tool, points: sorted, color: colorFor(tool) });
+          });
+          return series;
+        }
+
+        function drawChart(series) {
+          const width = canvas.width;
+          const height = canvas.height;
+          const margin = 40;
+          ctx.clearRect(0, 0, width, height);
+          if (!series.length) {
+            ctx.fillStyle = "#64748b";
+            ctx.font = "14px Inter, system-ui";
+            ctx.fillText("Waiting for tool duration data…", margin, height / 2);
+            legend.textContent = "";
+            return;
+          }
+          const allPoints = series.flatMap((entry) => entry.points);
+          const minTs = Math.min(...allPoints.map((point) => point.recorded_at));
+          const maxTs = Math.max(...allPoints.map((point) => point.recorded_at), minTs + 0.001);
+          const maxDuration = Math.max(...allPoints.map((point) => point.duration_seconds), 0.5);
+          const plotWidth = width - margin * 2;
+          const plotHeight = height - margin * 2;
+          ctx.strokeStyle = "#94a3b8";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(margin, margin);
+          ctx.lineTo(margin, height - margin);
+          ctx.lineTo(width - margin, height - margin);
+          ctx.stroke();
+          ctx.fillStyle = "#94a3b8";
+          ctx.font = "12px Inter, system-ui";
+          ctx.fillText("Duration (s)", 8, margin - 6);
+          ctx.fillText("Time", width - margin - 28, height - 8);
+
+          series.forEach((entry) => {
+            ctx.strokeStyle = entry.color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            entry.points.forEach((point, index) => {
+              const xRatio = (point.recorded_at - minTs) / (maxTs - minTs);
+              const x = margin + xRatio * plotWidth;
+              const yRatio = Math.min(point.duration_seconds / maxDuration, 1);
+              const y = height - margin - yRatio * plotHeight;
+              if (index === 0) {
+                ctx.moveTo(x, y);
+              } else {
+                ctx.lineTo(x, y);
+              }
+            });
+            ctx.stroke();
+            entry.points.forEach((point) => {
+              const xRatio = (point.recorded_at - minTs) / (maxTs - minTs);
+              const x = margin + xRatio * plotWidth;
+              const yRatio = Math.min(point.duration_seconds / maxDuration, 1);
+              const y = height - margin - yRatio * plotHeight;
+              ctx.fillStyle = entry.color;
+              ctx.beginPath();
+              ctx.arc(x, y, 3, 0, Math.PI * 2);
+              ctx.fill();
+            });
+          });
+
+          legend.innerHTML = "";
+          series.forEach((entry) => {
+            const swatch = document.createElement("span");
+            swatch.innerHTML =
+              '<span class="swatch" style="background:' +
+              entry.color +
+              '"></span>' +
+              entry.tool;
+            legend.appendChild(swatch);
+          });
+        }
+
+        async function fetchData() {
+          status.textContent = "Updating…";
+          try {
+            const response = await fetch("durations?_=" + Date.now(), { cache: "no-store" });
+            if (!response.ok) {
+              throw new Error("Failed to refresh");
+            }
+            const payload = await response.json();
+            const series = groupRecords(payload.records || []);
+            drawChart(series);
+            const generated = payload.generated_at ? new Date(payload.generated_at * 1000) : new Date();
+            status.textContent = "Last refreshed " + generated.toLocaleTimeString();
+          } catch (error) {
+            status.textContent = "Update failed";
+            console.error("Tool duration refresh failed", error);
+          }
+        }
+
+        fetchData();
+        setInterval(fetchData, 30000);
+      })();
+    </script>
+    """
 
     return f"""<!doctype html>
 <html lang="en">
@@ -267,6 +413,44 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
         color: var(--text);
         font-size: 18px;
       }}
+      .duration-section {{
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }}
+      .duration-section h2 {{
+        margin: 0 0 6px;
+      }}
+      .duration-section canvas {{
+        width: 100%;
+        max-width: 860px;
+        height: 280px;
+        display: block;
+        margin: 0 auto 16px;
+      }}
+      .duration-legend {{
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        font-size: 13px;
+        margin-bottom: 8px;
+      }}
+      .duration-legend span {{
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }}
+      .duration-legend .swatch {{
+        width: 14px;
+        height: 14px;
+        border-radius: 2px;
+      }}
+      .duration-status {{
+        font-size: 13px;
+        color: var(--muted);
+      }}
       @media (max-width: 640px) {{
         .wrap {{
           padding: 20px 14px 36px;
@@ -292,9 +476,21 @@ def render_usage_stats_html(snapshot: UsageStatsSnapshot) -> str:
       </header>
       <main>
         {sections}
+        <section class="duration-section">
+          <div class="group-head">
+            <div>
+              <h2 class="group-title">Tool response durations</h2>
+              <p class="intro">Each line tracks a tool’s end-to-end response time. The chart refreshes every 30 seconds.</p>
+            </div>
+          </div>
+          <canvas id="toolDurationChart" width="860" height="280"></canvas>
+          <div id="toolDurationLegend" class="duration-legend"></div>
+          <div id="toolDurationStatus" class="duration-status">Waiting for data…</div>
+        </section>
         {error_sections}
-      </main>
+    </main>
     </div>
+      {duration_script}
   </body>
 </html>"""
 
@@ -342,7 +538,7 @@ def _render_client_summary(group: UsageUserGroup) -> str:
         chips = '<span class="chip chip--muted">No AI client recorded</span>'
     else:
         chips = "".join(
-            f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(client.label)}'
+            f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(_friendly_client_label(client.label))}'
             f' <strong>{client.count}</strong></span>'
             for client in group.clients
         )
@@ -361,7 +557,7 @@ def _render_tool_summary(group: UsageUserGroup) -> str:
         rows = []
         for tool in group.tools:
             client_chips = "".join(
-                f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(client.label)}'
+                f'<span class="chip {_ai_chip_class(client.ai_key)}">{escape(_friendly_client_label(client.label))}'
                 f' <strong>{client.count}</strong></span>'
                 for client in tool.clients
             )
@@ -479,3 +675,10 @@ def _ai_chip_class(ai_key: str) -> str:
     allowed = {"claude", "openai", "chatgpt", "codex", "cursor", "other"}
     key = ai_key if ai_key in allowed else "other"
     return f"chip--ai-{key}"
+
+
+def _friendly_client_label(label: str | None) -> str:
+    if not label:
+        return "Unknown AI"
+    parts = label.split(" (", 1)
+    return parts[0]
