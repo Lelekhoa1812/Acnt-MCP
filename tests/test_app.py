@@ -954,6 +954,7 @@ def test_chatgpt_auto_registration_redirects_directly_to_entra_login() -> None:
     assert parsed.netloc == "login.microsoftonline.com"
     assert parsed.path == "/tenant-1/oauth2/v2.0/authorize"
     assert query["redirect_uri"] == ["https://hth.example.test/oauth/callback"]
+    assert query["prompt"] == ["select_account"]
     assert query["state"][0]
 
 

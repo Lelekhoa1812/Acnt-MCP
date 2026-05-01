@@ -117,6 +117,10 @@ class ClaudeOAuthService:
             "state": state,
             "code_challenge": self._pkce_code_challenge(code_verifier),
             "code_challenge_method": "S256",
+            # Root Cause vs Logic: Entra can silently reuse an existing browser
+            # SSO session, which makes connector auth look like it skipped login
+            # and may bind the MCP grant to the wrong cached Microsoft account.
+            "prompt": "select_account",
         }
         return f"{authorize_url}?{urlencode(params)}", code_verifier
 
