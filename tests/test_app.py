@@ -1371,6 +1371,7 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     tool_names = {tool["name"] for tool in response.json()["tools"]}
     assert all(MCP_TOOL_NAME_PATTERN.fullmatch(name) for name in tool_names)
     assert "stock_scope" in tool_names
+    assert "stock_list_category" in tool_names
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
     assert "stock_get_variant_evidence" not in tool_names
@@ -1400,6 +1401,7 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names
     assert "stock_scope" in tool_names
+    assert "stock_list_category" in tool_names
     assert "stock_search" in tool_names
     assert "stock_detail" in tool_names
 

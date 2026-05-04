@@ -17,10 +17,12 @@ from app.mcp.adapter import McpToolAdapter
 
 MCP_SERVER_INSTRUCTIONS = (
     "Harmonise inventory MCP server. Choose tools by requested operation, not by hard-coded product keywords. "
-    "Use stock_scope for supported departments/categories and categoryId routing. Use stock_snapshot for named "
-    "family availability or broad variant tables. Use stock_aggregate for most/least totals by type, product "
-    "family, category, region, or all inventory; it returns summed groups. Use stock_specs_rank for "
-    "complex hierarchy, dimension, pricing, attribute/style, and state ranking. Use stock_variant_rank only "
+    "Use stock_scope for supported departments/categories and categoryId routing. Use stock_list_category before "
+    "item search for broad item types, plural nouns, or category-like phrases, then pass returned categoryId filters "
+    "to inventory tools. Use stock_snapshot for named family availability or broad variant tables. "
+    "Use stock_aggregate for most/least totals by type, product family, category, region, or all inventory; "
+    "it returns summed groups. Use stock_specs_rank for complex hierarchy, dimension, pricing, attribute/style, "
+    "and state ranking. Use stock_variant_rank only "
     "when the user asks which variant or SKU ranks highest/lowest within a resolved family. Use stock_image "
     "for Harmonise image retrieval/rendering. Use stock_detail for exact product/SKU detail and stock_compare "
     "only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no rows, partial "

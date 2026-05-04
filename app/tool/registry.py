@@ -48,6 +48,7 @@ from app.schemas import (
     StockHirableByStateArgs,
     StockImageArgs,
     StockInventorySnapshotArgs,
+    StockListCategoryArgs,
     StockProductFamilyInventoryArgs,
     StockSearchCatalogueArgs,
     StockSpecsRankArgs,
@@ -58,7 +59,7 @@ from app.schemas import (
     VariantCapMetadata,
 )
 from app.prompt.context import render_session_context, summarize_session_state
-from app.prompt.stock.furniture import furniture_capability_summary
+from app.prompt.stock.furniture import furniture_capability_summary, list_furniture_category_matches
 from app.session.store import SessionStore
 from app.text.utils import lexical_overlap
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
@@ -692,6 +693,48 @@ class ToolRegistry:
             )
             return ToolResult(tool="stock_scope", data=data, llm_content=data, trace=trace)
 
+        async def list_category(validated: StockListCategoryArgs, _: str | None, thought: str) -> ToolResult:
+            matches = list_furniture_category_matches(
+                validated.query,
+                department_id=validated.departmentId,
+                limit=validated.limit,
+            )
+            status = "no_match"
+            if matches:
+                status = "matched"
+                if len(matches) > 1 and matches[1].confidence >= matches[0].confidence - 0.12:
+                    status = "ambiguous"
+            payload = {
+                "query": validated.query,
+                "status": status,
+                "matches": [
+                    {
+                        "categoryId": match.category_id,
+                        "name": match.name,
+                        "departmentId": match.department_id,
+                        "description": match.description,
+                        "confidence": match.confidence,
+                        "matchedOn": list(match.matched_on),
+                    }
+                    for match in matches
+                ],
+                "guidance": (
+                    "Use the returned categoryId with stock_snapshot, stock_search, stock_aggregate, or ranking "
+                    "tools for broad item-type requests. If status is ambiguous, use the top likely category IDs "
+                    "for broad discovery or ask the user to choose when the meanings differ."
+                ),
+            }
+            trace = ToolTrace(
+                thought=thought,
+                tool="stock_list_category",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status="policy",
+                source_data="prompt_policy -> furniture_category_routes[*]",
+                result_count=len(matches),
+            )
+            return ToolResult(tool="stock_list_category", data=payload, llm_content=payload, trace=trace)
+
         async def collect_family_evidence(
             validated: StockProductFamilyInventoryArgs | StockVariantRankArgs,
         ) -> tuple[list[NormalizedEvidence], str, list[str], dict[str, Any]]:
@@ -1013,6 +1056,19 @@ class ToolRegistry:
             ),
             StockGetSupportedScopeArgs,
             get_supported_scope,
+        )
+        # Motivation vs Logic: broad furniture words need category intent resolved
+        # before product search, so this visible resolver exposes the same mapped
+        # category IDs that stock_scope documents while keeping product searches parametric.
+        self._register(
+            "stock_list_category",
+            (
+                "Resolve a broad furniture item type or category phrase to supported categoryId filters before "
+                "catalogue/product search. Use first for category-like queries such as coffee tables, stools, "
+                "ottomans, dining furniture, or broad plural item types."
+            ),
+            StockListCategoryArgs,
+            list_category,
         )
         self._register(
             "stock_get_supported_scope",

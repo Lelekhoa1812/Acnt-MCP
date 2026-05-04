@@ -565,6 +565,12 @@ class StockGetSupportedScopeArgs(BaseModel):
     pass
 
 
+class StockListCategoryArgs(BaseModel):
+    query: str = Field(description="User category phrase to resolve, such as coffee tables, stools, or ottomans.")
+    departmentId: int | None = Field(3, description="Supported department filter; defaults to Furniture.")
+    limit: int = Field(5, ge=1, le=10, description="Maximum category matches to return.")
+
+
 class StockSearchCatalogueArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue result page to retrieve.")
     search: str | None = Field(

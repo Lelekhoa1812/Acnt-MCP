@@ -26,6 +26,7 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Choose tools by requested operation" in MCP_SERVER_INSTRUCTIONS
     assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_list_category before" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
     assert "grouped aggregation already paginates" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
@@ -102,6 +103,7 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert all(len(name.split("_")) < 4 for name in tool_names)
     assert "stock_search" in tool_names
     assert "stock_scope" in tool_names
+    assert "stock_list_category" in tool_names
     assert "stock_snapshot" in tool_names
     assert "stock_aggregate" in tool_names
     assert "stock_specs_rank" in tool_names
@@ -126,6 +128,10 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "supported filters" in search_catalogue.description
     assert "variants" in search_catalogue.description
     assert "description" in search_catalogue.inputSchema["properties"]["departmentId"]
+
+    list_category = next(tool for tool in tools.tools if tool.name == "stock_list_category")
+    assert "broad furniture item type" in list_category.description
+    assert "query" in list_category.inputSchema["properties"]
 
     aggregate = next(tool for tool in tools.tools if tool.name == "stock_aggregate")
     assert "Grouped stock" in aggregate.description
@@ -236,6 +242,38 @@ async def test_mcp_supported_scope_returns_canonical_counts() -> None:
     assert data["supported_department_count"] == expected["supported_department_count"] == 1
     assert data["mapped_furniture_category_count"] == expected["mapped_furniture_category_count"]
     assert "guidance" in data
+
+
+@pytest.mark.anyio
+async def test_mcp_list_category_resolves_broad_category_phrases() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        coffee = await client.call_tool("stock_list_category", {"query": "coffee tables"})
+        stools = await client.call_tool("stock_list_category", {"query": "stools"})
+        ottomans = await client.call_tool("stock_list_category", {"query": "ottoman chairs"})
+        tables = await client.call_tool("stock_list_category", {"query": "tables", "limit": 4})
+
+    assert coffee.isError is False
+    coffee_data = coffee.structuredContent["data"]
+    assert coffee_data["status"] == "matched"
+    assert coffee_data["matches"][0]["name"] == "Furniture - Tables - Coffee"
+    assert coffee_data["matches"][0]["categoryId"] == "b7d70000-eacf-fc4c-f320-08de7f19d96e"
+
+    assert stools.structuredContent["data"]["matches"][0]["name"] == "Furniture - Seating - Stools"
+    assert ottomans.structuredContent["data"]["matches"][0]["name"] == "Furniture - Seating - Ottomans"
+
+    table_data = tables.structuredContent["data"]
+    table_names = {match["name"] for match in table_data["matches"]}
+    assert table_data["status"] == "ambiguous"
+    expected_table_names = {
+        "Furniture - Tables - Bar Height",
+        "Furniture - Tables - Dining",
+        "Furniture - Tables - Coffee",
+        "Furniture - Tables - Side",
+    }
+    assert len(table_names & expected_table_names) >= 2
 
 
 @pytest.mark.anyio

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from app.text.utils import fuzzy_ratio, normalize_text, significant_tokens
+
 # Motivation vs Logic: furniture routing rules and category mappings are kept in
 # this module so the stock orchestrator can enforce department/category behavior
 # from prompt policy alone without hard-coding cloud API filters in tool code.
@@ -21,6 +23,16 @@ class FurnitureDepartmentCapability:
     name: str
     department_id: int
     description: str
+
+
+@dataclass(frozen=True)
+class FurnitureCategoryMatch:
+    name: str
+    category_id: str
+    department_id: int
+    description: str
+    confidence: float
+    matched_on: tuple[str, ...]
 
 
 FURNITURE_CATEGORY_ROUTES: tuple[FurnitureCategoryRoute, ...] = (
@@ -115,6 +127,99 @@ def _describe_route_name(name: str) -> tuple[str, ...]:
         if cleaned and cleaned not in tokens:
             tokens.append(cleaned)
     return tuple(tokens)
+
+
+def _singularize_token(token: str) -> str:
+    if len(token) > 3 and token.endswith("ies"):
+        return f"{token[:-3]}y"
+    if len(token) > 3 and token.endswith("es"):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def _expanded_tokens(value: str) -> set[str]:
+    tokens = set(significant_tokens(value))
+    return tokens | {_singularize_token(token) for token in tokens}
+
+
+def _expanded_token_sequence(value: str) -> tuple[str, ...]:
+    seen: list[str] = []
+    for token in significant_tokens(value):
+        for candidate in (token, _singularize_token(token)):
+            if candidate and candidate not in seen:
+                seen.append(candidate)
+    return tuple(seen)
+
+
+def _token_overlap(query_tokens: set[str], candidate_tokens: set[str]) -> float:
+    if not query_tokens or not candidate_tokens:
+        return 0.0
+    return len(query_tokens & candidate_tokens) / len(query_tokens)
+
+
+def list_furniture_category_matches(
+    query: str,
+    *,
+    department_id: int | None = FURNITURE_DEPARTMENT_ID,
+    limit: int = 5,
+) -> list[FurnitureCategoryMatch]:
+    normalized_query = normalize_text(query)
+    if not normalized_query:
+        return []
+    requested_department_id = department_id or FURNITURE_DEPARTMENT_ID
+    if requested_department_id != FURNITURE_DEPARTMENT_ID:
+        return []
+
+    query_tokens = _expanded_tokens(query)
+    query_sequence = _expanded_token_sequence(query)
+    matches: list[FurnitureCategoryMatch] = []
+    for route in FURNITURE_CATEGORY_ROUTES:
+        candidate_text = f"{route.name} {route.description}"
+        candidate_tokens = _expanded_tokens(candidate_text)
+        route_leaf = route.name.rsplit("-", maxsplit=1)[-1].strip()
+        leaf_tokens = _expanded_tokens(route_leaf)
+        leaf_query_matches = query_tokens & leaf_tokens
+        overlap = _token_overlap(query_tokens, candidate_tokens)
+        leaf_overlap = _token_overlap(query_tokens, leaf_tokens)
+        fuzzy = max(
+            fuzzy_ratio(query, route.name),
+            fuzzy_ratio(query, route_leaf),
+            fuzzy_ratio(query, route.description),
+        )
+        phrase_bonus = 0.15 if normalized_query in normalize_text(candidate_text) else 0.0
+        leading_leaf_bonus = 0.0
+        if query_sequence and query_sequence[0] in leaf_tokens:
+            leading_leaf_bonus = 0.34
+        confidence = min(
+            0.99,
+            (overlap * 0.46) + (leaf_overlap * 0.24) + (fuzzy * 0.18) + phrase_bonus + leading_leaf_bonus,
+        )
+        matched_on: list[str] = []
+        if overlap:
+            matched_on.append("token_overlap")
+        if leaf_query_matches:
+            matched_on.append("route_leaf")
+        if phrase_bonus:
+            matched_on.append("phrase_substring")
+        if fuzzy >= 0.5:
+            matched_on.append("fuzzy_name")
+        if confidence < 0.35:
+            continue
+        matches.append(
+            FurnitureCategoryMatch(
+                name=route.name,
+                category_id=route.category_id,
+                department_id=FURNITURE_DEPARTMENT_ID,
+                description=route.description,
+                confidence=round(confidence, 3),
+                matched_on=tuple(dict.fromkeys(matched_on or ["fuzzy_name"])),
+            )
+        )
+
+    matches.sort(key=lambda match: match.confidence, reverse=True)
+    return matches[: max(1, limit)]
 
 
 def _build_furniture_intent_terms() -> tuple[str, ...]:
@@ -212,6 +317,16 @@ def furniture_category_rules() -> list[str]:
             "FURNITURE_CATEGORY_ROUTES, then assign the most likely `categoryId`."
         ),
         (
+            "For general item types, plural nouns, or broad classifications (for example coffee tables, stools, "
+            "ottomans, or dining furniture), call `stock_list_category` before item search. Use its returned "
+            "`categoryId` with `stock_snapshot`, `stock_search`, `stock_aggregate`, or ranking tools instead of "
+            "starting with a plain text catalogue search."
+        ),
+        (
+            "Keep specific product/model names on the direct product evidence path; do not insert "
+            "`stock_list_category` when the user names one recognizable product line or SKU."
+        ),
+        (
             "If category confidence is uncertain, skip `categoryId` and prioritize name-driven "
             "`search` arguments to avoid false-negative exclusions."
         ),
@@ -231,19 +346,19 @@ def furniture_category_rules() -> list[str]:
 FURNITURE_EXAMPLES = """
 FURNITURE Example 1:
 User: Show me chairs in stock.
-Assistant: classify this as a furniture stock request, then call stock_search with departmentId=3 and categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
+Assistant: classify this as a broad furniture category request, call stock_list_category with query="chairs", then call stock_search with departmentId=3 and the resolved categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e.
 
 FURNITURE Example 2:
 User: What lounge options do we have?
-Assistant: call stock_search with departmentId=3 and categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e, then summarize returned variants.
+Assistant: call stock_list_category with query="lounge options", then call stock_search with departmentId=3 and the resolved categoryId=b7d70000-eacf-fc4c-359b-08de7f19d91e before summarizing returned variants.
 
 FURNITURE Example 3:
 User: Show me stools and electronics.
-Assistant: handle stools via furniture stock tools with departmentId=3 and categoryId=b7d70000-eacf-fc4c-0a24-08de7f19d8d2, and clearly state electronics is unavailable because only Furniture is supported right now.
+Assistant: call stock_list_category for stools, handle stools via furniture stock tools with departmentId=3 and categoryId=b7d70000-eacf-fc4c-0a24-08de7f19d8d2, and clearly state electronics is unavailable because only Furniture is supported right now.
 
 FURNITURE Example 4:
 User: Let me know more about the coffee table category.
-Assistant: classify this as live category inventory exploration, then call stock_snapshot with departmentId=3 and categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
+Assistant: classify this as live category inventory exploration, call stock_list_category with query="coffee table", then call stock_snapshot with departmentId=3 and the resolved categoryId=b7d70000-eacf-fc4c-f320-08de7f19d96e before summarizing the coffee table products and variants.
 
 FURNITURE Example 5:
 User: Is the Arc lounge chair in stock?

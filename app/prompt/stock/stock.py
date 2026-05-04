@@ -49,6 +49,11 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "do not add redundant stock steps."
         ),
         (
+            "Category-first discovery: when the user gives a general item type, plural noun, or broad "
+            "classification, call `stock_list_category` first and pass the resolved `categoryId` into the "
+            "next inventory/search/ranking tool. Do not begin these turns with a plain keyword `stock_search`."
+        ),
+        (
             "Single-product availability: prefer one `stock_snapshot` (departmentId, search from "
             "name tokens; categoryId only if FURNITURE_CATEGORY_ROUTES match is clear). Add search or a second "
             "hop only if the first hop cannot identify the product or stock."

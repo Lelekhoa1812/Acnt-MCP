@@ -72,6 +72,8 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "distinctive product/model token" in planner_prompt
     assert "never rely on hard-coded keyword lists" in planner_prompt
     assert "Do not classify named-category exploration as capability-only" in planner_prompt
+    assert "plan `stock_list_category` first" in planner_prompt
+    assert "do not start with a plain text `stock_search`" in planner_prompt
     assert "avoid planning both `stock_snapshot` and `stock_compare`" in planner_prompt
     assert "latency-aware" in planner_prompt
     assert "not yet implemented in the current tool contract" in planner_prompt
@@ -173,6 +175,7 @@ def test_render_system_routes_furniture_department_and_category_mapping() -> Non
     )
 
     assert "departmentId=3" in prompt
+    assert "stock_list_category" in prompt
     assert "FURNITURE_CAPABILITY_SUMMARY" in prompt
     assert "mapped_furniture_category_count" in prompt
     assert "b7d70000-eacf-fc4c-c59a-08de7f19d85e" in prompt
@@ -187,6 +190,7 @@ def test_render_system_routes_named_category_exploration_to_live_inventory() -> 
     )
 
     assert "live category inventory exploration" in prompt
+    assert "stock_list_category" in prompt
     assert "stock_snapshot" in prompt
     assert "b7d70000-eacf-fc4c-f320-08de7f19d96e" in prompt
 
