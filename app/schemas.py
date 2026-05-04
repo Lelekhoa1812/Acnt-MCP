@@ -5,6 +5,16 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+def _compact_identifier(value: Any) -> str | None:
+    if isinstance(value, str):
+        compact = value.strip()
+        return compact or None
+    if value is None:
+        return None
+    compact = str(value).strip()
+    return compact or None
+
+
 class ProductComponentAllocationDto(BaseModel):
     componentId: str
     quantity: int
@@ -43,6 +53,22 @@ class ProductVariationOptionDto(BaseModel):
     name: str | None = None
     sortOrder: int | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_option_identifier(cls, data: Any) -> Any:
+        # Root Cause vs Logic: Harmonise variation options sometimes arrive with
+        # `optionId` instead of `id`, so we normalize the alias once before the
+        # model enforces its stricter internal shape.
+        if not isinstance(data, dict):
+            return data
+        compact_id = _compact_identifier(data.get("id"))
+        if compact_id:
+            return {**data, "id": compact_id}
+        option_id = _compact_identifier(data.get("optionId"))
+        if option_id:
+            return {**data, "id": option_id}
+        return data
+
 
 class ProductVariationDto(BaseModel):
     id: str | None = None
@@ -58,6 +84,22 @@ class ProductVariantDto(BaseModel):
     totalHirable: int | None = None
     optionIds: list[str] = Field(default_factory=list)
     details: ProductVariantDetailsDto | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_variant_identifier(cls, data: Any) -> Any:
+        # Root Cause vs Logic: catalogue variants are sometimes keyed only by
+        # SKU in search responses, so we promote that identifier into `id`
+        # before downstream lookups assume the canonical field exists.
+        if not isinstance(data, dict):
+            return data
+        compact_id = _compact_identifier(data.get("id"))
+        if compact_id:
+            return {**data, "id": compact_id}
+        sku = _compact_identifier(data.get("sku"))
+        if sku:
+            return {**data, "id": sku}
+        return data
 
 
 class VariantCapMetadata(BaseModel):
@@ -79,6 +121,34 @@ class ProductListItemDto(BaseModel):
     variations: list[ProductVariationDto] = Field(default_factory=list)
     variants: list[ProductVariantDto] = Field(default_factory=list)
     variantCap: VariantCapMetadata | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_product_identifier(cls, data: Any) -> Any:
+        # Root Cause vs Logic: Harmonise list rows can omit the family id while
+        # still carrying enough variant identity to resolve the product safely,
+        # so we derive a stable row id once here instead of failing validation.
+        if not isinstance(data, dict):
+            return data
+        compact_id = _compact_identifier(data.get("id"))
+        if compact_id:
+            return {**data, "id": compact_id}
+
+        variants = data.get("variants")
+        if isinstance(variants, list):
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                variant_id = _compact_identifier(variant.get("id"))
+                if variant_id:
+                    return {**data, "id": variant_id}
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    continue
+                sku = _compact_identifier(variant.get("sku"))
+                if sku:
+                    return {**data, "id": sku}
+        return data
 
 
 class ProductListItemDtoPagedResponse(BaseModel):

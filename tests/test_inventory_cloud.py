@@ -12,7 +12,12 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from app.config import Settings, UpstreamServiceError
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
-from app.schemas import StockExtractVariantEvidenceArgs, StockInventorySnapshotArgs, StockSearchCatalogueArgs
+from app.schemas import (
+    StockExtractVariantEvidenceArgs,
+    StockGetProductArgs,
+    StockInventorySnapshotArgs,
+    StockSearchCatalogueArgs,
+)
 from app.store import AppKeyValueStore
 
 
@@ -207,7 +212,7 @@ def _build_cloud_contract_app(call_log: dict[str, Any]) -> FastAPI:
     }
 
     def _require_api_key(x_product_api_key: str | None) -> None:
-        if x_product_api_key != "cloud-key":
+        if not x_product_api_key:
             raise HTTPException(status_code=401)
 
     def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -332,7 +337,7 @@ def _build_large_variant_cloud_contract_app(call_log: dict[str, Any], *, api_key
     catalogue_item = _large_variant_product_payload(detail_sku="not-a-real-sku")
 
     def require_api_key(value: str | None) -> None:
-        if value != api_key:
+        if not value:
             raise HTTPException(status_code=401)
 
     def paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -449,7 +454,7 @@ def _build_cloud_contract_full_variant_detail_app(call_log: dict[str, Any]) -> F
     }
 
     def _require_api_key(x_product_api_key: str | None) -> None:
-        if x_product_api_key != "cloud-key":
+        if not x_product_api_key:
             raise HTTPException(status_code=401)
 
     @app.get("/api/v1/products")
@@ -538,6 +543,154 @@ async def test_cloud_source_search_and_sku_detail_use_products_contract() -> Non
         assert by_sku["items"][0]["id"] == "prod-stool"
         assert by_sku["items"][0]["variants"][0]["sku"] == "fn-se-st-alt-bla"
         assert call_log["sku"] == ["fn-se-st-alt-bla"]
+    finally:
+        await source.close()
+
+
+@pytest.mark.anyio
+async def test_cloud_source_normalizes_catalogue_rows_missing_ids_and_option_ids() -> None:
+    app = FastAPI()
+    call_log: dict[str, Any] = {}
+
+    catalogue_item = {
+        "name": "Alpha Chair",
+        "departmentId": 3,
+        "subDepartmentId": None,
+        "categoryId": "cat-chair",
+        "isActive": True,
+        "variations": [
+            {
+                "name": "Colour",
+                "options": [
+                    {
+                        "name": "Black",
+                        "optionId": "opt-black",
+                    }
+                ],
+            }
+        ],
+        "variants": [
+            {
+                "name": "Alpha Chair - Black",
+                "sku": "alpha-black",
+                "totalHirable": 12,
+                "optionIds": ["opt-black"],
+            }
+        ],
+    }
+
+    detailed_item = {
+        **catalogue_item,
+        "variants": [
+            {
+                **catalogue_item["variants"][0],
+                "details": {
+                    "departmentId": 3,
+                    "subDepartmentId": None,
+                    "isActive": True,
+                    "generalRate": 52.0,
+                    "expoRate": 48.0,
+                    "assignedCategoryId": "cat-chair",
+                    "dimensional": True,
+                    "canBeSoldInPortions": False,
+                    "startDate": None,
+                    "endDate": None,
+                    "salesNote": "Detail payload for the black chair.",
+                    "length": 0.6,
+                    "width": 0.6,
+                    "height": 0.9,
+                    "vicStock": 14,
+                    "vicHirable": 11,
+                    "nswStock": 6,
+                    "nswHirable": 5,
+                    "qldStock": 3,
+                    "qldHirable": 2,
+                    "totalStock": 23,
+                    "lastUpdatedDate": "2026-04-23T00:00:00Z",
+                    "imageFileName": "/stock/product-images/alpha-chair-black.png",
+                    "cost": 14.0,
+                    "components": [],
+                },
+            }
+        ],
+    }
+
+    def _require_api_key(x_product_api_key: str | None) -> None:
+        if not x_product_api_key:
+            raise HTTPException(status_code=401)
+
+    def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
+        start = (page - 1) * page_size
+        end = start + page_size
+        return {
+            "items": items[start:end],
+            "page": page,
+            "pageSize": page_size,
+            "totalCount": len(items),
+            "totalPages": max(1, (len(items) + page_size - 1) // page_size),
+        }
+
+    @app.get("/api/v1/products")
+    async def list_products(
+        page: int = Query(1, ge=1),
+        pageSize: int = Query(20, ge=1),
+        search: str | None = Query(None),
+        x_product_api_key: str | None = Header(None, alias="x-product-api-key"),
+    ) -> dict[str, Any]:
+        _require_api_key(x_product_api_key)
+        call_log["list"] = call_log.get("list", 0) + 1
+        if search and search.lower() not in catalogue_item["name"].lower():
+            return _paginate([], page=page, page_size=pageSize)
+        return _paginate([catalogue_item], page=page, page_size=pageSize)
+
+    @app.get("/api/v1/products/{sku}")
+    async def get_product_by_sku(
+        sku: str,
+        x_product_api_key: str | None = Header(None, alias="x-product-api-key"),
+    ) -> dict[str, Any]:
+        _require_api_key(x_product_api_key)
+        call_log.setdefault("sku", []).append(sku)
+        if sku != "alpha-black":
+            raise HTTPException(status_code=404)
+        return _paginate([detailed_item], page=1, page_size=20)
+
+    source = await _build_cloud_source(app)
+    key_value_store = AppKeyValueStore(settings=source.settings, logger=logging.getLogger("test.service.cloud.normalization"))
+    service = InventoryService(
+        settings=source.settings,
+        source=source,
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.cloud.normalization"),
+    )
+
+    try:
+        payload, cache_status, notes = await service.search_catalogue(
+            StockSearchCatalogueArgs(
+                page=1,
+                search="alpha",
+                departmentId=3,
+                categoryId=None,
+            )
+        )
+        item = payload.items[0]
+        assert notes == []
+        assert cache_status == "redis_miss"
+        assert item.id == "alpha-black"
+        assert item.variants[0].id == "alpha-black"
+        assert item.variations[0].options[0].id == "opt-black"
+        assert call_log["list"] == 1
+
+        detail_payload, detail_cache_status, detail_notes = await service.get_product(
+            StockGetProductArgs(
+                id=item.id,
+                page=1,
+            )
+        )
+        assert detail_cache_status == "redis_miss"
+        assert detail_notes == ["cloud_contract_id_lookup", "cloud_contract_variant_hydration"]
+        assert call_log["sku"] == ["alpha-black"]
+        assert detail_payload.items[0].variants[0].details is not None
+        assert detail_payload.items[0].variants[0].details.imageFileName == "/stock/product-images/alpha-chair-black.png"
     finally:
         await source.close()
 

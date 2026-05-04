@@ -9,6 +9,7 @@ import anyio
 import httpx
 
 from app.config import Settings, UpstreamServiceError
+from app.schemas import ProductListItemDto
 from app.tool.stock.variants import cap_variants
 
 # Motivation vs Logic: Harmonise bodies can be huge; cap debug output so logs stay usable.
@@ -489,21 +490,27 @@ class HarmoniseInventorySource:
         return True
 
     def _remember_catalogue_items(self, items: list[dict[str, Any]]) -> None:
+        # Root Cause vs Logic: the upstream catalogue payload can omit product
+        # and variant ids until the schema layer backfills them, but later
+        # exact-match lookups depend on the normalized identifiers being cached.
         for item in items:
-            product_id = item.get("id")
+            if not isinstance(item, dict):
+                continue
+            normalized_item = ProductListItemDto.model_validate(item).model_dump(mode="json")
+            product_id = normalized_item.get("id")
             if product_id:
-                self._catalogue_index[str(product_id)] = item
-            for variant in item.get("variants", []) or []:
+                self._catalogue_index[str(product_id)] = normalized_item
+            for variant in normalized_item.get("variants", []) or []:
                 if not isinstance(variant, dict):
                     continue
                 variant_id = variant.get("id")
                 if variant_id:
-                    self._variant_id_to_product[str(variant_id)] = item
+                    self._variant_id_to_product[str(variant_id)] = normalized_item
                 sku = variant.get("sku")
                 if isinstance(sku, str):
                     compact_sku = sku.strip()
                     if compact_sku:
-                        self._sku_to_product[compact_sku] = item
+                        self._sku_to_product[compact_sku] = normalized_item
 
     async def _resolve_catalogue_item_by_sku(self, sku: str) -> dict[str, Any] | None:
         compact_sku = sku.strip()

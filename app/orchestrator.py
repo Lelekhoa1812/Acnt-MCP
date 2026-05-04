@@ -147,6 +147,12 @@ class OrchestratorService:
                 thought=thought,
                 user_context=user_context,
             )
+            # Root Cause vs Logic: the registry normalizes deprecated tool aliases
+            # to their canonical implementation names, but the REST/MCP response
+            # should still echo the caller-facing tool name so clients can match
+            # the result to the request they sent.
+            if result.tool != tool_name:
+                result = result.model_copy(update={"tool": tool_name})
         except Exception as exc:
             await self.usage_stats_service.record_tool_error(
                 user_context=user_context,
