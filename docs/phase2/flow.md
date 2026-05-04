@@ -44,7 +44,7 @@ sequenceDiagram
 
     U->>C: Ask for colours, dimensions, hireable stock, and NSW ranking
     C->>M: tools/list
-    M-->>C: stock_scope, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_aggregate, stock_specs_rank, stock_variant_rank, stock_image
+    M-->>C: stock_scope, stock_list_category, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_aggregate, stock_specs_rank, stock_variant_rank, stock_image
 
     C->>M: tools/call stock_scope
     M->>R: resolve supported departments and category routes
@@ -52,6 +52,15 @@ sequenceDiagram
     H-->>R: supported IDs and category mappings
     R-->>M: structured result
     M-->>C: scope payload
+
+    opt Broad category-like phrase
+        C->>M: tools/call stock_list_category
+        M->>R: resolve fuzzy furniture category matches
+        R->>H: compare the request against canonical furniture routes
+        H-->>R: ranked category candidates
+        R-->>M: category resolution payload
+        M-->>C: matched categoryId values
+    end
 
     par Resolve each named item
         loop for every chair / lounge / table phrase
@@ -83,6 +92,7 @@ sequenceDiagram
 ## How The Tools Fit Together
 
 - `stock_scope` is the first stop when Claude needs supported departments, category IDs, or canonical scope counts.
+- `stock_list_category` resolves broad furniture phrases like coffee tables, stools, or ottomans to supported `categoryId` values before the next search or inventory call.
 - `stock_disambiguate` is used when a phrase could match multiple product families and Claude needs a ranked choice or clarification.
 - `stock_search` finds candidate product families and SKUs.
 - `stock_snapshot` is the safest default for family-level availability because it returns variant rows with sizes, stock text, and hireable counts.
@@ -96,14 +106,15 @@ sequenceDiagram
 For the sample query, Claude would usually:
 
 1. Call `stock_scope` to confirm the supported furniture routes.
-2. Call `stock_disambiguate` or `stock_search` for each named product phrase.
-3. Call `stock_snapshot` for each resolved family so every variant is covered.
-4. Call `stock_detail` if a SKU or exact product needs deeper metadata.
-5. Call `stock_compare` if two variants need an explicit comparison.
-6. Call `stock_aggregate` to rank NSW stock by product or family.
-7. Call `stock_specs_rank` if the user also cares about dimensions or other specs in the ranking.
-8. Call `stock_variant_rank` when the ranking should happen inside one family.
-9. Call `stock_image` if Claude should surface an image alongside the stock answer.
+2. Call `stock_list_category` first for broad item-type or plural category phrases.
+3. Call `stock_disambiguate` or `stock_search` for each named product phrase.
+4. Call `stock_snapshot` for each resolved family so every variant is covered.
+5. Call `stock_detail` if a SKU or exact product needs deeper metadata.
+6. Call `stock_compare` if two variants need an explicit comparison.
+7. Call `stock_aggregate` to rank NSW stock by product or family.
+8. Call `stock_specs_rank` if the user also cares about dimensions or other specs in the ranking.
+9. Call `stock_variant_rank` when the ranking should happen inside one family.
+10. Call `stock_image` if Claude should surface an image alongside the stock answer.
 
 ## MCP Tool Discovery
 
@@ -127,6 +138,10 @@ This is a representative `tools/list` request and response. The exact tool order
       {
         "name": "stock_scope",
         "description": "Supported stock scope and filter IDs."
+      },
+      {
+        "name": "stock_list_category",
+        "description": "Resolve a broad furniture item type or category phrase to supported categoryId filters before catalogue/product search."
       },
       {
         "name": "stock_disambiguate",

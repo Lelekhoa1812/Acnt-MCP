@@ -96,7 +96,7 @@ Claude.ai and other MCP clients should treat the tool registry as a curated, pol
 
 ### Stock tools
 
-This category surfaces Harmonise-backed inventory discovery, product/family detail, and scoped insights. Inputs generally accept `search`, `departmentId`, `categoryId`, and paging/filter hints, and responses include normalized inventory evidence plus optional coverage/guidance metadata (`app/tool/registry.py`, lines 186‑733).
+This category surfaces Harmonise-backed inventory discovery, product/family detail, category resolution, and scoped insights. Inputs generally accept `search`, `departmentId`, `categoryId`, and paging/filter hints, and responses include normalized inventory evidence plus optional coverage/guidance metadata (`app/tool/registry.py`, lines 186‑733).
 
 - **`stock_scope`**
   - **Purpose:** Returns the supported departments, category routes, and filter IDs so other stock tools know which scopes are valid. It also embeds usage guidance (`furniture_capability_summary`).
@@ -114,6 +114,12 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
       }
     }
     ```
+
+- **`stock_list_category`**
+  - **Purpose:** Resolves broad furniture phrases like `coffee tables`, `stools`, or `ottomans` to the canonical supported `categoryId` values before a product or inventory search.
+  - **Arguments:** `query`, optional `departmentId`, `limit`.
+  - **Example input:** `{"query": "coffee tables"}`.
+  - **Example output:** `{"query": "...", "status": "matched", "matches": [...]}` where each match includes `categoryId`, `name`, `departmentId`, `description`, `confidence`, and `matchedOn`.
 
 - **`stock_search`**
   - **Purpose:** Finds families/products matching keywords, departments, and categories. Good starting point for ambiguous requests. The backend automatically pages through the catalogue in capped batches, so callers do not control `pageSize`.
@@ -168,6 +174,12 @@ Hidden stock tools (local Harmonise only or backwards-compatible aliases):
   - `stock_get_variant_evidence` and `stock_extract_variant_evidence` remain hidden exact-variant evidence helpers.
 
 ### Resolver tools
+
+- **`stock_list_category`**
+  - **Purpose:** Resolves broad furniture phrases to the canonical supported `categoryId` values before a product or inventory search.
+  - **Arguments:** `query`, optional `departmentId`, `limit`.
+  - **Example input:** `{"query": "coffee tables"}`.
+  - **Example output:** `{"query": "...", "status": "matched", "matches": [...]}` where each match includes `categoryId`, `name`, `departmentId`, `description`, `confidence`, and `matchedOn`.
 
 - **`stock_disambiguate`**
   - **Purpose:** Ranks ambiguous catalogue candidates and optionally returns a resolved family or clarification options for follow-up questions.
@@ -230,6 +242,7 @@ The raw local metadata tools and deprecated aliases remain callable for compatib
 Example Claude.ai tool routing:
 
 - “How many department and category of stock do we have?” -> `stock_scope`.
+- “Show me stools” -> `stock_list_category` first, then `stock_snapshot` or `stock_search` with the returned `categoryId`.
 - “Let me know about our Alto chair stock availability.” -> `stock_snapshot` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
 - “Which type of chair has the most stock in NSW production-wise?” -> `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. The backend caps page size at 50 and paginates through the full matching catalogue automatically.
 - “Which Charlie chair variant is most in stock in Victoria?” -> `stock_variant_rank` with `search="Charlie chair"`, `metric="stock"`, `region="VIC"`, and `direction="most"`.
