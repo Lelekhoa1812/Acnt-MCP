@@ -345,7 +345,7 @@ class HarmoniseInventorySource:
             return None
 
         page = 1
-        page_size = 50
+        page_size = 20
         while True:
             payload = await self._get("/api/v1/products", params={"page": page, "pageSize": page_size})
             paged = self._as_paged_payload(payload, page=page, page_size=page_size)
@@ -513,7 +513,7 @@ class HarmoniseInventorySource:
             return None
 
         page = 1
-        page_size = 50
+        page_size = 20
         while True:
             payload = await self._get("/api/v1/products", params={"page": page, "pageSize": page_size})
             paged = self._as_paged_payload(payload, page=page, page_size=page_size)

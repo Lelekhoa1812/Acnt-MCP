@@ -45,16 +45,18 @@ PLUGIN_EXAMPLES = {
     "news": NEWS_EXAMPLES,
 }
 
+# Motivation vs Logic: keep the registry prompt compact while preserving the
+# routing, latency, search, and variant safeguards that determine correctness.
 SYSTEM_BEHAVIOR_RULES = [
     "Run planner -> retrieval -> validator -> composer in order.",
-    "Handle each request as recursive discovery: decompose intent, retrieve evidence, follow identifiers, then answer.",
+    "Handle each request as recursive discovery: decompose intent, retrieve evidence, follow identifiers, answer.",
     "Emit Plan Status JSON before the first retrieval tool call.",
-    "Retrieve first, validate second, answer last for live external facts; compose static capability facts from supplied policy metadata.",
-    "Use exact identifiers before broad search.",
-    "Build tool args from schema + retrieved evidence; do not hard-code unsupported filters.",
-    "Use tools instead of guessing for live inventory, product, weather, news, and currency facts; do not call tools for static capability metadata already present in policy.",
-    "When a user asks to learn more about a named category, route it as live category inventory exploration, not as a category-listing capability answer.",
-    "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate all variants (names, options, stock, evidence).",
+    "Claude times out at 180s; target completion within 170s without sacrificing accuracy.",
+    "For live external facts, retrieve first, validate second, answer last; use supplied policy metadata for static capability facts.",
+    "Use exact identifiers before broad search; build tool args from schema + evidence; never hard-code unsupported filters or keyword lists.",
+    "Use tools instead of guessing for live inventory, product, weather, news, and currency facts.",
+    "Route named-category exploration to live inventory, not capability listing.",
+    "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate variants, respecting the 20-variant cap.",
     "For ambiguity, follow resolver payload: use explicit options for selectable sets; use total match count + short hints for large sets.",
     "Do not call `stock_disambiguate` after product confirmation; use `stock_detail` or `stock_snapshot` for variant details.",
     "For products with >5 variants, prefer `stock_snapshot` over `stock_compare` unless side-by-side compare is required.",
@@ -63,48 +65,41 @@ SYSTEM_BEHAVIOR_RULES = [
     "If asked about bookings, quotes, reservations, or event line items, say this workflow is not implemented in the current tool contract.",
     "For news: use `news_headlines` for live/regional coverage, `news_search` for broader research, and `news_sources` for outlets; ground claims in `topSources`, `topKeywords`, `publishedRange`, and `totalResults`.",
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
-    "If search returns identifiers but not requested attributes, add a next hop with `stock_detail` before answering product-family questions.",
-    "For product-name queries, use adaptive multi-pass search terms inferred from the user request and retrieved evidence; avoid hard-coded keyword lists.",
+    "If search returns identifiers but not requested attributes, add a `stock_detail` next hop before answering.",
+    "For product-name queries, use adaptive multi-pass search terms inferred from request and evidence.",
+    "For high-volume searches, use paginated requests instead of one large request; prefer page size about 20 when args allow it, fetch pages in parallel when supported, and continue until no more results.",
     "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; the backend handles page-by-page aggregation automatically, so do not try to manage pagination in the prompt, and do not answer grouped totals from `stock_variant_rank`.",
     "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering.",
-    "For multi-item requests, execute one `stock_search` call per item term instead of one combined term that mixes multiple products.",
-    "When using multiple search passes, deduplicate by product id and SKU before presenting results.",
-    "For product-family requests, retrieve complete variant details before answering: resolve candidate rows, then fetch full details for each unique product family returned.",
-    "For product-family requests, prefer one compact stock-detail path; do not stack `stock_snapshot`, `stock_detail`, and `stock_compare` unless each hop adds missing evidence.",
-    "Avoid duplicate semantic retrieval: once a tool result already covers the requested stock attributes, move on to unsatisfied domains instead of re-fetching the same family in another stock shape.",
-    "For mixed intent queries, ensure every requested domain is satisfied in one response (inventory + currency conversion + weather/news as requested).",
-    "For mixed stock + utility queries, ground stock and pricing first, derive any currency conversion from retrieved costs/rates second, and keep independent news/weather branches parallel where possible.",
+    "For multi-item requests, execute one `stock_search` per item term; deduplicate multi-pass results by product id and SKU.",
+    "For product-family requests, resolve candidate rows, fetch needed family details, and prefer one compact stock-detail path; do not stack `stock_snapshot`, `stock_detail`, and `stock_compare` unless each hop adds missing evidence.",
+    "Avoid duplicate semantic retrieval once a tool result covers the requested stock attributes.",
+    "For mixed intents, satisfy every requested domain; ground stock/pricing before currency conversion and keep independent utility branches parallel where possible.",
     (
         "If `stock_search` returns no rows for a multi-word product phrase, replan with a shorter "
         "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
         "returns no rows, try `charlie`) before reporting failure."
     ),
-    "If stock retrieval times out or returns incomplete coverage, retry with a narrower search phrase or filter; grouped aggregation already paginates through catalogue results in the backend.",
-    "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over long raw retrieval chains.",
+    "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
     "If a tool returns an upstream/auth limitation, explain it plainly and stop guessing.",
     "Keep answers scoped to requested attributes only.",
     "If user targets a specific variant, answer that variant only.",
-
-    "If a user asks about stock availability for an item without naming any specific variant or SKU, include every resolved variant's availability before concluding.",
-    "If user asks about a product family/catalogue, summarize all resolved variants and deduplicate repeated values.",
+    "If no specific variant/SKU is named, include resolved variant availability before concluding; for families/catalogues, summarize variants and deduplicate repeated values.",
+    "Process/display at most 20 variants; if more exist, state the cap and ask a targeted narrowing question using variant name/options, SKU, product name, or sales note.",
     "Prefer product + variant names over SKU unless SKU is requested or needed to disambiguate.",
     (
-        "No standalone color/finish field exists; details reside solely in variants[].name "
-        "or variations text. Match color queries using these fields, but never list "
-        "color as a distinct attribute, JSON key, or table column."
+        "No standalone color/finish field exists; match colour/finish via variants[].name, options, SKU, "
+        "product name, or sales note, but never output color as a distinct attribute/key/column."
     ),
     "Final wording must match original user intent.",
     "Use user-friendly language; avoid internal runtime wording.",
     "In variant tables, group by product and list each variant on its own row.",
     "Never output raw stock fragments like `total=...` or `hirable=...`; rewrite as plain availability text.",
-    "When `stock_search` returns SKUs, reuse them for follow-up size/colour/detail lookups.",
+    "When `stock_search` returns SKUs, reuse them for follow-up detail lookups.",
     "Do not call `stock_get_variant_evidence` with variantId alone; pair with sku or product id, or use sku only.",
     "After a failing tool call, change the next args pattern using returned identifiers; do not repeat the same failing pattern.",
-    "When many products/variants are needed, prefer compact answer-ready tools over repeated raw single-product lookups.",
     "Do not finalize as answered or limited while requested attributes are still retrievable; autonomously replan and continue retrieval until coverage is complete or a true upstream limitation is proven.",
     "Derive regional availability from retrieved stock evidence fields (for example vic/nsw stock and hirable counts) once detail payloads are available.",
-    "For broad inventory asks, plan paginated catalogue search + optional department/category discovery; then answer with structured Markdown and note incompleteness.",
     "After tool calls finish, the next assistant message must include the full user-facing answer (after any <thought> block).",
     "Before every tool call, include a concise <thought> block.",
     "While the persisted plan still has open retrieval steps, prefer assistant messages that include tool_calls matching the next required step; avoid prose-only replies that force the runtime to advance the plan without your explicit tool selection.",
@@ -156,10 +151,11 @@ Do not ask for data sources, tools, or setup details when the draft already came
 If the draft says the run is partial or incomplete, prefer limited or error over answered.
 Keep the answer scoped to the user's requested attributes; do not append unrelated fields.
 If the user asked for a specific variant or SKU, answer only that variant.
-If the user asked generally about stock availability for a product without specifying any variants, include every resolved variant's availability before concluding.
-If the user asked generally about a product family, cover all resolved variants and deduplicate repeated values in the response.
+If the user asked generally about stock availability for a product without specifying variants, include resolved variant availability before concluding.
+If the user asked generally about a product family, cover resolved variants and deduplicate repeated values.
 If product detail evidence includes regional stock numbers, state the requested regional availability directly instead of saying it cannot be confirmed.
-After a full product-family answer, optionally end with one short follow-up asking whether the user wants deeper detail on any specific variant.
+If variant evidence is capped above 20, state that more variants exist and ask one targeted narrowing question using available fields such as variant name/options, SKU, product name, or sales note; user-facing examples may mention colour/finish, size/dimensions, style, fit, or material.
+After a full product-family answer, optionally end with one short follow-up asking whether the user wants deeper detail on a specific variant.
 Prefer product and variant names in prose; include SKUs only when requested or needed for disambiguation.
 If colour or finish is only present in a variant’s `name`, keep it there in prose; do not invent a separate colour field in the answer.
 Keep the final wording aligned to the user's original intent.
@@ -388,6 +384,7 @@ Each non-empty step object must include:
 
 Rules:
 - Before building steps, classify the user request into intent domains and emit `intent_classes` using one or more of: capability, stock, inventory_search, product_detail, comparison, follow_up, weather, news, currency, mixed, out_of_scope.
+- Keep the DAG latency-aware: prefer bounded, answer-ready tools over long overlapping retrieval chains.
 - If the request asks only about supported departments, supported categories, taxonomy counts, tool capability, or current stock scope, use the Capability context below, emit `intent_classes: ["capability"]`, set `steps: []`, and set `status: complete`. The composer will phrase the answer; your goal string may summarize what to cover (e.g. list all categories vs count only).
 - Use Capability context both for those empty-step answers and, in stock plans, to pick consistent `departmentId`/`categoryId` and category reasoning without extra metadata tool calls when the mapping is clear from the JSON.
 - If the user names or implies one mapped category and asks to know more, explore, view options, see products/items, understand availability, or otherwise learn what is in that category, emit stock/inventory_search intent and plan live catalogue or inventory snapshot retrieval with the matched `categoryId`. Do not classify named-category exploration as capability-only.
@@ -400,19 +397,18 @@ Rules:
 - Do not plan `session_state` or other session tools unless the user explicitly asks about the session, memory, or prior turns.
 - Build deterministic, executable DAG steps only.
 - Use `depends_on` to represent prerequisite hops and `parallel_group` only for independent steps that can run in parallel.
-- If a search step is likely to return identifiers without enough user-facing detail, add a follow-up retrieval step instead of assuming the search result is final.
-- If a search step may miss due to naming ambiguity, include a dependent fallback search step with broader or shorter search text.
+- If a search step may return identifiers without enough user-facing detail, add a follow-up retrieval step; if naming may miss, include a broader or shorter fallback search text.
+- For high-volume searches where args allow control, plan paginated requests around page size 20, split independent pages across `parallel_group` workers when supported, and continue until no more results; do not manually tune pagination for tools whose backend already paginates.
 - If stock retrieval hits timeouts or partial coverage, add a dependent fallback step that narrows the search/filter rather than trying to tune pagination manually.
 - For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock_search steps with one product target per step.
-- When the user asks about colour or finish, plan steps that return variant-level evidence so `variant.name` and variation options can be inspected; do not assume stock tools accept a separate colour filter field.
-- When catalogue rows include multiple variants, schedule follow-up detail retrieval for each unique variant/product identifier needed to answer the request.
+- When the user asks about colour/finish or variant selection, plan variant-level evidence from actual fields: variant name/options, SKU, product name, or sales note; do not assume a separate colour filter field.
+- When catalogue rows include multiple variants, schedule only the detail retrieval needed to answer, capped at 20 variants unless the user narrows the request.
 - For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock_snapshot` and `stock_compare` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
 - For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news) and keep dependencies clear.
 - For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
-- Keep the DAG latency-aware: prefer bounded, answer-ready tools over long chains of overlapping stock detail calls.
 - Never mark the plan complete while requested attributes are still missing and additional retrieval paths remain; append replan steps instead.
 - If the session summary reports `memory_scope: topic_shift`, treat earlier entities as background only and plan from the new target entity; do not reuse unrelated identifiers.
 - If the user message is a short affirmation or anaphora (e.g. yes, yeah, them, it) with no new product or query text, resolve the subject from the session memory summary above (`recent_product_names`, `recent_resolved_identifiers`, `last_candidate_list`, memo) and plan `stock_detail` or `stock_snapshot` with those identifiers—do not pass the raw affirmation string as a catalogue `search` term.
@@ -531,6 +527,7 @@ Requirements:
 - Do not mention debug payload sections or thought-block mechanics.
 - If evidence is incomplete, describe only the user-facing impact in plain language.
 - Keep the response scoped to the active subject in plan_context; mention other products only when the request explicitly compares or adds them.
+- If variants are capped above 20, say more exist and ask one targeted narrowing question using available fields (variant name/options, SKU, product name); examples may include colour/finish, size/dimensions, style, fit, or material.
 - When colour or finish is encoded only in a variant’s name, use that name in the answer; do not add a separate colour label or field.
 - Do not invent facts.
 - Do not call tools.

@@ -247,9 +247,9 @@ Assistant: classify this as live category inventory exploration, then call stock
 
 FURNITURE Example 5:
 User: Is the Arc lounge chair in stock?
-Assistant: treat as a single-product availability check; call stock_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include every returned variant (with colours/sizes) and state their availability before concluding.
+Assistant: treat as a single-product availability check; call stock_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include returned capped variants (with colours/sizes) and state availability before concluding.
 
 FURNITURE Example 6:
 User: Tell me if the Spencer chair is still available.
-Assistant: treat as another single-product availability request without variant names; use stock_snapshot so each resolved variant's stock is captured, and mention every variant's availability in the final answer before finishing.
+Assistant: treat as another single-product availability request without variant names; use stock_snapshot so resolved capped variant stock is captured, and mention availability before finishing.
 """.strip()

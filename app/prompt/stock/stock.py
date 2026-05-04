@@ -71,10 +71,10 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "If stock retrieval times out or comes back partial, retry with a narrower search phrase or filter; "
             "grouped aggregation already paginates through catalogue results in the backend."
         ),
-        # Motivation vs Logic: when users only cite the product name, the prompt should still surface every variant.
+        # Motivation vs Logic: when users only cite the product name, the prompt should still surface capped variants.
         (
             "If a single-product availability question does not name a variant or SKU, plan retrieval that "
-            "covers each resolved variant and state their availability before concluding."
+            "covers resolved variants, respects variant caps, and states availability before concluding."
         ),
         (
             "Do not use `session_state` for availability; resolve ids from user text, prompt memo, or prior tools."

@@ -48,7 +48,7 @@ from app.store import AppKeyValueStore
 
 
 UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-STOCK_PAGE_SIZE_CAP = 50
+STOCK_PAGE_SIZE_CAP = 20
 
 
 @dataclass
@@ -407,7 +407,14 @@ class InventoryService:
             detail_product = product_response.items[0]
             enriched_products += 1
             seen_skus: set[str] = set()
+            allowed_skus = {variant.sku for variant in product.variants if variant.sku}
             for variant_index, variant in enumerate(detail_product.variants):
+                # Root Cause vs Logic: some Harmonise detail responses include
+                # the whole product family even when catalogue enrichment was
+                # capped. Keep snapshot output and follow-up SKU fan-out bounded
+                # to the variants selected before detail hydration.
+                if allowed_skus and variant.sku not in allowed_skus:
+                    continue
                 if variant.sku and variant.details is None:
                     continue
                 if variant.sku:
@@ -424,8 +431,8 @@ class InventoryService:
                 )
             # Root Cause vs Logic: SKU detail endpoints may return only the
             # requested variant, so the first-SKU hydration path under-counted
-            # multi-variant product families. Fan out through remaining catalogue
-            # variant SKUs so snapshot answers cover every family variant.
+            # multi-variant product families. Fan out only through capped
+            # catalogue variant SKUs so response time stays bounded.
             for variant in product.variants:
                 if not variant.sku or variant.sku in seen_skus:
                     continue
@@ -451,6 +458,8 @@ class InventoryService:
                     continue
                 variant_product = variant_response.items[0]
                 for variant_index, detail_variant in enumerate(variant_product.variants):
+                    if allowed_skus and detail_variant.sku not in allowed_skus:
+                        continue
                     if detail_variant.sku and detail_variant.details is None:
                         continue
                     if detail_variant.sku:
@@ -500,7 +509,7 @@ class InventoryService:
     ) -> tuple[InventorySnapshotResponse, str, list[str]]:
         # Motivation vs Logic: grouped totals need stable backend-owned paging
         # so the caller cannot accidentally force oversized catalogue pulls.
-        # We always start at page 1, cap page size at 50, and let the shared
+        # We always start at page 1, cap page size at 20, and let the shared
         # snapshot scanner continue paging until the upstream runs out of rows.
         snapshot_args = StockInventorySnapshotArgs(
             page=1,
@@ -773,10 +782,9 @@ class InventoryService:
         return "cache_mixed"
 
     def _parallel_stock_requests_limit(self, item_count: int) -> int:
-        # Motivation vs Logic: variant-rich catalogue requests were bottlenecked by
-        # a tiny fan-out, so we now allow up to the configurable concurrency limit
-        # (default 50). The semaphore still caps active workers per session,
-        # sending any remaining items to sequential retries.
+        # Motivation vs Logic: variant-rich catalogue requests need bounded
+        # concurrency: enough workers to avoid serial latency, but never more
+        # than the configured session limit.
         limit = max(1, self.settings.stock_parallel_requests_limit)
         return max(1, min(limit, max(1, item_count)))
 
@@ -835,8 +843,8 @@ class InventoryService:
             return None
         return (
             "Use coverage.variantCaps to tell the user that variant specs were capped at the configured limit, "
-            "state how many variants remain, and invite a narrower follow-up such as a colour, finish, SKU, or request "
-            "to continue with more variants."
+            "state how many variants remain, and ask one narrower follow-up using available fields such as variant "
+            "name/options, SKU, product name, or sales note (for example colour/finish, size, style, fit, or material)."
         )
 
     @staticmethod
@@ -859,18 +867,22 @@ class InventoryService:
         # helper keeps page hydration concurrent and reusable instead of
         # repeating bespoke loops for each snapshot-broadening path.
         page_results: list[tuple[ProductListItemDtoPagedResponse, str, list[str]] | None] = [None] * len(page_numbers)
+        page_errors: list[UpstreamServiceError] = []
         parallelism = max(1, min(self.settings.snapshot_expand_parallel_pages_limit, len(page_numbers)))
         semaphore = anyio.Semaphore(parallelism)
 
         async def fetch_page(index: int, page_number: int) -> None:
             async with semaphore:
-                page_results[index] = await self._search_catalogue_page(
-                    page=page_number,
-                    page_size=page_size,
-                    search=search,
-                    department_id=department_id,
-                    category_id=category_id,
-                )
+                try:
+                    page_results[index] = await self._search_catalogue_page(
+                        page=page_number,
+                        page_size=page_size,
+                        search=search,
+                        department_id=department_id,
+                        category_id=category_id,
+                    )
+                except UpstreamServiceError as exc:
+                    page_errors.append(exc)
 
         async with anyio.create_task_group() as task_group:
             for index, page_number in enumerate(page_numbers):
@@ -886,6 +898,8 @@ class InventoryService:
             cache_statuses.append(page_cache_status)
             notes.extend(page_notes)
             items.extend(page_response.items)
+        if page_errors:
+            raise page_errors[0]
         return items, cache_statuses, notes
 
     async def _search_catalogue_all(self, args: StockSearchCatalogueArgs) -> tuple[dict[str, Any], list[str]]:
@@ -913,11 +927,11 @@ class InventoryService:
 
     def _adaptive_catalogue_page_sizes(self, requested_page_size: int) -> list[int]:
         # Root Cause vs Logic: Harmonise list endpoints frequently time out on
-        # page sizes near 100, so recovery starts at a safer ceiling of 50 and
+        # larger page sizes, so recovery starts at a safer ceiling of 20 and
         # then steps down through smaller checkpoints instead of repeating the
         # same oversized request shape.
-        capped = max(1, min(requested_page_size, 50))
-        ladder = [capped, 25, 10, 5]
+        capped = max(1, min(requested_page_size, STOCK_PAGE_SIZE_CAP))
+        ladder = [capped, 10, 5]
         ordered: list[int] = []
         for page_size in ladder:
             if page_size not in ordered:
@@ -943,71 +957,68 @@ class InventoryService:
         cache_statuses: list[str] = []
         notes: list[str] = []
         items_by_id: dict[str, ProductListItemDto] = {}
-        seen_skus: set[str] = set()
         matched_pages = 0
         last_error: UpstreamServiceError | None = None
         is_partial = False
 
         for page_size_index, candidate_page_size in enumerate(page_sizes):
-            next_page = page
-            while True:
-                page_args = StockSearchCatalogueArgs(
-                    page=next_page,
-                    pageSize=candidate_page_size,
+            try:
+                first_page_response, first_page_cache_status, first_page_notes = await self._search_catalogue_page(
+                    page=page,
+                    page_size=candidate_page_size,
                     search=search,
-                    departmentId=department_id,
-                    categoryId=category_id,
+                    department_id=department_id,
+                    category_id=category_id,
                 )
-                try:
-                    page_response, page_cache_status, page_notes = await self._search_catalogue_page(
-                        page=page_args.page,
-                        page_size=candidate_page_size,
-                        search=page_args.search,
-                        department_id=page_args.departmentId,
-                        category_id=page_args.categoryId,
-                    )
-                except UpstreamServiceError as exc:
-                    last_error = exc
-                    recovery_scope = (
-                        "partial results were preserved"
-                        if items_by_id
-                        else "no catalogue rows were preserved yet"
-                    )
-                    notes.append(
-                        "Adaptive catalogue recovery hit an upstream error for "
-                        f"{normalized_filters} at pageSize={candidate_page_size}, page={next_page} "
-                        f"({exc.status_code}: {exc.detail}); {recovery_scope}."
-                    )
-                    if page_size_index < len(page_sizes) - 1:
-                        notes.append(
-                            "Retrying catalogue retrieval with a smaller pageSize while keeping a checkpoint of "
-                            "already-seen product ids and SKUs."
-                        )
-                        is_partial = True
-                        break
-                    if items_by_id:
-                        is_partial = True
-                        break
-                    raise
-
-                cache_statuses.append(page_cache_status)
-                notes.extend(page_notes)
-                matched_pages = max(matched_pages, page_response.totalPages)
-                for item in page_response.items:
+                cache_statuses.append(first_page_cache_status)
+                notes.extend(first_page_notes)
+                matched_pages = max(matched_pages, first_page_response.totalPages)
+                for item in first_page_response.items:
                     items_by_id[item.id] = item
-                    for variant in item.variants:
-                        if variant.sku:
-                            seen_skus.add(variant.sku)
 
-                if next_page >= page_response.totalPages:
-                    return AdaptiveCatalogueScan(
-                        items=list(items_by_id.values()),
-                        cache_statuses=cache_statuses,
-                        notes=notes,
-                        matched_pages=matched_pages,
-                        is_partial=is_partial,
+                remaining_pages = list(range(page + 1, first_page_response.totalPages + 1))
+                page_items, page_cache_statuses, page_notes = await self._fetch_catalogue_pages(
+                    page_numbers=remaining_pages,
+                    page_size=candidate_page_size,
+                    search=search,
+                    department_id=department_id,
+                    category_id=category_id,
+                )
+                cache_statuses.extend(page_cache_statuses)
+                notes.extend(page_notes)
+                for item in page_items:
+                    items_by_id[item.id] = item
+
+                return AdaptiveCatalogueScan(
+                    items=list(items_by_id.values()),
+                    cache_statuses=cache_statuses,
+                    notes=notes,
+                    matched_pages=matched_pages,
+                    is_partial=is_partial,
+                )
+            except UpstreamServiceError as exc:
+                last_error = exc
+                recovery_scope = (
+                    "partial results were preserved"
+                    if items_by_id
+                    else "no catalogue rows were preserved yet"
+                )
+                notes.append(
+                    "Adaptive catalogue recovery hit an upstream error for "
+                    f"{normalized_filters} at pageSize={candidate_page_size} "
+                    f"({exc.status_code}: {exc.detail}); {recovery_scope}."
+                )
+                if page_size_index < len(page_sizes) - 1:
+                    notes.append(
+                        "Retrying catalogue retrieval with a smaller pageSize while keeping a checkpoint of "
+                        "already-seen product ids and SKUs."
                     )
-                next_page += 1
+                    is_partial = True
+                    continue
+                if items_by_id:
+                    is_partial = True
+                    break
+                raise
 
             continue
 

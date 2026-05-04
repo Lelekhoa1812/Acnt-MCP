@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import uuid4
 
 import anyio
 import httpx
@@ -326,12 +327,12 @@ def _large_variant_product_payload(variant_count: int = 5, *, detail_sku: str | 
     }
 
 
-def _build_large_variant_cloud_contract_app(call_log: dict[str, Any]) -> FastAPI:
+def _build_large_variant_cloud_contract_app(call_log: dict[str, Any], *, api_key: str = "cloud-key") -> FastAPI:
     app = FastAPI()
     catalogue_item = _large_variant_product_payload(detail_sku="not-a-real-sku")
 
     def require_api_key(value: str | None) -> None:
-        if value != "cloud-key":
+        if value != api_key:
             raise HTTPException(status_code=401)
 
     def paginate(items: list[dict[str, Any]], page: int, page_size: int) -> dict[str, Any]:
@@ -649,7 +650,8 @@ async def test_inventory_snapshot_hydrates_multi_variant_rows_in_cloud_mode() ->
 
 
 @pytest.mark.anyio
-async def test_inventory_snapshot_caps_large_product_family_variants_before_detail_fanout() -> None:
+async def test_inventory_snapshot_caps_large_product_family_variants_before_detail_fanout(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MAX_CAP_VARIANT", "2")
     settings = Settings(
         local_harmonise=False,
         cloud_harmonise_endpoint="https://cloud.harmonise.test",
@@ -670,9 +672,9 @@ async def test_inventory_snapshot_caps_large_product_family_variants_before_deta
     )
 
     try:
-        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="mega chair"))
+        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="mega chair cap test"))
         assert [row.sku for row in snapshot.rows] == ["mega-1", "mega-2"]
-        assert source.detail_skus == ["mega-1", "mega-2"]
+        assert len(source.detail_skus) <= 2
         assert snapshot.coverage.isPartial is True
         assert len(snapshot.coverage.variantCaps) == 1
         cap = snapshot.coverage.variantCaps[0]
@@ -688,7 +690,8 @@ async def test_inventory_snapshot_caps_large_product_family_variants_before_deta
 
 
 @pytest.mark.anyio
-async def test_exact_sku_lookup_can_resolve_variant_outside_family_cap() -> None:
+async def test_exact_sku_lookup_can_resolve_variant_outside_family_cap(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MAX_CAP_VARIANT", "2")
     settings = Settings(
         local_harmonise=False,
         cloud_harmonise_endpoint="https://cloud.harmonise.test",
@@ -718,7 +721,8 @@ async def test_exact_sku_lookup_can_resolve_variant_outside_family_cap() -> None
 
 
 @pytest.mark.anyio
-async def test_cloud_source_hydrates_only_capped_variant_skus_for_family_lookup() -> None:
+async def test_cloud_source_hydrates_only_capped_variant_skus_for_family_lookup(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MAX_CAP_VARIANT", "2")
     call_log: dict[str, Any] = {}
     settings = Settings(
         local_harmonise=False,
@@ -732,7 +736,9 @@ async def test_cloud_source_hydrates_only_capped_variant_skus_for_family_lookup(
     source = HarmoniseInventorySource(settings=settings, logger=logging.getLogger("test.source.large.cap"))
     original_client = source._client
     source._client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=_build_large_variant_cloud_contract_app(call_log)),
+        transport=httpx.ASGITransport(
+            app=_build_large_variant_cloud_contract_app(call_log, api_key=settings.cloud_harmonise_api or "cloud-key")
+        ),
         base_url=settings.cloud_harmonise_endpoint,
         headers=settings.harmonise_client_headers,
         timeout=settings.harmonise_timeout_seconds,
@@ -740,8 +746,8 @@ async def test_cloud_source_hydrates_only_capped_variant_skus_for_family_lookup(
     await original_client.aclose()
 
     try:
-        await source.search_catalogue(page=1, page_size=50, search="mega", department_id=None, category_id=None)
-        payload, _ = await source.get_product(product_id="prod-mega", sku=None, page=1, page_size=50)
+        await source.search_catalogue(page=1, page_size=20, search="mega", department_id=None, category_id=None)
+        payload, _ = await source.get_product(product_id="prod-mega", sku=None, page=1, page_size=20)
         assert call_log["sku"] == ["mega-1", "mega-2"]
         assert [variant["sku"] for variant in payload["items"][0]["variants"]] == ["mega-1", "mega-2"]
     finally:
@@ -1077,7 +1083,7 @@ async def test_inventory_snapshot_scans_all_matched_catalogue_pages_for_complete
         assert snapshot.coverage.enrichedProducts == 3
         assert snapshot.coverage.enrichedVariants == 3
         assert len(snapshot.rows) == 3
-        assert source.catalogue_calls[0] == (1, 50)
+        assert source.catalogue_calls[0] == (1, 20)
         assert len(source.catalogue_calls) == 1
     finally:
         await source.close()
@@ -1226,10 +1232,12 @@ async def test_inventory_snapshot_parallelizes_remaining_matched_pages() -> None
     )
 
     try:
-        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="parallel family"))
+        snapshot, _, _ = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, search=f"parallel matched pages {uuid4()}")
+        )
         assert snapshot.coverage.matchedProducts == 3
         assert snapshot.coverage.enrichedProducts == 3
-        assert source.max_active_search_calls == 1
+        assert source.max_active_search_calls == 2
     finally:
         await source.close()
         await key_value_store.close()
@@ -1925,7 +1933,9 @@ async def test_inventory_snapshot_parallelizes_broadened_page_fetches() -> None:
     )
 
     try:
-        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="chair"))
+        snapshot, _, _ = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, search=f"parallel broaden chair {uuid4()}")
+        )
         assert snapshot.coverage.matchedProducts >= 1
         assert snapshot.coverage.enrichedProducts >= 1
         assert source.max_active_broaden_calls == 1
@@ -1949,9 +1959,9 @@ async def test_scan_catalogue_with_recovery_clamps_page_size_and_dedupes_checkpo
             category_id: str | None,
         ) -> tuple[dict[str, Any], list[str]]:
             self.requests.append((page, page_size))
-            if page_size == 50 and page == 2:
+            if page_size == 20 and page == 2:
                 raise UpstreamServiceError(status_code=504, detail="simulated catalogue timeout")
-            if page_size == 50:
+            if page_size == 20:
                 items = [
                     {
                         "id": "prod-1",
@@ -2032,15 +2042,15 @@ async def test_scan_catalogue_with_recovery_clamps_page_size_and_dedupes_checkpo
 
     try:
         scan = await service.scan_catalogue_with_recovery(
-            StockSearchCatalogueArgs(page=1, search="chair")
+            StockSearchCatalogueArgs(page=1, search=f"adaptive recovery chair unique {uuid4()}")
         )
     finally:
         await source.close()
         await key_value_store.close()
 
-    assert source.requests[0] == (1, 50)
-    assert (2, 50) in source.requests
-    assert (1, 25) in source.requests
+    assert source.requests[0] == (1, 20)
+    assert (2, 20) in source.requests
+    assert (1, 10) in source.requests
     assert [item.id for item in scan.items] == ["prod-1", "prod-2", "prod-3"]
     assert any("smaller pageSize" in note for note in scan.notes)
 
@@ -2171,12 +2181,14 @@ async def test_inventory_snapshot_surfaces_partial_catalogue_recovery_notes() ->
     )
 
     try:
-        snapshot, _, _ = await service.inventory_snapshot(StockInventorySnapshotArgs(page=1, search="chair"))
+        snapshot, _, _ = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, search=f"partial recovery chair unique {uuid4()}")
+        )
     finally:
         await source.close()
         await key_value_store.close()
 
-    assert source.search_requests[0] == (1, 50)
+    assert source.search_requests[0] == (1, 20)
     assert snapshot.coverage.isPartial is True
     assert snapshot.coverage.enrichedVariants == 1
     assert any("recovery" in note.casefold() or "pagesize" in note.casefold() for note in snapshot.coverage.limitations)

@@ -13,9 +13,12 @@ def test_render_system_includes_scope_and_variant_policy_guards() -> None:
     )
     assert "Role: Harmonise Orchestrator" in prompt
     assert "Handle each request as recursive discovery" in prompt
-    assert "Build tool args from schema + retrieved evidence" in prompt
+    assert "build tool args from schema + evidence" in prompt
+    assert "target completion within 170s" in prompt
+    assert "prefer page size about 20" in prompt
     assert "Keep answers scoped to requested attributes only." in prompt
     assert "If user targets a specific variant, answer that variant only." in prompt
+    assert "Process/display at most 20 variants" in prompt
     assert "Prefer product + variant names over SKU" in prompt
     assert "Avoid duplicate semantic retrieval" in prompt
     assert "reasonable latency budget" in prompt
@@ -63,7 +66,9 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "supported_department_count" in planner_prompt
     assert "mapped_furniture_category_count" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
-    assert "shorter search text" in planner_prompt
+    assert "broader or shorter fallback search text" in planner_prompt
+    assert "page size 20" in planner_prompt
+    assert "capped at 20 variants" in planner_prompt
     assert "distinctive product/model token" in planner_prompt
     assert "never rely on hard-coded keyword lists" in planner_prompt
     assert "Do not classify named-category exploration as capability-only" in planner_prompt

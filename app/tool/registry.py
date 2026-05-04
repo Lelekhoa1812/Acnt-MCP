@@ -1026,7 +1026,7 @@ class ToolRegistry:
             (
                 "Harmonise catalogue discovery by product/family text plus supported filters: page, "
                 "search, departmentId, categoryId. Use to find product ids/SKUs and variants; for availability of a "
-                "named family, follow with stock_snapshot so every variant is covered."
+                "named family, follow with stock_snapshot so capped variants are covered."
             ),
             StockSearchCatalogueArgs,
             search_catalogue,
@@ -1043,7 +1043,7 @@ class ToolRegistry:
             (
                 "Exact product-family or SKU detail. Use when a product id or SKU is already known. Detail includes "
                 "variants, dimensions, pricing, image metadata, and VIC/NSW/QLD stock fields; generic family "
-                "availability still needs all returned variants summarized."
+                "availability still needs returned capped variants summarized."
             ),
             StockGetProductArgs,
             get_product,
@@ -1096,7 +1096,7 @@ class ToolRegistry:
             (
                 "Answer-ready inventory snapshot: enriches catalogue matches into variant rows with size, known specs, "
                 "overall stock, and VIC/NSW/QLD availability text. Best default for broad/multi-variant stock, category "
-                "inventory, and named-family availability when every variant must be included."
+                "inventory, and named-family availability with capped variant coverage."
             ),
             StockInventorySnapshotArgs,
             inventory_snapshot,

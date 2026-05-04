@@ -1669,8 +1669,8 @@ class AgentEngine:
 
         # Root Cause vs Logic: family-level queries were routed through the
         # variant tool with product id only, which triggers multi-variant
-        # safety failures. Rewrite those calls to product-detail retrieval so
-        # all variants can be answered without unnecessary SKU clarification.
+        # safety failures. Rewrite those calls to capped product-detail
+        # retrieval instead of unbounded per-variant SKU hydration.
         rewritten_args = {
             "id": compact_id,
             "page": 1,
@@ -1960,14 +1960,14 @@ class AgentEngine:
                 depends_on=[completed_step.id],
                 parallel_group=None,
                 hypotheses=[
-                    "Resolver narrowed ambiguity to one product family, so retrieve full product details for all variants."
+                    "Resolver narrowed ambiguity to one product family, so retrieve capped product details."
                 ],
                 validation=None,
             )
         )
         return (
             f"Resolved product family follow-up step `{next_id}` was added for `{follow_up_tool}` "
-            "so the final answer includes all variants before any clarification prompt."
+            "so the final answer includes capped variants before any clarification prompt."
         )
 
 
