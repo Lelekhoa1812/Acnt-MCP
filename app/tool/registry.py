@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -24,7 +25,7 @@ from app.tool.currency import (
 )
 from app.config import ParameterMappingError, UnsupportedToolError
 from app.tool.stock.intelligence import rank_evidence_with_filters
-from app.tool.stock.media import build_harmonise_image_url
+from app.tool.stock.media import build_harmonise_image_url, resolve_variant_harmonise_image
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.tool.news.formatter import format_news_articles, format_news_sources
@@ -550,6 +551,8 @@ class ToolRegistry:
             resolved_source = "imageFileName" if image_file_name else None
             resolved_product: ProductListItemDto | None = None
             resolved_variant = None
+            harmonise_image_resolution: str | None = None
+            image_url: str | None = None
             cache_statuses: list[str] = []
             notes: list[str] = []
             coverage_limitations: list[str] = []
@@ -571,9 +574,13 @@ class ToolRegistry:
                             break
                     if resolved_variant is None and resolved_product.variants:
                         resolved_variant = resolved_product.variants[0]
-                    if resolved_variant and resolved_variant.details:
-                        image_file_name = resolved_variant.details.imageFileName
+                    if resolved_variant:
                         resolved_source = "sku"
+                        image_url, image_file_name, tag = resolve_variant_harmonise_image(
+                            self.inventory_service.settings.cloud_harmonise_image,
+                            resolved_variant,
+                        )
+                        harmonise_image_resolution = tag if tag != "none" else None
                 else:
                     coverage_limitations.append(f"No product detail payload was returned for sku {validated.sku}.")
 
@@ -608,27 +615,56 @@ class ToolRegistry:
                             (candidate for candidate in detail_product.variants if candidate.sku == variant.sku),
                             detail_product.variants[0] if detail_product.variants else None,
                         )
-                        if detail_variant and detail_variant.details and detail_variant.details.imageFileName:
-                            resolved_product = detail_product
-                            resolved_variant = detail_variant
-                            image_file_name = detail_variant.details.imageFileName
-                            resolved_source = "search"
-                            break
-                    if image_file_name:
+                        if detail_variant:
+                            cand_url, cand_raw, tag = resolve_variant_harmonise_image(
+                                self.inventory_service.settings.cloud_harmonise_image,
+                                detail_variant,
+                            )
+                            if cand_url or cand_raw:
+                                resolved_product = detail_product
+                                resolved_variant = detail_variant
+                                image_url = cand_url
+                                image_file_name = cand_raw
+                                harmonise_image_resolution = tag if tag != "none" else None
+                                resolved_source = "search"
+                                break
+                    if image_file_name or image_url:
                         break
 
-                if not image_file_name:
+                if not image_file_name and not image_url:
                     coverage_limitations.append(
-                        "No imageFileName was resolved from the matched Harmonise product variants for the supplied search."
+                        "No Harmonise image reference was resolved from matched product variants for the supplied search "
+                        "(checked variant URIs, details URIs, and details.imageFileName)."
                     )
 
-            image_url = build_harmonise_image_url(
-                self.inventory_service.settings.cloud_harmonise_image,
-                image_file_name,
-            )
+            if not image_url and image_file_name:
+                image_url = build_harmonise_image_url(
+                    self.inventory_service.settings.cloud_harmonise_image,
+                    image_file_name,
+                )
+            if validated.imageFileName and not harmonise_image_resolution:
+                harmonise_image_resolution = "input_imageFileName"
             if image_file_name and not image_url:
                 coverage_limitations.append(
                     "An imageFileName was resolved, but a renderable Harmonise HTTP image URL could not be built."
+                )
+
+            harmonise_snapshot_for_llm: dict[str, Any] | None = None
+            if not image_url and resolved_product is not None:
+                dump = resolved_product.model_dump(mode="json")
+                text = json.dumps(dump, default=str)
+                max_chars = 12000
+                if len(text) <= max_chars:
+                    harmonise_snapshot_for_llm = dump
+                else:
+                    harmonise_snapshot_for_llm = {
+                        "_truncated": True,
+                        "_maxChars": max_chars,
+                        "snippet": text[:max_chars],
+                    }
+                coverage_limitations.append(
+                    "No image URL was resolved; harmoniseSnapshotForLlm contains Harmonise product JSON so the "
+                    "assistant can look for imageThumbnailUri, imageUri, imgUri, or similar fields."
                 )
 
             image_content: list[McpImageContent] = []
@@ -642,12 +678,14 @@ class ToolRegistry:
             cache_status = self.inventory_service._combine_cache_statuses(cache_statuses) if cache_statuses else "not_applicable"
             payload = {
                 "source": resolved_source or "unresolved",
+                "harmoniseImageResolution": harmonise_image_resolution,
                 "query": validated.search,
                 "sku": getattr(resolved_variant, "sku", None) or validated.sku,
                 "product": resolved_product.name if resolved_product else None,
                 "variant": resolved_variant.name if resolved_variant else None,
                 "imageFileName": image_file_name,
                 "imageUrl": image_url,
+                **({"harmoniseSnapshotForLlm": harmonise_snapshot_for_llm} if harmonise_snapshot_for_llm else {}),
                 "resolutionNotes": notes,
                 "coverage": {
                     "requestedPage": validated.page,
@@ -1308,11 +1346,22 @@ class ToolRegistry:
     def _product_variant_model_view(self, variant) -> dict[str, Any]:
         details = variant.details
         image_file_name = details.imageFileName if details else None
+        resolved_url, _, tag = resolve_variant_harmonise_image(
+            self.inventory_service.settings.cloud_harmonise_image,
+            variant,
+        )
+        detail_only_url = build_harmonise_image_url(
+            self.inventory_service.settings.cloud_harmonise_image,
+            image_file_name,
+        )
+        display_url = resolved_url or detail_only_url
         return {
             "id": variant.id,
             "name": variant.name,
             "sku": variant.sku,
             "totalHirable": variant.totalHirable,
+            "harmoniseImageResolution": tag if tag != "none" else None,
+            "imageUrl": display_url,
             "details": {
                 "isActive": details.isActive if details else None,
                 "length": details.length if details else None,
@@ -1329,10 +1378,7 @@ class ToolRegistry:
                 "dimensional": details.dimensional if details else None,
                 "canBeSoldInPortions": details.canBeSoldInPortions if details else None,
                 "imageFileName": image_file_name,
-                "imageUrl": build_harmonise_image_url(
-                    self.inventory_service.settings.cloud_harmonise_image,
-                    image_file_name,
-                ),
+                "imageUrl": display_url,
             },
         }
 

@@ -13,6 +13,10 @@ from app.schemas import (
     NormalizedEvidence,
     PricingSnapshot,
     ProductAttributeFilter,
+    ProductListItemDto,
+    ProductListItemDtoPagedResponse,
+    ProductVariantDetailsDto,
+    ProductVariantDto,
     ProvenanceSnapshot,
     StockSnapshot,
     ToolResult,
@@ -125,6 +129,7 @@ def test_mcp_adapter_returns_text_and_image_content() -> None:
 
 def _settings() -> Settings:
     return Settings(
+        _env_file=None,
         local_harmonise=True,
         log_level="warning",
         mock_catalog_path="./mock/product-catalog.json",
@@ -233,6 +238,100 @@ async def test_stock_image_resolves_by_sku() -> None:
     assert result.data["source"] == "sku"
     assert result.data["sku"] == "fl-la-la-lam-1-gre"
     assert result.data["imageFileName"] == "fl-la-la-lam-1-gre.jpg"
+    assert result.data["harmoniseImageResolution"] == "details_imageFileName"
+
+
+@pytest.mark.anyio
+async def test_stock_image_resolves_image_thumbnail_uri_on_variant_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    container = await build_container(_settings())
+    chair = ProductListItemDto(
+        id="pg-1",
+        name="Black Padded Chair",
+        departmentId=3,
+        categoryId="b7d70000-eacf-fc4c-c59a-08de7f19d85e",
+        isActive=True,
+        variants=[
+            ProductVariantDto(
+                id="fn-se-ch-bla",
+                sku="fn-se-ch-bla",
+                name="Black Padded Chair",
+                imageThumbnailUri="https://blob.example/stock/thumb.png",
+                details=ProductVariantDetailsDto(),
+            ),
+        ],
+    )
+    page = ProductListItemDtoPagedResponse(
+        items=[chair],
+        page=1,
+        pageSize=20,
+        totalCount=1,
+        totalPages=1,
+    )
+
+    async def fake_get_product(args):  # noqa: ANN001
+        return page, "bypass", []
+
+    monkeypatch.setattr(container.tool_registry.inventory_service, "get_product", fake_get_product)
+
+    async def fake_fetch(image_url: str) -> tuple[McpImageContent | None, str | None]:
+        return McpImageContent(data=base64.b64encode(b"x").decode("ascii"), mimeType="image/png"), None
+
+    container.tool_registry._fetch_mcp_image_content = fake_fetch  # type: ignore[method-assign]
+    try:
+        result = await container.tool_registry.call_tool(
+            "stock_image",
+            {"sku": "fn-se-ch-bla"},
+        )
+    finally:
+        await container.close()
+
+    assert result.data["imageUrl"] == "https://blob.example/stock/thumb.png"
+    assert result.data["harmoniseImageResolution"] == "variant_harmonise_uri"
+    assert result.data["imageFileName"] == "https://blob.example/stock/thumb.png"
+
+
+@pytest.mark.anyio
+async def test_stock_image_includes_harmonise_snapshot_when_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    container = await build_container(_settings())
+    chair = ProductListItemDto(
+        id="pg-1",
+        name="No Image Chair",
+        departmentId=3,
+        categoryId="cat-1",
+        isActive=True,
+        variants=[
+            ProductVariantDto(
+                id="sku-no-img",
+                sku="sku-no-img",
+                name="No Image Chair",
+                details=ProductVariantDetailsDto(),
+            ),
+        ],
+    )
+    page = ProductListItemDtoPagedResponse(
+        items=[chair],
+        page=1,
+        pageSize=20,
+        totalCount=1,
+        totalPages=1,
+    )
+
+    async def fake_get_product(args):  # noqa: ANN001
+        return page, "bypass", []
+
+    monkeypatch.setattr(container.tool_registry.inventory_service, "get_product", fake_get_product)
+    try:
+        result = await container.tool_registry.call_tool(
+            "stock_image",
+            {"sku": "sku-no-img"},
+        )
+    finally:
+        await container.close()
+
+    assert result.data["imageUrl"] is None
+    assert "harmoniseSnapshotForLlm" in result.data
+    assert result.data["harmoniseSnapshotForLlm"]["name"] == "No Image Chair"
+    assert result.data["coverage"]["isPartial"] is True
 
 
 @pytest.mark.anyio

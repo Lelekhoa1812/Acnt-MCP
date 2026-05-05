@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +24,11 @@ from app.store import AppKeyValueStore
 
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_inventory_catalogue_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTH_INVENTORY_TEST_CATALOGUE_CACHE_SCOPE", secrets.token_hex(8))
 
 
 @pytest.fixture(scope="module")
@@ -2084,6 +2090,95 @@ async def test_inventory_snapshot_skips_department_expansion_for_specific_query(
         assert snapshot.coverage.matchedProducts == 1
         assert source.broaden_calls == 0
         assert not any("Expanded catalogue coverage via department scan" in note for note in notes)
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+
+class _BlackPaddedPluralTrackingSource(_DepartmentExpansionSource):
+    """Simulates Harmonise returning singular catalogue copy for a plural user search."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.broaden_calls = 0
+        self._bpc: dict[str, Any] = {
+            "id": "prod-bpc",
+            "name": "Black Padded Chair",
+            "departmentId": 3,
+            "subDepartmentId": None,
+            "categoryId": "cat-chair",
+            "isActive": True,
+            "variations": [],
+            "variants": [
+                {
+                    "id": "var-bpc",
+                    "name": "Black Padded Chair",
+                    "sku": "fn-se-ch-bla",
+                    "totalHirable": 3324,
+                    "optionIds": [],
+                }
+            ],
+        }
+        self._details_by_product_id["prod-bpc"] = self._product_payload(
+            product_id="prod-bpc",
+            name="Black Padded Chair",
+            variants=[
+                ("var-bpc", "Black Padded Chair", "fn-se-ch-bla", 0.5, 0.5, 0.9, 3524),
+            ],
+        )
+
+    async def search_catalogue(
+        self,
+        page: int,
+        page_size: int,
+        search: str | None,
+        department_id: int | None,
+        category_id: str | None,
+    ) -> tuple[dict[str, Any], list[str]]:
+        if search is None and department_id is not None:
+            self.broaden_calls += 1
+            return await super().search_catalogue(page, page_size, search, department_id, category_id)
+        lowered = (search or "").lower()
+        if "black" in lowered and "padded" in lowered:
+            return {
+                "items": [self._bpc],
+                "page": page,
+                "pageSize": page_size,
+                "totalCount": 1,
+                "totalPages": 1,
+            }, []
+        return await super().search_catalogue(page, page_size, search, department_id, category_id)
+
+
+@pytest.mark.anyio
+async def test_inventory_snapshot_skips_department_expansion_for_plural_multi_token_query() -> None:
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+    )
+    source = _BlackPaddedPluralTrackingSource()
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.plural-snapshot"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.plural-snapshot"),
+    )
+
+    try:
+        snapshot, _, notes = await service.inventory_snapshot(
+            StockInventorySnapshotArgs(page=1, search="black padded chairs", departmentId=3)
+        )
+        assert source.broaden_calls == 0
+        assert snapshot.coverage.matchedProducts == 1
+        assert snapshot.coverage.enrichedProducts == 1
+        assert not any("Expanded catalogue coverage via department scan" in note for note in notes)
+        assert any(row.sku == "fn-se-ch-bla" for row in snapshot.rows)
     finally:
         await source.close()
         await key_value_store.close()

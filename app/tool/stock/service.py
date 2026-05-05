@@ -124,6 +124,7 @@ class InventoryService:
         search: str | None,
         department_id: int | None,
         category_id: str | None,
+        catalogue_cache_scope: str | None = None,
     ) -> tuple[ProductListItemDtoPagedResponse, str, list[str]]:
         page_args = StockSearchCatalogueArgs(
             page=page,
@@ -131,12 +132,18 @@ class InventoryService:
             departmentId=department_id,
             categoryId=category_id,
         )
-        cache_key = self._cache_key(
-            {
-                **page_args.model_dump(mode="json"),
-                "pageSize": page_size,
-            }
-        )
+        cache_payload: dict[str, Any] = {
+            **page_args.model_dump(mode="json"),
+            "pageSize": page_size,
+        }
+        if catalogue_cache_scope is not None:
+            # Motivation vs Logic: Harmonise list GETs omit the user's original
+            # snapshot phrase when we widen to department-only paging, so Redis
+            # keys must still disambiguate expand intent or unrelated callers reuse
+            # the same cached rows and downstream filtering can skip the network
+            # entirely (false "no expansion needed").
+            cache_payload["catalogueCacheScope"] = catalogue_cache_scope
+        cache_key = self._cache_key(self._stock_cache_payload(cache_payload))
         raw, cache_status, notes = await self.key_value_store.cached_call(
             namespace="tool",
             key=f"stock_search_catalogue_page:{cache_key}",
@@ -175,7 +182,7 @@ class InventoryService:
         *,
         required_variant_ids: list[str | None] | None = None,
     ) -> tuple[ProductListItemDtoPagedResponse, str, list[str]]:
-        cache_key = self._cache_key(args.model_dump(mode="json"))
+        cache_key = self._cache_key(self._stock_cache_payload(args.model_dump(mode="json")))
         source_args: dict[str, Any] = {
             "product_id": args.id,
             "sku": args.sku,
@@ -185,10 +192,12 @@ class InventoryService:
         compact_required_variant_ids = [item for item in (required_variant_ids or []) if item]
         if compact_required_variant_ids:
             cache_key = self._cache_key(
-                {
-                    **args.model_dump(mode="json"),
-                    "requiredVariantIds": compact_required_variant_ids,
-                }
+                self._stock_cache_payload(
+                    {
+                        **args.model_dump(mode="json"),
+                        "requiredVariantIds": compact_required_variant_ids,
+                    }
+                )
             )
             source_args["required_variant_ids"] = compact_required_variant_ids
         raw, cache_status, notes = await self.key_value_store.cached_call(
@@ -525,6 +534,16 @@ class InventoryService:
 
     def _cache_key(self, payload: dict[str, Any]) -> str:
         return json.dumps(payload, sort_keys=True, default=str)
+
+    def _stock_cache_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # Motivation vs Logic: pytest can reuse a live Redis from other suites; a
+        # per-test nonce keeps Harmonise catalogue/detail cache keys disjoint.
+        if self.settings.inventory_test_catalogue_cache_scope:
+            return {
+                **payload,
+                "inventoryTestCatalogueCacheScope": self.settings.inventory_test_catalogue_cache_scope,
+            }
+        return payload
 
     def _detail_lookup_sku(self, product: ProductListItemDto) -> str | None:
         # Root Cause vs Logic: Harmonise detail lookups fail when using a
@@ -863,6 +882,7 @@ class InventoryService:
         search: str | None,
         department_id: int | None,
         category_id: str | None,
+        catalogue_cache_scope: str | None = None,
     ) -> tuple[list[ProductListItemDto], list[str], list[str]]:
         if not page_numbers:
             return [], [], []
@@ -884,6 +904,7 @@ class InventoryService:
                         search=search,
                         department_id=department_id,
                         category_id=category_id,
+                        catalogue_cache_scope=catalogue_cache_scope,
                     )
                 except UpstreamServiceError as exc:
                     page_errors.append(exc)
@@ -959,6 +980,9 @@ class InventoryService:
         search: str | None,
         department_id: int | None,
         category_id: str | None,
+        max_pages_to_fetch: int | None = None,
+        stop_catalogue_scan_on_empty_page: bool = False,
+        catalogue_cache_scope: str | None = None,
     ) -> AdaptiveCatalogueScan:
         normalized_filters = {
             "page": page,
@@ -982,6 +1006,7 @@ class InventoryService:
                     search=search,
                     department_id=department_id,
                     category_id=category_id,
+                    catalogue_cache_scope=catalogue_cache_scope,
                 )
                 cache_statuses.append(first_page_cache_status)
                 notes.extend(first_page_notes)
@@ -989,18 +1014,59 @@ class InventoryService:
                 for item in first_page_response.items:
                     items_by_id[item.id] = item
 
-                remaining_pages = list(range(page + 1, first_page_response.totalPages + 1))
-                page_items, page_cache_statuses, page_notes = await self._fetch_catalogue_pages(
-                    page_numbers=remaining_pages,
-                    page_size=candidate_page_size,
-                    search=search,
-                    department_id=department_id,
-                    category_id=category_id,
-                )
-                cache_statuses.extend(page_cache_statuses)
-                notes.extend(page_notes)
-                for item in page_items:
-                    items_by_id[item.id] = item
+                reported_total_pages = max(1, int(first_page_response.totalPages or 1))
+                effective_total_pages = reported_total_pages
+                if max_pages_to_fetch is not None:
+                    effective_total_pages = min(reported_total_pages, max_pages_to_fetch)
+                    if effective_total_pages < reported_total_pages:
+                        notes.append(
+                            "Catalogue pagination capped: "
+                            f"fetching pages 1–{effective_total_pages} of {reported_total_pages} reported "
+                            f"(HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES={max_pages_to_fetch})."
+                        )
+                        matched_pages = min(matched_pages, effective_total_pages)
+
+                remaining_pages = list(range(page + 1, effective_total_pages + 1))
+                if stop_catalogue_scan_on_empty_page and remaining_pages:
+                    page_items: list[ProductListItemDto] = []
+                    page_cache_statuses: list[str] = []
+                    page_notes: list[str] = []
+                    for page_number in remaining_pages:
+                        page_response, page_cache_status, page_note_list = await self._search_catalogue_page(
+                            page=page_number,
+                            page_size=candidate_page_size,
+                            search=search,
+                            department_id=department_id,
+                            category_id=category_id,
+                            catalogue_cache_scope=catalogue_cache_scope,
+                        )
+                        page_cache_statuses.append(page_cache_status)
+                        page_notes.extend(page_note_list)
+                        if not page_response.items:
+                            notes.append(
+                                f"Stopped catalogue pagination early: page {page_number} returned no items "
+                                f"(reported totalPages was {reported_total_pages})."
+                            )
+                            is_partial = True
+                            break
+                        page_items.extend(page_response.items)
+                    cache_statuses.extend(page_cache_statuses)
+                    notes.extend(page_notes)
+                    for item in page_items:
+                        items_by_id[item.id] = item
+                else:
+                    page_items, page_cache_statuses, page_notes = await self._fetch_catalogue_pages(
+                        page_numbers=remaining_pages,
+                        page_size=candidate_page_size,
+                        search=search,
+                        department_id=department_id,
+                        category_id=category_id,
+                        catalogue_cache_scope=catalogue_cache_scope,
+                    )
+                    cache_statuses.extend(page_cache_statuses)
+                    notes.extend(page_notes)
+                    for item in page_items:
+                        items_by_id[item.id] = item
 
                 return AdaptiveCatalogueScan(
                     items=list(items_by_id.values()),
@@ -1032,8 +1098,6 @@ class InventoryService:
                     is_partial = True
                     break
                 raise
-
-            continue
 
         if items_by_id:
             notes.append(
@@ -1088,6 +1152,9 @@ class InventoryService:
             search=None,
             department_id=department_id,
             category_id=args.categoryId,
+            max_pages_to_fetch=self.settings.snapshot_expand_max_department_pages,
+            stop_catalogue_scan_on_empty_page=True,
+            catalogue_cache_scope=f"snapshot_expand:{args.search}",
         )
         broadened_items = list(broadened_scan.items)
         broadened_cache_statuses = list(broadened_scan.cache_statuses)
@@ -1116,10 +1183,34 @@ class InventoryService:
         # `/api/v1/products` without `search` and returned oversized catalogue
         # pages. If the initial result already matches every significant token in
         # a multi-token phrase, keep the snapshot pinned to the user's query.
+        # Root Cause vs Logic: substring-only checks treated plural user tokens
+        # (e.g. "chairs") as mismatches against singular catalogue copy ("chair"),
+        # which incorrectly forced a full department pagination pass.
         query_tokens = significant_tokens(query or "")
         if len(query_tokens) <= 1 or not products:
             return False
-        return any(self._product_matches_query_tokens(product, query_tokens) for product in products)
+        for product in products:
+            if self._product_matches_query_tokens(product, query_tokens):
+                return True
+            candidate_text = " ".join(
+                part
+                for part in [
+                    product.name or "",
+                    *(variant.name or "" for variant in product.variants),
+                ]
+                if part
+            )
+            qt = set(query_tokens)
+            ct = set(significant_tokens(candidate_text))
+            matched = len(qt & ct)
+            if len(qt) == 2:
+                if matched >= 2:
+                    return True
+                if lexical_overlap(query or "", candidate_text) >= self.settings.snapshot_specificity_threshold:
+                    return True
+            elif len(qt) >= 3 and matched >= len(qt) - 1:
+                return True
+        return False
 
     def _query_specificity_score(self, query: str | None, products: list[ProductListItemDto]) -> float:
         if not query or not products:
@@ -1153,7 +1244,19 @@ class InventoryService:
             return None
         return max(sorted(counts), key=lambda department_id: counts[department_id])
 
+    @staticmethod
+    def _query_token_matches_catalogue_haystack(token: str, haystack: str) -> bool:
+        if token in haystack:
+            return True
+        if len(token) >= 4 and token.endswith("s") and token[:-1] in haystack:
+            return True
+        if len(token) >= 4 and (token + "s") in haystack:
+            return True
+        return False
+
     def _product_matches_query_tokens(self, product: ProductListItemDto, query_tokens: list[str]) -> bool:
+        if not query_tokens:
+            return False
         haystack = " ".join(
             value
             for value in [
@@ -1163,7 +1266,7 @@ class InventoryService:
             ]
             if value
         ).lower()
-        return all(token in haystack for token in query_tokens)
+        return all(self._query_token_matches_catalogue_haystack(token, haystack) for token in query_tokens)
 
     def _dedupe_products(self, products: list[ProductListItemDto]) -> list[ProductListItemDto]:
         deduped: list[ProductListItemDto] = []

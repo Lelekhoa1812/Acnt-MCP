@@ -987,7 +987,8 @@ Response notes:
 Real Harmonise request example:
 
 ```text
-GET /api/v1/products?page=1&pageSize=20&search=Alto%20chair
+GET /api/v1/products/fn-se-ch-alt-bla
+GET /api/v1/products/fn-se-ch-alt-blu
 ...
 ```
 
@@ -1068,7 +1069,7 @@ Response notes:
 Real Harmonise request example:
 
 ```text
-GET /api/v1/products?page=1&pageSize=20&search=Alto%20chair
+GET /api/v1/products/fn-se-ch-alt-bla
 ```
 
 Flow chart:

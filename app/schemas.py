@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 
 def _compact_identifier(value: Any) -> str | None:
@@ -44,6 +44,18 @@ class ProductVariantDetailsDto(BaseModel):
     totalStock: int | None = None
     lastUpdatedDate: str | None = None
     imageFileName: str | None = None
+    # Motivation vs Logic: some Harmonise tenants expose full image URLs only on
+    # `details` under alternate keys; map them here so Pydantic does not drop them.
+    harmonise_image_uri: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "harmonise_image_uri",
+            "imageThumbnailUri",
+            "imageUri",
+            "imgUri",
+            "thumbnailUri",
+        ),
+    )
     cost: float | None = None
     components: list[ProductComponentAllocationDto] = Field(default_factory=list)
 
@@ -84,6 +96,18 @@ class ProductVariantDto(BaseModel):
     totalHirable: int | None = None
     optionIds: list[str] = Field(default_factory=list)
     details: ProductVariantDetailsDto | None = None
+    # Motivation vs Logic: cloud Harmonise often returns `imageThumbnailUri` on
+    # the variant, not `details.imageFileName`; accept common aliases in one field.
+    harmonise_image_uri: str | None = Field(
+        None,
+        validation_alias=AliasChoices(
+            "harmonise_image_uri",
+            "imageThumbnailUri",
+            "imageUri",
+            "imgUri",
+            "thumbnailUri",
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
