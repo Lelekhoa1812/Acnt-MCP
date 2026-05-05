@@ -22,6 +22,11 @@ TEST_REDIS_URL = "redis://127.0.0.1:65535"
 MCP_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
+
+
 def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Choose tools by requested operation" in MCP_SERVER_INSTRUCTIONS
     assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
@@ -203,6 +208,19 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     assert result.structuredContent["memo_update"]["tool"] == "stock_search"
     assert result.structuredContent["validation"]["actual_rows"] is not None
     assert result.structuredContent["answer_ready"]["items"]
+
+
+@pytest.mark.anyio
+async def test_mcp_stock_search_rejects_unscoped_catalogue_scan() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool("stock_search", {"page": 1})
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert "requires at least one of search, departmentId, or categoryId" in result.structuredContent["error"]["message"]
 
 
 @pytest.mark.anyio

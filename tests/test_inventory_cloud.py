@@ -13,6 +13,7 @@ from app.config import Settings, UpstreamServiceError
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
+    StockAggregateArgs,
     StockExtractVariantEvidenceArgs,
     StockGetProductArgs,
     StockInventorySnapshotArgs,
@@ -22,6 +23,11 @@ from app.store import AppKeyValueStore
 
 
 TEST_REDIS_URL = "redis://127.0.0.1:65535"
+
+
+@pytest.fixture(scope="module")
+def anyio_backend() -> str:
+    return "asyncio"
 
 
 def _build_cloud_contract_app(call_log: dict[str, Any]) -> FastAPI:
@@ -548,6 +554,77 @@ async def test_cloud_source_search_and_sku_detail_use_products_contract() -> Non
 
 
 @pytest.mark.anyio
+async def test_stock_search_preserves_search_on_every_catalogue_page() -> None:
+    app = FastAPI()
+    call_log: dict[str, Any] = {"list_params": []}
+    search = f"Alto chair {uuid4()}"
+    items = [
+        {
+            "id": f"prod-alto-{index}",
+            "name": f"{search} {index}",
+            "departmentId": 3,
+            "subDepartmentId": None,
+            "categoryId": "cat-chair",
+            "isActive": True,
+            "variations": [],
+            "variants": [
+                {
+                    "id": f"var-alto-{index}",
+                    "name": f"{search} {index} - Black",
+                    "sku": f"alto-{index}",
+                    "totalHirable": 10,
+                    "optionIds": [],
+                }
+            ],
+        }
+        for index in range(1, 42)
+    ]
+
+    @app.get("/api/v1/products")
+    async def list_products(
+        page: int = Query(1, ge=1),
+        pageSize: int = Query(20, ge=1),
+        search: str | None = Query(None),
+        x_product_api_key: str | None = Header(None, alias="x-product-api-key"),
+    ) -> dict[str, Any]:
+        if not x_product_api_key:
+            raise HTTPException(status_code=401)
+        call_log["list_params"].append({"page": page, "pageSize": pageSize, "search": search})
+        lowered = (search or "").lower()
+        filtered = [item for item in items if lowered in item["name"].lower()] if lowered else list(items)
+        start = (page - 1) * pageSize
+        end = start + pageSize
+        return {
+            "items": filtered[start:end],
+            "page": page,
+            "pageSize": pageSize,
+            "totalCount": len(filtered),
+            "totalPages": max(1, (len(filtered) + pageSize - 1) // pageSize),
+        }
+
+    source = await _build_cloud_source(app)
+    key_value_store = AppKeyValueStore(settings=source.settings, logger=logging.getLogger("test.service.search.pages"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=source.settings,
+        source=source,
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.search.pages"),
+    )
+
+    try:
+        payload, _, _ = await service.search_catalogue(StockSearchCatalogueArgs(page=1, search=search))
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+    assert payload.totalCount == 41
+    assert [request["page"] for request in call_log["list_params"]] == [1, 2, 3]
+    assert all(request["pageSize"] == 20 for request in call_log["list_params"])
+    assert all(request["search"] == search for request in call_log["list_params"])
+
+
+@pytest.mark.anyio
 async def test_cloud_source_normalizes_catalogue_rows_missing_ids_and_option_ids() -> None:
     app = FastAPI()
     call_log: dict[str, Any] = {}
@@ -843,6 +920,87 @@ async def test_inventory_snapshot_caps_large_product_family_variants_before_deta
 
 
 @pytest.mark.anyio
+async def test_stock_search_caps_large_product_family_variants_and_guides_narrowing(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MAX_CAP_VARIANT", "20")
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        max_cap_variant=20,
+    )
+    source = _LargeVariantFamilySource(variant_count=25)
+    search = f"Mega Chair {uuid4()}"
+    source._catalogue_item["name"] = search
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.search.cap"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.search.cap"),
+    )
+
+    try:
+        payload, _, _ = await service.search_catalogue(StockSearchCatalogueArgs(page=1, search=search))
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+    assert [variant.sku for variant in payload.items[0].variants] == [f"mega-{index}" for index in range(1, 21)]
+    assert len(payload.variantCaps) == 1
+    cap = payload.variantCaps[0]
+    assert cap.limit == 20
+    assert cap.totalVariants == 25
+    assert cap.shownVariants == 20
+    assert cap.omittedVariants == 5
+    assert payload.items[0].variantCap == cap
+    assert payload.guidance is not None
+    assert "Only the first 20 variants" in payload.guidance
+    assert "colour/finish" in payload.guidance
+
+
+@pytest.mark.anyio
+async def test_stock_aggregate_preserves_specific_search_and_surfaces_variant_cap_guidance(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("MAX_CAP_VARIANT", "20")
+    settings = Settings(
+        local_harmonise=False,
+        cloud_harmonise_endpoint="https://cloud.harmonise.test",
+        cloud_harmonise_api="cloud-key",
+        cloud_harmonise_image="https://images.harmonise.test",
+        redis_fallback_enabled=True,
+        redis_url=TEST_REDIS_URL,
+        max_cap_variant=20,
+    )
+    source = _LargeVariantFamilySource(variant_count=25)
+    search = f"Mega Chair {uuid4()}"
+    source._catalogue_item["name"] = search
+    key_value_store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test.service.aggregate.cap"))
+    await key_value_store.connect()
+    service = InventoryService(
+        settings=settings,
+        source=source,  # type: ignore[arg-type]
+        key_value_store=key_value_store,
+        logger=logging.getLogger("test.service.aggregate.cap"),
+    )
+
+    try:
+        snapshot, _, _ = await service.aggregate_stock(StockAggregateArgs(search=search))
+    finally:
+        await source.close()
+        await key_value_store.close()
+
+    assert source.search_calls
+    assert all(call[2] == search for call in source.search_calls)
+    assert len(snapshot.coverage.variantCaps) == 1
+    assert snapshot.coverage.variantCaps[0].omittedVariants == 5
+    assert snapshot.guidance is not None
+    assert "Only the first 20 variants" in snapshot.guidance
+
+
+@pytest.mark.anyio
 async def test_exact_sku_lookup_can_resolve_variant_outside_family_cap(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("MAX_CAP_VARIANT", "2")
     settings = Settings(
@@ -1106,6 +1264,8 @@ class _PagedParallelStockSource(_ParallelStockSource):
 class _LargeVariantFamilySource:
     def __init__(self, variant_count: int = 5) -> None:
         self.detail_skus: list[str] = []
+        self.search_calls: list[tuple[int, int, str | None, int | None, str | None]] = []
+        self.variant_count = variant_count
         self._catalogue_item = _large_variant_product_payload(variant_count, detail_sku="not-a-real-sku")
 
     async def search_catalogue(
@@ -1116,6 +1276,7 @@ class _LargeVariantFamilySource:
         department_id: int | None,
         category_id: str | None,
     ) -> tuple[dict[str, Any], list[str]]:
+        self.search_calls.append((page, page_size, search, department_id, category_id))
         return {
             "items": [self._catalogue_item],
             "page": page,
@@ -1135,7 +1296,7 @@ class _LargeVariantFamilySource:
             self.detail_skus.append(sku)
         detail_sku = None if sku == "mega-5" else sku
         return {
-            "items": [_large_variant_product_payload(detail_sku=detail_sku)],
+            "items": [_large_variant_product_payload(self.variant_count, detail_sku=detail_sku)],
             "page": page,
             "pageSize": page_size,
             "totalCount": 1,

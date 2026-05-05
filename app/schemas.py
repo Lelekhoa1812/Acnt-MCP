@@ -157,6 +157,8 @@ class ProductListItemDtoPagedResponse(BaseModel):
     pageSize: int = 20
     totalCount: int = 0
     totalPages: int = 0
+    variantCaps: list[VariantCapMetadata] = Field(default_factory=list)
+    guidance: str | None = None
 
 
 class StockApiSubDepartmentDto(BaseModel):

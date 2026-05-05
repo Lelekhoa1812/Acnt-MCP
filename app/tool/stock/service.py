@@ -841,10 +841,14 @@ class InventoryService:
     def variant_cap_guidance(self, variant_caps: list[VariantCapMetadata]) -> str | None:
         if not variant_caps:
             return None
+        limits = sorted({cap.limit for cap in variant_caps})
+        limit_label = str(limits[0]) if len(limits) == 1 else "/".join(str(limit) for limit in limits)
+        omitted_total = sum(cap.omittedVariants for cap in variant_caps)
         return (
-            "Use coverage.variantCaps to tell the user that variant specs were capped at the configured limit, "
-            "state how many variants remain, and ask one narrower follow-up using available fields such as variant "
-            "name/options, SKU, product name, or sales note (for example colour/finish, size, style, fit, or material)."
+            f"Only the first {limit_label} variant{'s' if limit_label != '1' else ''} per capped product family "
+            f"are shown; {omitted_total} additional variant{'s' if omitted_total != 1 else ''} remain available. "
+            "Use coverage.variantCaps to state how many variants remain and ask one narrower follow-up using colour/"
+            "finish, size, SKU, material, style, variant name/options, product name, or sales note."
         )
 
     @staticmethod
@@ -915,13 +919,22 @@ class InventoryService:
             category_id=args.categoryId,
         )
         items = self._dedupe_products(scan.items)
+        capped_items: list[ProductListItemDto] = []
+        variant_caps: list[VariantCapMetadata] = []
+        for item in items:
+            capped_item, cap_metadata = self.cap_product_variants(item)
+            capped_items.append(capped_item)
+            if cap_metadata is not None:
+                variant_caps.append(cap_metadata)
         page_size = self._catalogue_page_size_cap()
         response = {
-            "items": [item.model_dump(mode="json") for item in items],
+            "items": [item.model_dump(mode="json") for item in capped_items],
             "page": 1,
             "pageSize": page_size,
-            "totalCount": len(items),
+            "totalCount": len(capped_items),
             "totalPages": max(1, scan.matched_pages or 1),
+            "variantCaps": [item.model_dump(mode="json") for item in variant_caps],
+            "guidance": self.variant_cap_guidance(variant_caps),
         }
         return response, scan.notes
 
@@ -1058,6 +1071,8 @@ class InventoryService:
             return initial_items, [], [], initial_total_pages
         if len(initial_items) > self.settings.snapshot_expand_max_initial_items:
             return initial_items, [], [], initial_total_pages
+        if self._initial_results_confirm_named_query(args.search, initial_items):
+            return initial_items, [], [], initial_total_pages
         if self._query_specificity_score(args.search, initial_items) >= self.settings.snapshot_specificity_threshold:
             return initial_items, [], [], initial_total_pages
 
@@ -1094,6 +1109,17 @@ class InventoryService:
         )
         merged_items = self._dedupe_products([*initial_items, *filtered_broadened])
         return merged_items, broadened_cache_statuses, broadened_notes, max(initial_total_pages, broadened_scan.matched_pages)
+
+    def _initial_results_confirm_named_query(self, query: str | None, products: list[ProductListItemDto]) -> bool:
+        # Root Cause vs Logic: named family queries like "Alto chair" were allowed
+        # to fall through to the broad department scan branch, which then issued
+        # `/api/v1/products` without `search` and returned oversized catalogue
+        # pages. If the initial result already matches every significant token in
+        # a multi-token phrase, keep the snapshot pinned to the user's query.
+        query_tokens = significant_tokens(query or "")
+        if len(query_tokens) <= 1 or not products:
+            return False
+        return any(self._product_matches_query_tokens(product, query_tokens) for product in products)
 
     def _query_specificity_score(self, query: str | None, products: list[ProductListItemDto]) -> float:
         if not query or not products:

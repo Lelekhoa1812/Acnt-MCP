@@ -327,6 +327,16 @@ class ToolRegistry:
             )
 
         async def search_catalogue(validated: StockSearchCatalogueArgs, _: str | None, thought: str) -> ToolResult:
+            # Root Cause vs Logic: an empty catalogue search caused MCP clients to
+            # hammer `/api/v1/products?page=N&pageSize=20` and return huge payloads
+            # when the user had supplied a focused phrase. Direct stock_search now
+            # requires at least one real filter; broad inventory flows should use
+            # stock_snapshot/stock_aggregate, which own their pagination policy.
+            if not validated.search and validated.departmentId is None and validated.categoryId is None:
+                raise ParameterMappingError(
+                    "stock_search requires at least one of search, departmentId, or categoryId. "
+                    "Use stock_snapshot or stock_aggregate for deliberate broad inventory retrieval."
+                )
             data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -444,9 +454,14 @@ class ToolRegistry:
                 "direction": validated.direction,
                 "rows": ranked_groups,
                 "coverage": data.coverage.model_dump(mode="json"),
-                "guidance": (
-                    "Rows are grouped totals, not individual variant rankings. Use product grouping for user wording "
-                    "such as type, family, line, or all inventory unless the user explicitly asks for SKU/variant grain."
+                "guidance": " ".join(
+                    part
+                    for part in [
+                        "Rows are grouped totals, not individual variant rankings. Use product grouping for user wording "
+                        "such as type, family, line, or all inventory unless the user explicitly asks for SKU/variant grain.",
+                        self.inventory_service.variant_cap_guidance(data.coverage.variantCaps),
+                    ]
+                    if part
                 ),
             }
             trace = ToolTrace(
@@ -1235,13 +1250,17 @@ class ToolRegistry:
         )
 
     def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
-        return {
+        payload = {
             "page": data.page,
             "pageSize": data.pageSize,
             "totalCount": data.totalCount,
             "totalPages": data.totalPages,
+            "variantCaps": [item.model_dump(mode="json") for item in data.variantCaps],
             "items": [self._product_catalogue_model_view(item) for item in data.items],
         }
+        if data.guidance:
+            payload["guidance"] = data.guidance
+        return payload
 
     def _product_catalogue_model_view(self, item: ProductListItemDto) -> dict[str, Any]:
         return {
