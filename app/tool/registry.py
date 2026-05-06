@@ -332,11 +332,11 @@ class ToolRegistry:
             # hammer `/api/v1/products?page=N&pageSize=20` and return huge payloads
             # when the user had supplied a focused phrase. Direct stock_search now
             # requires at least one real filter; broad inventory flows should use
-            # stock_snapshot/stock_aggregate, which own their pagination policy.
+            # stock_snapshot/stock_aggregate with the same filter minimum and capped catalogue paging.
             if not validated.search and validated.departmentId is None and validated.categoryId is None:
                 raise ParameterMappingError(
                     "stock_search requires at least one of search, departmentId, or categoryId. "
-                    "Use stock_snapshot or stock_aggregate for deliberate broad inventory retrieval."
+                    "Use stock_snapshot or stock_aggregate with at least one of those filters for broad inventory retrieval."
                 )
             data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
             trace = ToolTrace(
@@ -1205,7 +1205,10 @@ class ToolRegistry:
             (
                 "Answer-ready inventory snapshot: enriches catalogue matches into variant rows with size, known specs, "
                 "overall stock, and VIC/NSW/QLD availability text. Best default for broad/multi-variant stock, category "
-                "inventory, and named-family availability with capped variant coverage."
+                "inventory, and named-family availability with capped variant coverage. Requires at least one of "
+                "search, departmentId, or categoryId (same policy as stock_search) so Harmonise is never queried as an "
+                "unfiltered full-catalogue list. Catalogue list pagination is capped per server config; if coverage is "
+                "partial, ask the user to narrow search or category scope."
             ),
             StockInventorySnapshotArgs,
             inventory_snapshot,
@@ -1222,7 +1225,8 @@ class ToolRegistry:
             (
                 "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
                 "type, product family, category, or region; product grouping answers broad wording like all inventory "
-                "or chair type. This returns summed groups, not single-variant rankings. Use stock_specs_rank "
+                "or chair type. This returns summed groups, not single-variant rankings. Requires at least one of "
+                "search, departmentId, or categoryId so the underlying snapshot stays scoped. Use stock_specs_rank "
                 "when the question also needs dimensions, pricing, attribute/style filters, or department grouping."
             ),
             StockAggregateArgs,

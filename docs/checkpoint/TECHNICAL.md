@@ -79,6 +79,7 @@ Settings live in `app/config/settings.py` and load from environment variables or
 - `HTH_STOCK_PARALLEL_REQUESTS_LIMIT`
 - `HTH_SNAPSHOT_EXPAND_MAX_INITIAL_ITEMS`
 - `HTH_SNAPSHOT_SPECIFICITY_THRESHOLD`
+- `HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES` (caps Harmonise catalogue list pages for `stock_snapshot` initial scan and category expansion)
 
 ## 5. Persistence and logical schema
 

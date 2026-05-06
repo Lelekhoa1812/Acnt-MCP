@@ -103,9 +103,10 @@ class Settings(BaseSettings):
     snapshot_expand_max_initial_items: int = Field(3, ge=1, alias="HTH_SNAPSHOT_EXPAND_MAX_INITIAL_ITEMS")
     snapshot_specificity_threshold: float = Field(0.78, ge=0.0, le=1.0, alias="HTH_SNAPSHOT_SPECIFICITY_THRESHOLD")
     snapshot_expand_parallel_pages_limit: int = Field(8, ge=1, alias="HTH_SNAPSHOT_EXPAND_PARALLEL_PAGES_LIMIT")
-    # Motivation vs Logic: department-only snapshot expansion must not crawl unbounded
-    # catalogue pages when Harmonise reports a large totalPages count.
-    snapshot_expand_max_department_pages: int = Field(20, ge=1, alias="HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES")
+    # Motivation vs Logic: snapshot catalogue scans (initial inventory_snapshot list pass
+    # and category expansion) must not crawl unbounded pages when Harmonise reports a
+    # large totalPages count; same knob caps both paths (env name kept for compatibility).
+    snapshot_expand_max_department_pages: int = Field(10, ge=1, alias="HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES")
     # Test-only: appended to snapshot department-expansion catalogue cache keys so
     # parallel pytest cases do not reuse Redis rows from unrelated Harmonise mocks.
     inventory_test_catalogue_cache_scope: str | None = Field(

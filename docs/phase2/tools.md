@@ -645,6 +645,11 @@ GET /api/v1/products?page=1&pageSize=10&search=Arc%20bar%20table
 Purpose:
 - Return an answer-ready snapshot of variant rows for a named family or broader product search.
 
+Catalogue policy:
+- **Requires at least one of** `search`, `departmentId`, or `categoryId` (same as `stock_search`) so Harmonise is never called as an unfiltered full-catalogue list.
+- Catalogue list pagination is **capped** per `HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES` (default **10**) for both the initial snapshot scan and the optional category expansion pass. When Harmonise reports more pages, `coverage.isPartial` is true and `coverage.limitations` includes guidance to ask the user for a narrower scope.
+- When expansion runs with `search` plus `categoryId`, a follow-up Harmonise list call may use **`search` omitted** but still passes **`departmentId` and `categoryId`** to stay category-scoped (not the same as a bare `?page=&pageSize=` request).
+
 When called:
 - The user asks for availability, dimensions, hireable stock, or a family summary.
 
@@ -668,6 +673,8 @@ Parameter notes:
 - `search`: Product or family phrase.
 - `departmentId`: Supported department filter.
 - `categoryId`: Supported category UUID when the category is clear.
+- At least one of `search`, `departmentId`, or `categoryId` must be set; omitting all three is a validation error.
+
 Response JSON:
 
 ```json
@@ -1116,14 +1123,16 @@ Request JSON:
 ```
 
 Parameter notes:
-- `search`: Optional product, family, or category phrase.
+- `search`: Product, family, or category phrase; may be omitted only when `departmentId` and/or `categoryId` scopes the catalogue.
 - `region`: `VIC`, `NSW`, `QLD`, or `overall`.
 - `measure`: `stock` or `hirable`.
 - `groupBy`: `product`, `category`, or `variant`.
 - `direction`: `most` or `least`.
 - `limit`: Maximum number of ranked groups.
-- `departmentId`: Optional supported department filter.
-- `categoryId`: Optional supported category UUID.
+- `departmentId`: Supported department filter (or combine with `search` / `categoryId`).
+- `categoryId`: Supported category UUID (or combine with `search` / `departmentId`).
+- At least one of `search`, `departmentId`, or `categoryId` must be set (same policy as `stock_snapshot`).
+
 Response JSON:
 
 ```json

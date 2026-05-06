@@ -15,6 +15,7 @@ from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from app.config import Settings
 from app.mcp.server import MCP_SERVER_INSTRUCTIONS, build_mcp_server
 from app.prompt.stock.furniture import furniture_capability_summary
+from app.schemas import StockInventorySnapshotArgs, StockListCategoryArgs
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -224,6 +225,21 @@ async def test_mcp_stock_search_rejects_unscoped_catalogue_scan() -> None:
 
 
 @pytest.mark.anyio
+async def test_mcp_stock_snapshot_rejects_unscoped_catalogue_scan() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool("stock_snapshot", {"page": 1})
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert "stock_snapshot requires at least one of search, departmentId, or categoryId" in result.structuredContent[
+        "error"
+    ]["message"]
+
+
+@pytest.mark.anyio
 async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
     server = build_mcp_server(build_mcp_settings())
 
@@ -231,7 +247,7 @@ async def test_mcp_inventory_snapshot_returns_table_ready_rows() -> None:
         await client.initialize()
         result = await client.call_tool(
             "stock_snapshot",
-            {"page": 1, "pageSize": 100},
+            {"page": 1, "pageSize": 100, "departmentId": 2},
         )
 
     assert result.isError is False
@@ -292,6 +308,38 @@ async def test_mcp_list_category_resolves_broad_category_phrases() -> None:
         "Furniture - Tables - Side",
     }
     assert len(table_names & expected_table_names) >= 2
+
+
+def test_stock_list_category_args_accepts_limit_20() -> None:
+    args = StockListCategoryArgs(query="Service", departmentId=3, limit=20)
+    assert args.limit == 20
+
+
+def test_stock_inventory_snapshot_category_id_coerces_numeric_json() -> None:
+    uid = "b7d70000-eacf-fc4c-4e5b-08de7f1c2101"
+    str_args = StockInventorySnapshotArgs(page=1, departmentId=3, categoryId=uid)
+    assert str_args.categoryId == uid
+    int_args = StockInventorySnapshotArgs(page=1, departmentId=3, categoryId=42)
+    assert int_args.categoryId == "42"
+
+
+@pytest.mark.anyio
+async def test_mcp_list_category_service_query_with_limit_20_returns_matches() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock_list_category",
+            {"query": "Service", "departmentId": 3, "limit": 20},
+        )
+
+    assert result.isError is False
+    data = result.structuredContent["data"]
+    assert data["status"] in {"matched", "ambiguous"}
+    assert len(data["matches"]) >= 1
+    names = {m["name"] for m in data["matches"]}
+    assert "Furniture - Service - Food Station Counters" in names
 
 
 @pytest.mark.anyio

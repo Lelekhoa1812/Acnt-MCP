@@ -1868,10 +1868,12 @@ class _DepartmentExpansionSource:
         items = list(self._catalogue_items)
         if department_id is not None:
             items = [item for item in items if item["departmentId"] == department_id]
+        if category_id is not None:
+            items = [item for item in items if item.get("categoryId") == category_id]
         if search:
             lowered = search.lower()
             # Root Cause vs Logic: simulate the cloud bug where broad search under-returns
-            # chair families, forcing inventory_snapshot to widen the department scan.
+            # chair families, forcing inventory_snapshot to widen via category-scoped paging when categoryId is set.
             if lowered == "chair":
                 items = [item for item in items if item["id"] == "prod-alto"]
             else:
@@ -2029,7 +2031,7 @@ async def test_inventory_snapshot_expands_department_scan_when_broad_search_is_t
 
     try:
         snapshot, _, notes = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, search="chair")
+            StockInventorySnapshotArgs(page=1, search="chair", departmentId=3, categoryId="cat-chair")
         )
         rows_by_sku = {row.sku: row for row in snapshot.rows}
         assert snapshot.coverage.matchedProducts == 2
@@ -2040,7 +2042,7 @@ async def test_inventory_snapshot_expands_department_scan_when_broad_search_is_t
         assert "fn-se-ch-ast-bla" in rows_by_sku
         assert "fn-se-ch-ast-whi" in rows_by_sku
         assert "fn-of-fi-3dr" not in rows_by_sku
-        assert any("Expanded catalogue coverage via department scan" in note for note in notes)
+        assert any("Expanded catalogue coverage via category scan" in note for note in notes)
     finally:
         await source.close()
         await key_value_store.close()
@@ -2089,7 +2091,7 @@ async def test_inventory_snapshot_skips_department_expansion_for_specific_query(
         )
         assert snapshot.coverage.matchedProducts == 1
         assert source.broaden_calls == 0
-        assert not any("Expanded catalogue coverage via department scan" in note for note in notes)
+        assert not any("Expanded catalogue coverage via category scan" in note for note in notes)
     finally:
         await source.close()
         await key_value_store.close()
@@ -2177,7 +2179,7 @@ async def test_inventory_snapshot_skips_department_expansion_for_plural_multi_to
         assert source.broaden_calls == 0
         assert snapshot.coverage.matchedProducts == 1
         assert snapshot.coverage.enrichedProducts == 1
-        assert not any("Expanded catalogue coverage via department scan" in note for note in notes)
+        assert not any("Expanded catalogue coverage via category scan" in note for note in notes)
         assert any(row.sku == "fn-se-ch-bla" for row in snapshot.rows)
     finally:
         await source.close()
@@ -2343,7 +2345,12 @@ async def test_inventory_snapshot_parallelizes_broadened_page_fetches() -> None:
 
     try:
         snapshot, _, _ = await service.inventory_snapshot(
-            StockInventorySnapshotArgs(page=1, search=f"parallel broaden chair {uuid4()}")
+            StockInventorySnapshotArgs(
+                page=1,
+                search=f"parallel broaden chair {uuid4()}",
+                departmentId=3,
+                categoryId="cat-chair",
+            )
         )
         assert snapshot.coverage.matchedProducts >= 1
         assert snapshot.coverage.enrichedProducts >= 1

@@ -304,16 +304,18 @@ class InventoryService:
             search=args.search,
             department_id=args.departmentId,
             category_id=args.categoryId,
+            max_pages_to_fetch=self.settings.snapshot_expand_max_department_pages,
         )
         catalogue_items = list(catalogue_scan.items)
         cache_statuses = list(catalogue_scan.cache_statuses)
         notes = list(catalogue_scan.notes)
 
         # Root Cause vs Logic: cloud catalogue search can under-return broad
-        # family queries such as "chair" even though additional matching
-        # products exist in the same department. We widen the scan using the
-        # inferred department, then locally filter by the original query so the
-        # snapshot can hydrate every matching chair variant by SKU.
+        # family queries even when more matches exist under the same category.
+        # When the caller supplied a categoryId, we may run a second category-scoped
+        # catalogue pass (still Harmonise-filtered by category) and merge rows that
+        # match the original search tokens. We never widen to department-only pages
+        # without categoryId, because that drops search and returns the whole dept.
         (
             catalogue_items,
             expansion_cache_statuses,
@@ -1000,6 +1002,7 @@ class InventoryService:
 
         for page_size_index, candidate_page_size in enumerate(page_sizes):
             try:
+                pagination_capped = False
                 first_page_response, first_page_cache_status, first_page_notes = await self._search_catalogue_page(
                     page=page,
                     page_size=candidate_page_size,
@@ -1019,10 +1022,13 @@ class InventoryService:
                 if max_pages_to_fetch is not None:
                     effective_total_pages = min(reported_total_pages, max_pages_to_fetch)
                     if effective_total_pages < reported_total_pages:
+                        pagination_capped = True
                         notes.append(
                             "Catalogue pagination capped: "
-                            f"fetching pages 1–{effective_total_pages} of {reported_total_pages} reported "
-                            f"(HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES={max_pages_to_fetch})."
+                            f"retrieved up to page {effective_total_pages} of {reported_total_pages} reported "
+                            f"(HTH_SNAPSHOT_EXPAND_MAX_DEPARTMENT_PAGES={max_pages_to_fetch}). "
+                            "Ask the user for a narrower search phrase, categoryId from stock_list_category or "
+                            "stock_scope, departmentId, SKU, or variant name so the next call can target their item."
                         )
                         matched_pages = min(matched_pages, effective_total_pages)
 
@@ -1073,7 +1079,7 @@ class InventoryService:
                     cache_statuses=cache_statuses,
                     notes=notes,
                     matched_pages=matched_pages,
-                    is_partial=is_partial,
+                    is_partial=is_partial or pagination_capped,
                 )
             except UpstreamServiceError as exc:
                 last_error = exc
@@ -1140,6 +1146,13 @@ class InventoryService:
         if self._query_specificity_score(args.search, initial_items) >= self.settings.snapshot_specificity_threshold:
             return initial_items, [], [], initial_total_pages
 
+        # Root Cause vs Logic: expansion used to call Harmonise with only departmentId
+        # (search omitted), which returns the full department and breaks product-family
+        # snapshots grounded on a phrase (e.g. "baxter chairs"). Category-scoped paging
+        # (categoryId + departmentId) stays bounded; without categoryId we skip expansion.
+        if args.categoryId is None:
+            return initial_items, [], [], initial_total_pages
+
         broadened_args = StockSearchCatalogueArgs(
             page=1,
             search=None,
@@ -1170,8 +1183,8 @@ class InventoryService:
 
         broadened_notes.append(
             (
-                "Expanded catalogue coverage via department scan because the initial "
-                f"search for '{args.search}' returned fewer products than the inferred department catalogue."
+                "Expanded catalogue coverage via category scan because the initial "
+                f"search for '{args.search}' returned fewer products than the category-scoped catalogue."
             )
         )
         merged_items = self._dedupe_products([*initial_items, *filtered_broadened])
@@ -1179,9 +1192,8 @@ class InventoryService:
 
     def _initial_results_confirm_named_query(self, query: str | None, products: list[ProductListItemDto]) -> bool:
         # Root Cause vs Logic: named family queries like "Alto chair" were allowed
-        # to fall through to the broad department scan branch, which then issued
-        # `/api/v1/products` without `search` and returned oversized catalogue
-        # pages. If the initial result already matches every significant token in
+        # to fall through to unbounded catalogue expansion. If the initial result
+        # already matches every significant token in
         # a multi-token phrase, keep the snapshot pinned to the user's query.
         # Root Cause vs Logic: substring-only checks treated plural user tokens
         # (e.g. "chairs") as mismatches against singular catalogue copy ("chair"),
@@ -1290,10 +1302,15 @@ class InventoryService:
         return deduped
 
     def _recovery_limitations_from_notes(self, notes: list[str]) -> list[str]:
+        # Root Cause vs Logic: pagination-cap notes did not contain "recovery" or
+        # "pagesize", so coverage.limitations omitted them and models skipped telling
+        # the user more catalogue pages existed.
         return [
             note
             for note in notes
-            if "recovery" in note.casefold() or "pagesize" in note.casefold()
+            if "recovery" in note.casefold()
+            or "pagesize" in note.casefold()
+            or "pagination capped" in note.casefold()
         ]
 
     @staticmethod

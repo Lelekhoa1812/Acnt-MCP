@@ -1,8 +1,44 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, BeforeValidator, Field, model_validator
+
+
+def _coerce_stock_tool_category_id(value: Any) -> str | None:
+    # Root Cause vs Logic: Pydantic v2 rejects int/float for str-typed fields, but
+    # LLM and REST clients sometimes send Harmonise categoryId as JSON numbers even
+    # though catalogue filters use string identifiers (UUIDs or string ids).
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("categoryId must be a string or integer, not a boolean.")
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not value.is_integer():
+            raise ValueError("categoryId numeric values must be whole numbers.")
+        return str(int(value))
+    raise ValueError("categoryId must be a string or integer-compatible value.")
+
+
+CoercedOptionalStockCategoryId = Annotated[str | None, BeforeValidator(_coerce_stock_tool_category_id)]
+
+
+def stock_catalogue_filter_scope_present(
+    *, search: str | None, department_id: int | None, category_id: str | None
+) -> bool:
+    """True when at least one Harmonise catalogue list filter is set (mirrors stock_search policy)."""
+    if department_id is not None:
+        return True
+    if category_id is not None and str(category_id).strip():
+        return True
+    if search is not None and str(search).strip():
+        return True
+    return False
 
 
 def _compact_identifier(value: Any) -> str | None:
@@ -594,7 +630,7 @@ class StockGetSupportedScopeArgs(BaseModel):
 class StockListCategoryArgs(BaseModel):
     query: str = Field(description="User category phrase to resolve, such as coffee tables, stools, or ottomans.")
     departmentId: int | None = Field(3, description="Supported department filter; defaults to Furniture.")
-    limit: int = Field(5, ge=1, le=10, description="Maximum category matches to return.")
+    limit: int = Field(5, ge=1, le=50, description="Maximum category matches to return (capped at 50).")
 
 
 class StockSearchCatalogueArgs(BaseModel):
@@ -607,9 +643,9 @@ class StockSearchCatalogueArgs(BaseModel):
         None,
         description="Supported department filter. Use stock_scope for supported IDs.",
     )
-    categoryId: str | None = Field(
+    categoryId: CoercedOptionalStockCategoryId = Field(
         None,
-        description="Optional supported category UUID from stock_scope; omit when unsure to avoid false negatives.",
+        description="Optional supported category UUID from stock_scope (string); numeric ids are coerced to strings. Omit when unsure to avoid false negatives.",
     )
 
 
@@ -660,13 +696,29 @@ class StockInventorySnapshotArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue page to start from before snapshot enrichment.")
     search: str | None = Field(None, description="Focused product, family, or category name to search for.")
     departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when the user's category is clear.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when clear; string or whole-number JSON (coerced to string).",
+    )
+
+    @model_validator(mode="after")
+    def validate_catalogue_filters(self) -> "StockInventorySnapshotArgs":
+        search = (self.search or "").strip() or None
+        if not stock_catalogue_filter_scope_present(
+            search=search, department_id=self.departmentId, category_id=self.categoryId
+        ):
+            raise ValueError(
+                "stock_snapshot requires at least one of search, departmentId, or categoryId. "
+                "Provide a non-empty search phrase and/or department or category scope so Harmonise does not list "
+                "the full catalogue without filters."
+            )
+        return self
 
 
 class StockAggregateArgs(BaseModel):
     search: str | None = Field(
         None,
-        description="Prompt-supplied product, family, or category phrase to aggregate. Omit only for deliberately broad inventory totals.",
+        description="Product, family, or category phrase to aggregate; use together with departmentId and/or categoryId, or supply at least one scope filter.",
     )
     region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
         "overall",
@@ -683,7 +735,22 @@ class StockAggregateArgs(BaseModel):
     direction: Literal["most", "least"] = Field("most", description="Rank highest totals first with most, or lowest totals first with least.")
     limit: int = Field(10, ge=1, le=50, description="Maximum ranked groups to return.")
     departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when the user's category is clear.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when clear; string or whole-number JSON (coerced to string).",
+    )
+
+    @model_validator(mode="after")
+    def validate_catalogue_filters(self) -> "StockAggregateArgs":
+        search = (self.search or "").strip() or None
+        if not stock_catalogue_filter_scope_present(
+            search=search, department_id=self.departmentId, category_id=self.categoryId
+        ):
+            raise ValueError(
+                "stock_aggregate requires at least one of search, departmentId, or categoryId. "
+                "Provide a non-empty search phrase and/or department or category scope so totals are scoped."
+            )
+        return self
 
 
 class StockProductFamilyInventoryArgs(BaseModel):
@@ -692,14 +759,20 @@ class StockProductFamilyInventoryArgs(BaseModel):
         description="Named product or family text to retrieve. Retrieves every resolved variant/SKU for availability answers."
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+    )
 
 
 class StockVariantRankArgs(BaseModel):
     page: int = Field(1, ge=1, description="Catalogue page to start from before family variant ranking.")
     search: str = Field(description="Named product or family text whose variants should be ranked.")
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+    )
     region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
         "overall",
         description="State or overall stock field for stock/hirable metrics.",
@@ -746,7 +819,10 @@ class StockSpecsRankArgs(BaseModel):
         description="Prompt-supplied family, category, style, or product phrase. Omit only for deliberately broad scoped ranking.",
     )
     departmentId: int | None = Field(None, description="Department filter from stock_scope when known.")
-    categoryId: str | None = Field(None, description="Category UUID from stock_scope when known.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+    )
     region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
         "overall",
         description="State or overall stock field for stock/hirable metrics.",
@@ -795,7 +871,10 @@ class StockImageArgs(BaseModel):
         description="Named product or family text to search when the image path or SKU is not already known.",
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+    )
     page: int = Field(1, ge=1, description="Catalogue page to start from before search-based image resolution.")
 
     @model_validator(mode="after")
@@ -811,7 +890,10 @@ class StockCountItemsArgs(BaseModel):
         description="Product or family name to count. When omitted, counts all catalogue products matching the dept/category filter.",
     )
     departmentId: int | None = Field(None, description="Supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope to count products inside.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope to count products inside; string or whole-number JSON (coerced to string).",
+    )
     countVariants: bool = Field(
         False,
         description="When True and search is provided, also count the total SKU variants across matched product families.",
@@ -825,14 +907,20 @@ class StockHirableByStateArgs(BaseModel):
         description="States to break out. Defaults to all supported states when omitted.",
     )
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Supported category UUID from stock_scope when known; omit when uncertain.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+    )
 
 
 class ResolverDisambiguateCandidatesArgs(BaseModel):
     query: str = Field(description="Ambiguous user phrase or product name to rank against catalogue candidates.")
     limit: int = Field(10, ge=2, le=10, description="Number of candidate options to return, from 2 to 10.")
     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: str | None = Field(None, description="Optional supported category UUID from stock_scope.")
+    categoryId: CoercedOptionalStockCategoryId = Field(
+        None,
+        description="Optional supported category UUID from stock_scope; string or whole-number JSON (coerced to string).",
+    )
 
 
 class SessionToolArgs(BaseModel):

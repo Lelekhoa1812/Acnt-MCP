@@ -900,7 +900,7 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
                 "method": "tools/call",
                 "params": {
                     "name": "stock_snapshot",
-                    "arguments": {"page": 1, "pageSize": 1},
+                    "arguments": {"page": 1, "pageSize": 1, "departmentId": 2},
                 },
             },
             headers={
@@ -1419,7 +1419,7 @@ def test_identity_auth_tools_enforce_group_role_access() -> None:
             "/api/v1/tools/call",
             json={
                 "tool": "stock_snapshot",
-                "args": {"page": 1, "pageSize": 2},
+                "args": {"page": 1, "pageSize": 2, "departmentId": 2},
             },
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
@@ -1447,7 +1447,7 @@ def test_identity_auth_allows_group_member_without_tool_viewer_role() -> None:
         )
         valid_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1475,7 +1475,7 @@ def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> 
         )
         denied_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1550,7 +1550,7 @@ def test_identity_auth_denies_plugin_when_configured_group_is_not_in_user_member
         )
         denied_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1802,7 +1802,9 @@ async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: 
 
     try:
         with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
-            result = await adapter.call_tool("stock_snapshot", {"page": 1}, request_context=request_context)
+            result = await adapter.call_tool(
+                "stock_snapshot", {"page": 1, "departmentId": 2}, request_context=request_context
+            )
     finally:
         reset_user_context(context_token)
 
@@ -1846,7 +1848,9 @@ async def test_mcp_adapter_logs_anonymous_stdio_clients_without_email(caplog: py
     )
 
     with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
-        result = await adapter.call_tool("stock_snapshot", {"page": 1}, request_context=request_context)
+        result = await adapter.call_tool(
+            "stock_snapshot", {"page": 1, "departmentId": 2}, request_context=request_context
+        )
 
     assert result.isError is False
     assert "user_oid=None" in caplog.text
@@ -1956,7 +1960,7 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
             "/api/v1/tools/call",
             json={
                 "tool": "stock_inventory_snapshot",
-                "args": {"page": 1, "pageSize": 100},
+                "args": {"page": 1, "pageSize": 100, "departmentId": 2},
             },
         )
 
@@ -1985,7 +1989,7 @@ def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
             "/api/v1/tools/call",
             json={
                 "tool": "stock_inventory_snapshot",
-                "args": {"page": 1, "pageSize": 100},
+                "args": {"page": 1, "pageSize": 100, "departmentId": 2},
             },
         )
 
