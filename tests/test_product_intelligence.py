@@ -129,10 +129,12 @@ def test_mcp_adapter_returns_text_and_image_content() -> None:
 
 def _settings() -> Settings:
     return Settings(
-        log_level="warning",
-        redis_fallback_enabled=True,
-        redis_url=TEST_REDIS_URL,
-        enable_mock_ui_simulation=False,
+        HTH_LOG_LEVEL="warning",
+        LOCAL_HARMONISE=True,
+        CLOUD_HARMONISE_IMAGE="https://images.harmonise.test",
+        HTH_REDIS_FALLBACK_ENABLED=True,
+        HTH_REDIS_URL=TEST_REDIS_URL,
+        HTH_ENABLE_MOCK_UI_SIMULATION=False,
     )
 
 
@@ -209,6 +211,19 @@ async def test_stock_image_resolves_exact_image_file_name_and_renders_mcp_image(
     assert result.tool == "stock_image"
     assert result.data["source"] == "imageFileName"
     assert result.data["imageUrl"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
+    rendering = result.data["rendering"]
+    assert rendering["fallbackOrder"] == [
+        "mcp_image_content",
+        "browser_html_preview",
+        "desktop_local_file",
+        "plain_link",
+    ]
+    assert "browser" in rendering
+    assert "htmlTemplate" in rendering["browser"]
+    assert "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg" in rendering["browser"]["htmlTemplate"]
+    assert "desktop" in rendering
+    assert "python3" in rendering["desktop"]["pythonSnippet"]
+    assert rendering["markdown"] == "![Harmonise product image](https://images.harmonise.test/fl-la-la-lam-1-ble.jpg)"
     assert len(result.mcp_content) == 1
 
 
@@ -284,6 +299,131 @@ async def test_stock_image_resolves_image_thumbnail_uri_on_variant_only(monkeypa
 
 
 @pytest.mark.anyio
+async def test_stock_image_promotes_thumbnail_to_first_available_high_resolution_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = await build_container(_settings())
+    image_id = "0cb76216-98fd-4824-911f-c95845af2d98"
+    thumb_url = f"https://blob.example/stock/product-images/{image_id}_thumb.png"
+    jpg_url = f"https://blob.example/stock/product-images/{image_id}.jpg"
+    chair = ProductListItemDto(
+        id="pg-1",
+        name="High Res Chair",
+        departmentId=3,
+        categoryId="cat-1",
+        isActive=True,
+        variants=[
+            ProductVariantDto(
+                id="sku-high-res",
+                sku="sku-high-res",
+                name="High Res Chair",
+                imageThumbnailUri=thumb_url,
+                details=ProductVariantDetailsDto(),
+            ),
+        ],
+    )
+    page = ProductListItemDtoPagedResponse(
+        items=[chair],
+        page=1,
+        pageSize=20,
+        totalCount=1,
+        totalPages=1,
+    )
+
+    async def fake_get_product(args):  # noqa: ANN001
+        return page, "bypass", []
+
+    fetch_attempts: list[str] = []
+
+    async def fake_fetch(image_url: str) -> tuple[McpImageContent | None, str | None]:
+        fetch_attempts.append(image_url)
+        if image_url == jpg_url:
+            return McpImageContent(data=base64.b64encode(b"high-res").decode("ascii"), mimeType="image/jpeg"), None
+        return None, f"Image could not be fetched for MCP rendering ({image_url}): HTTP 404."
+
+    monkeypatch.setattr(container.tool_registry.inventory_service, "get_product", fake_get_product)
+    container.tool_registry._fetch_mcp_image_content = fake_fetch  # type: ignore[method-assign]
+    try:
+        result = await container.tool_registry.call_tool(
+            "stock_image",
+            {"sku": "sku-high-res"},
+        )
+    finally:
+        await container.close()
+
+    assert fetch_attempts == [
+        f"https://blob.example/stock/product-images/{image_id}.png",
+        jpg_url,
+    ]
+    assert result.data["imageUrl"] == jpg_url
+    assert result.data["rendering"]["markdown"] == f"![Harmonise product image]({jpg_url})"
+    assert result.mcp_content[0].mimeType == "image/jpeg"
+    assert any("higher-resolution" in note for note in result.data["resolutionNotes"])
+
+
+@pytest.mark.anyio
+async def test_stock_image_falls_back_to_thumbnail_when_high_resolution_candidates_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = await build_container(_settings())
+    image_id = "41ccc744-b912-4b3f-82e7-cb9c6a0a464c"
+    thumb_url = f"https://blob.example/stock/product-images/{image_id}_thumb.png"
+    chair = ProductListItemDto(
+        id="pg-1",
+        name="Thumb Chair",
+        departmentId=3,
+        categoryId="cat-1",
+        isActive=True,
+        variants=[
+            ProductVariantDto(
+                id="sku-thumb-only",
+                sku="sku-thumb-only",
+                name="Thumb Chair",
+                imageThumbnailUri=thumb_url,
+                details=ProductVariantDetailsDto(),
+            ),
+        ],
+    )
+    page = ProductListItemDtoPagedResponse(
+        items=[chair],
+        page=1,
+        pageSize=20,
+        totalCount=1,
+        totalPages=1,
+    )
+
+    async def fake_get_product(args):  # noqa: ANN001
+        return page, "bypass", []
+
+    fetch_attempts: list[str] = []
+
+    async def fake_fetch(image_url: str) -> tuple[McpImageContent | None, str | None]:
+        fetch_attempts.append(image_url)
+        if image_url == thumb_url:
+            return McpImageContent(data=base64.b64encode(b"thumb").decode("ascii"), mimeType="image/png"), None
+        return None, f"Image could not be fetched for MCP rendering ({image_url}): HTTP 404."
+
+    monkeypatch.setattr(container.tool_registry.inventory_service, "get_product", fake_get_product)
+    container.tool_registry._fetch_mcp_image_content = fake_fetch  # type: ignore[method-assign]
+    try:
+        result = await container.tool_registry.call_tool(
+            "stock_image",
+            {"sku": "sku-thumb-only"},
+        )
+    finally:
+        await container.close()
+
+    assert fetch_attempts == [
+        f"https://blob.example/stock/product-images/{image_id}.png",
+        f"https://blob.example/stock/product-images/{image_id}.jpg",
+        f"https://blob.example/stock/product-images/{image_id}.jpeg",
+        thumb_url,
+    ]
+    assert result.data["imageUrl"] == thumb_url
+    assert result.mcp_content[0].mimeType == "image/png"
+
+
+@pytest.mark.anyio
 async def test_stock_image_includes_harmonise_snapshot_when_no_image(monkeypatch: pytest.MonkeyPatch) -> None:
     container = await build_container(_settings())
     chair = ProductListItemDto(
@@ -322,6 +462,7 @@ async def test_stock_image_includes_harmonise_snapshot_when_no_image(monkeypatch
         await container.close()
 
     assert result.data["imageUrl"] is None
+    assert "rendering" not in result.data
     assert "harmoniseSnapshotForLlm" in result.data
     assert result.data["harmoniseSnapshotForLlm"]["name"] == "No Image Chair"
     assert result.data["coverage"]["isPartial"] is True

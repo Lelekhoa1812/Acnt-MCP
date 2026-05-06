@@ -34,6 +34,7 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_list_category before" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
+    assert "browser HTML preview, desktop python3 local-file preview" in MCP_SERVER_INSTRUCTIONS
     assert "grouped aggregation already paginates" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 
@@ -41,45 +42,45 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
 def build_mcp_settings() -> Settings:
     # Harmonise catalogue/detail calls use `.env` (CLOUD_HARMONISE_*); run MCP tests from repo root.
     return Settings(
-        log_level="warning",
-        public_base_url=None,
-        server_website_url=None,
-        server_logo_url=None,
-        mcp_allowed_hosts="testserver",
-        redis_fallback_enabled=True,
-        redis_url=TEST_REDIS_URL,
-        enable_mock_ui_simulation=False,
+        HTH_LOG_LEVEL="warning",
+        HTH_PUBLIC_BASE_URL=None,
+        HTH_SERVER_WEBSITE_URL=None,
+        HTH_SERVER_LOGO_URL=None,
+        HTH_MCP_ALLOWED_HOSTS="testserver",
+        HTH_REDIS_FALLBACK_ENABLED=True,
+        HTH_REDIS_URL=TEST_REDIS_URL,
+        HTH_ENABLE_MOCK_UI_SIMULATION=False,
     )
 
 
 def build_mcp_cloud_settings() -> Settings:
     return Settings(
-        local_harmonise=False,
-        cloud_harmonise_endpoint="https://cloud.harmonise.test",
-        cloud_harmonise_api="test-api-key",
-        cloud_harmonise_image="https://images.harmonise.test",
-        log_level="warning",
-        public_base_url=None,
-        server_website_url=None,
-        server_logo_url=None,
-        mcp_allowed_hosts="testserver",
-        redis_fallback_enabled=True,
-        redis_url=TEST_REDIS_URL,
-        enable_mock_ui_simulation=False,
+        LOCAL_HARMONISE=False,
+        CLOUD_HARMONISE_ENDPOINT="https://cloud.harmonise.test",
+        CLOUD_HARMONISE_API="test-api-key",
+        CLOUD_HARMONISE_IMAGE="https://images.harmonise.test",
+        HTH_LOG_LEVEL="warning",
+        HTH_PUBLIC_BASE_URL=None,
+        HTH_SERVER_WEBSITE_URL=None,
+        HTH_SERVER_LOGO_URL=None,
+        HTH_MCP_ALLOWED_HOSTS="testserver",
+        HTH_REDIS_FALLBACK_ENABLED=True,
+        HTH_REDIS_URL=TEST_REDIS_URL,
+        HTH_ENABLE_MOCK_UI_SIMULATION=False,
     )
 
 
 def build_mcp_public_settings() -> Settings:
     return Settings(
-        log_level="warning",
-        public_base_url="https://hth.example.test",
-        server_website_url=None,
-        server_logo_url=None,
-        mcp_allowed_hosts="testserver",
-        redis_fallback_enabled=True,
-        redis_url=TEST_REDIS_URL,
-        enable_mock_ui_simulation=False,
-        mcp_bearer_token="test-mcp-token",
+        HTH_LOG_LEVEL="warning",
+        HTH_PUBLIC_BASE_URL="https://hth.example.test",
+        HTH_SERVER_WEBSITE_URL=None,
+        HTH_SERVER_LOGO_URL=None,
+        HTH_MCP_ALLOWED_HOSTS="testserver",
+        HTH_REDIS_FALLBACK_ENABLED=True,
+        HTH_REDIS_URL=TEST_REDIS_URL,
+        HTH_ENABLE_MOCK_UI_SIMULATION=False,
+        HTH_MCP_BEARER_TOKEN="test-mcp-token",
     )
 
 

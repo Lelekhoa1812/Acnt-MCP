@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from urllib.parse import urlparse
+import html
+import json
+from urllib.parse import urlparse, urlunparse
 
 from app.schemas import ProductVariantDto
 
@@ -59,3 +61,182 @@ def resolve_variant_harmonise_image(
 
     url = build_harmonise_image_url(base_url, raw)
     return url, raw, source
+
+
+def build_harmonise_image_fetch_candidates(image_url: str) -> list[str]:
+    # Motivation vs Logic: Harmonise thumbnail URLs can use any extension, while
+    # higher-resolution siblings are normalized to png/jpg/jpeg variants. Strip
+    # `_thumb` and ignore the thumbnail extension before falling back to the original.
+    parsed = urlparse(image_url)
+    path = parsed.path
+    slash_index = path.rfind("/")
+    directory = path[: slash_index + 1] if slash_index >= 0 else ""
+    filename = path[slash_index + 1 :] if slash_index >= 0 else path
+    dot_index = filename.rfind(".")
+    if dot_index <= 0:
+        return [image_url]
+
+    stem = filename[:dot_index]
+    if not stem.endswith("_thumb"):
+        return [image_url]
+
+    image_id = stem[: -len("_thumb")]
+    candidate_paths = [
+        f"{directory}{image_id}.png",
+        f"{directory}{image_id}.jpg",
+        f"{directory}{image_id}.jpeg",
+        path,
+    ]
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate_path in candidate_paths:
+        candidate = urlunparse(parsed._replace(path=candidate_path))
+        if candidate in seen:
+            continue
+        candidates.append(candidate)
+        seen.add(candidate)
+    return candidates
+
+
+def build_stock_image_rendering_payload(image_url: str) -> dict[str, object]:
+    # Motivation vs Logic: MCP image blocks are not consistently visible across
+    # browser and desktop hosts, so stock_image returns explicit fallback recipes
+    # that models can execute without inventing client-specific rendering steps.
+    escaped_attr_url = html.escape(image_url, quote=True)
+    js_url = json.dumps(image_url)
+    markdown_url = image_url.replace(")", "%29")
+    html_template = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Harmonise Image Preview</title>
+  <style>
+    :root {{
+      --display-width: min(38vw, 380px);
+      --max-display-height: 86vh;
+    }}
+
+    * {{
+      box-sizing: border-box;
+    }}
+
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at center, #ffffff 0%, #eeeeee 72%);
+      font-family: Arial, sans-serif;
+    }}
+
+    .frame {{
+      width: min(92vw, 900px);
+      height: min(92vh, 900px);
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      background: #fff;
+      border-radius: 28px;
+      box-shadow: 0 18px 70px rgba(0, 0, 0, 0.14);
+      overflow: hidden;
+    }}
+
+    .image-wrap {{
+      display: grid;
+      place-items: center;
+      width: 100%;
+      height: 100%;
+    }}
+
+    img {{
+      width: var(--display-width);
+      max-width: 88vw;
+      max-height: var(--max-display-height);
+      height: auto;
+      object-fit: contain;
+      filter:
+        contrast(2.2)
+        brightness(1.18)
+        saturate(1.12)
+        blur(0.08px)
+        drop-shadow(0 12px 26px rgba(0, 0, 0, 0.16));
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: pixelated;
+      transform: translateZ(0) scale(1.02);
+    }}
+
+    .status {{
+      color: #444;
+      font-size: 16px;
+      text-align: center;
+      line-height: 1.4;
+    }}
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <div class="image-wrap" id="imageWrap">
+      <img id="productImage" src="{escaped_attr_url}" alt="Harmonise product image" />
+    </div>
+  </div>
+
+  <script>
+    const imageUrl = {js_url};
+    const productImage = document.getElementById("productImage");
+    const imageWrap = document.getElementById("imageWrap");
+
+    productImage.onerror = () => {{
+      imageWrap.innerHTML = `
+        <div class="status">
+          Failed to load the remote image.<br />
+          <a href="${{imageUrl}}" target="_blank" rel="noopener noreferrer">Open image URL</a>
+        </div>
+      `;
+    }};
+  </script>
+</body>
+</html>"""
+    python_snippet = f"""python3 - <<'PY'
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
+
+image_url = {js_url}
+path_suffix = Path(urlparse(image_url).path).suffix or ".png"
+request = Request(image_url, headers={{"User-Agent": "hth-mcp-stock-image-preview/1.0"}})
+with urlopen(request, timeout=20) as response:
+    image_bytes = response.read()
+
+with NamedTemporaryFile(delete=False, suffix=path_suffix) as image_file:
+    image_file.write(image_bytes)
+    image_path = image_file.name
+
+print(f"![Harmonise product image]({{image_path}})")
+PY"""
+    return {
+        "fallbackOrder": [
+            "mcp_image_content",
+            "browser_html_preview",
+            "desktop_local_file",
+            "plain_link",
+        ],
+        "browser": {
+            "instruction": (
+                "If the host supports browser or script rendering and the native MCP image block is not visible, "
+                "render this temporary HTML preview using imageUrl as the img src."
+            ),
+            "htmlTemplate": html_template,
+        },
+        "desktop": {
+            "instruction": (
+                "If the host can run local commands, run this python3 snippet to download imageUrl to a temporary "
+                "local file, then show the printed Markdown image path with its absolute file path. If the desktop "
+                "host has an in-app browser, it can also render browser.htmlTemplate as a temporary local HTML file."
+            ),
+            "pythonSnippet": python_snippet,
+        },
+        "markdown": f"![Harmonise product image]({markdown_url})",
+    }

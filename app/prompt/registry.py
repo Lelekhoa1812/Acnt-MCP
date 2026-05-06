@@ -69,7 +69,12 @@ SYSTEM_BEHAVIOR_RULES = [
     "For product-name queries, use adaptive multi-pass search terms inferred from request and evidence.",
     "For high-volume searches, use paginated requests instead of one large request; prefer page size about 20 when args allow it, fetch pages in parallel when supported, and continue until no more results.",
     "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; the backend handles page-by-page aggregation automatically, so do not try to manage pagination in the prompt, and do not answer grouped totals from `stock_variant_rank`.",
-    "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering.",
+    (
+        "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` "
+        "for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering. When "
+        "`stock_image` native image content is not visible, follow its rendering fallback order: browser HTML "
+        "preview, desktop python3 local-file preview, then plain Markdown/link."
+    ),
     "For multi-item requests, execute one `stock_search` per item term; deduplicate multi-pass results by product id and SKU.",
     "For product-family requests, resolve candidate rows, fetch needed family details, and prefer one compact stock-detail path; do not stack `stock_snapshot`, `stock_detail`, and `stock_compare` unless each hop adds missing evidence.",
     "Avoid duplicate semantic retrieval once a tool result covers the requested stock attributes.",

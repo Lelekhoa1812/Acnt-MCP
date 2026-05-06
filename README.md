@@ -157,10 +157,10 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
   - **Example output:** Variant-ranked rows with `groupBy="variant"`, `rankValue`, dimensions/pricing/media, and coverage/guidance.
 
 - **`stock_image`**
-  - **Purpose:** Resolves a Harmonise product image from an exact image path, exact SKU, or product-family search, then returns the HTTP image URL plus MCP-native image content when rendering succeeds.
+  - **Purpose:** Resolves a Harmonise product image from an exact image path, exact SKU, or product-family search, then returns the best available HTTP image URL, MCP-native image content when rendering succeeds, and browser/desktop fallback rendering instructions.
   - **Arguments:** `imageFileName`, `sku`, or `search`, plus optional `departmentId`, `categoryId`, `page`.
   - **Example input:** `{"sku": "fl-la-la-lam-1-gre"}`.
-  - **Example output:** `{"source": "sku", "imageFileName": "...", "imageUrl": "...", "coverage": {...}}` plus inline MCP image content when fetch succeeds.
+  - **Example output:** `{"source": "sku", "imageFileName": "...", "imageUrl": "...", "rendering": {...}, "coverage": {...}}` plus inline MCP image content when fetch succeeds. Thumbnail URLs are promoted to an available high-resolution sibling (`.png`, `.jpg`, `.jpeg`) before falling back to `_thumb`. If the native image block is not visible, use `rendering.fallbackOrder`: browser HTML preview, desktop `python3` local-file preview, then Markdown/link.
 
 - **`stock_compare`**
   - **Purpose:** Side-by-side comparison of 2‑20 SKUs. Each row includes state stock, pricing, media, and coverage.

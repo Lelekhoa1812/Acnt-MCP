@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from app.config import Settings
 from app.schemas import ProductVariantDetailsDto, ProductVariantDto
-from app.tool.stock.media import build_harmonise_image_url, resolve_variant_harmonise_image
+from app.tool.stock.media import (
+    build_harmonise_image_fetch_candidates,
+    build_harmonise_image_url,
+    resolve_variant_harmonise_image,
+)
 
 
 def test_settings_switches_harmonise_base_url_by_mode() -> None:
@@ -56,6 +60,23 @@ def test_build_harmonise_image_url_handles_path_shapes() -> None:
     )
     assert build_harmonise_image_url("https://cdn.example.com", None) is None
     assert build_harmonise_image_url(None, "/stock/product-images/item_thumb.png") is None
+
+
+def test_build_harmonise_image_fetch_candidates_prefers_high_resolution_siblings() -> None:
+    assert build_harmonise_image_fetch_candidates(
+        "https://cdn.example.com/stock/product-images/abc_thumb.webp"
+    ) == [
+        "https://cdn.example.com/stock/product-images/abc.png",
+        "https://cdn.example.com/stock/product-images/abc.jpg",
+        "https://cdn.example.com/stock/product-images/abc.jpeg",
+        "https://cdn.example.com/stock/product-images/abc_thumb.webp",
+    ]
+
+
+def test_build_harmonise_image_fetch_candidates_leaves_non_thumbnail_urls_unchanged() -> None:
+    assert build_harmonise_image_fetch_candidates(
+        "https://cdn.example.com/stock/product-images/abc.png"
+    ) == ["https://cdn.example.com/stock/product-images/abc.png"]
 
 
 def test_resolve_variant_harmonise_image_prefers_variant_thumbnail_uri() -> None:

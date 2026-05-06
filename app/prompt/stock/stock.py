@@ -65,7 +65,9 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
         ),
         (
             "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking, `stock_variant_rank` for "
-            "which-variant-within-a-family resolution, and `stock_image` only when the user explicitly needs a Harmonise image."
+            "which-variant-within-a-family resolution, and `stock_image` only when the user explicitly needs a "
+            "Harmonise image. If the returned native image block is not visible, follow `stock_image.rendering`: "
+            "browser HTML preview, desktop python3 local-file preview, then plain Markdown/link."
         ),
         (
             "If a single-product search with a multi-word phrase returns no rows, retry with a shorter "

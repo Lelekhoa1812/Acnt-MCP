@@ -25,7 +25,12 @@ from app.tool.currency import (
 )
 from app.config import ParameterMappingError, UnsupportedToolError
 from app.tool.stock.intelligence import rank_evidence_with_filters
-from app.tool.stock.media import build_harmonise_image_url, resolve_variant_harmonise_image
+from app.tool.stock.media import (
+    build_harmonise_image_fetch_candidates,
+    build_harmonise_image_url,
+    build_stock_image_rendering_payload,
+    resolve_variant_harmonise_image,
+)
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.tool.news.formatter import format_news_articles, format_news_sources
@@ -669,8 +674,13 @@ class ToolRegistry:
 
             image_content: list[McpImageContent] = []
             if image_url:
-                content, note = await self._fetch_mcp_image_content(image_url)
+                selected_url, content, note = await self._fetch_preferred_mcp_image_content(image_url)
                 if content is not None:
+                    if selected_url != image_url:
+                        notes.append(
+                            f"Resolved higher-resolution Harmonise image URL from thumbnail: {selected_url}"
+                        )
+                        image_url = selected_url
                     image_content.append(content)
                 elif note:
                     coverage_limitations.append(note)
@@ -685,6 +695,7 @@ class ToolRegistry:
                 "variant": resolved_variant.name if resolved_variant else None,
                 "imageFileName": image_file_name,
                 "imageUrl": image_url,
+                **({"rendering": build_stock_image_rendering_payload(image_url)} if image_url else {}),
                 **({"harmoniseSnapshotForLlm": harmonise_snapshot_for_llm} if harmonise_snapshot_for_llm else {}),
                 "resolutionNotes": notes,
                 "coverage": {
@@ -696,7 +707,10 @@ class ToolRegistry:
                 "guidance": (
                     "Use this tool when the user explicitly needs a Harmonise product image. It can resolve from an "
                     "exact image path, exact SKU, or a product-family search, and it returns both the HTTP image URL "
-                    "and MCP-native image content when binary fetch succeeds."
+                    "and MCP-native image content when binary fetch succeeds. If native image content is not visible, "
+                    "follow rendering.fallbackOrder: browser clients can render rendering.browser.htmlTemplate; "
+                    "desktop/process clients can run rendering.desktop.pythonSnippet and show the printed local "
+                    "Markdown image path; otherwise cite rendering.markdown or imageUrl."
                 ),
             }
             trace = ToolTrace(
@@ -1246,7 +1260,9 @@ class ToolRegistry:
             "stock_image",
             (
                 "Resolve a Harmonise product image from an exact image path, exact SKU, or product-family search, "
-                "then return the HTTP image URL plus MCP-native image content when it can be fetched and rendered."
+                "then return the HTTP image URL plus MCP-native image content when it can be fetched and rendered. "
+                "When native image blocks are not visible, use the returned rendering fallback order: browser HTML "
+                "preview, desktop python3 local-file preview, then plain Markdown/link."
             ),
             StockImageArgs,
             stock_image,
@@ -1495,6 +1511,23 @@ class ToolRegistry:
 
         encoded = base64.b64encode(response.content).decode("ascii")
         return McpImageContent(data=encoded, mimeType=mime_type), None
+
+    async def _fetch_preferred_mcp_image_content(
+        self,
+        image_url: str,
+    ) -> tuple[str, McpImageContent | None, str | None]:
+        # Motivation vs Logic: product detail often supplies thumbnail URLs, but
+        # Harmonise stores higher-resolution siblings under predictable blob names.
+        # Fetch candidates in preference order and expose the first successful URL.
+        candidates = build_harmonise_image_fetch_candidates(image_url)
+        fallback_note: str | None = None
+        for candidate in candidates:
+            content, note = await self._fetch_mcp_image_content(candidate)
+            if content is not None:
+                return candidate, content, None
+            if candidate == image_url:
+                fallback_note = note
+        return image_url, None, fallback_note or f"Image could not be fetched for MCP rendering ({image_url})."
 
     def _guess_image_mime_type(self, image_url: str) -> str | None:
         lowered = image_url.split("?", 1)[0].lower()
