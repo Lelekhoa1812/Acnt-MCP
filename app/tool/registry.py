@@ -673,6 +673,7 @@ class ToolRegistry:
                 )
 
             image_content: list[McpImageContent] = []
+            default_thumbnail_url = image_url
             if image_url:
                 selected_url, content, note = await self._fetch_preferred_mcp_image_content(image_url)
                 if content is not None:
@@ -695,7 +696,16 @@ class ToolRegistry:
                 "variant": resolved_variant.name if resolved_variant else None,
                 "imageFileName": image_file_name,
                 "imageUrl": image_url,
-                **({"rendering": build_stock_image_rendering_payload(image_url)} if image_url else {}),
+                **(
+                    {
+                        "rendering": build_stock_image_rendering_payload(
+                            image_url,
+                            default_thumbnail_url=default_thumbnail_url,
+                        )
+                    }
+                    if image_url
+                    else {}
+                ),
                 **({"harmoniseSnapshotForLlm": harmonise_snapshot_for_llm} if harmonise_snapshot_for_llm else {}),
                 "resolutionNotes": notes,
                 "coverage": {
@@ -707,10 +717,11 @@ class ToolRegistry:
                 "guidance": (
                     "Use this tool when the user explicitly needs a Harmonise product image. It can resolve from an "
                     "exact image path, exact SKU, or a product-family search, and it returns both the HTTP image URL "
-                    "and MCP-native image content when binary fetch succeeds. If native image content is not visible, "
-                    "follow rendering.fallbackOrder: browser clients can render rendering.browser.htmlTemplate; "
-                    "desktop/process clients can run rendering.desktop.pythonSnippet and show the printed local "
-                    "Markdown image path; otherwise cite rendering.markdown or imageUrl."
+                    "and MCP-native encoded image content when binary fetch succeeds. Follow rendering.fallbackOrder: "
+                    "try encoded MCP image content in the UI first; if not visible, download the resolved URI locally "
+                    "and render that file; if that fails, activate the script/runtime environment before running "
+                    "rendering.desktop.pythonSnippet; if all rendering fails, show rendering.uriOnly.bestUriToShow "
+                    "and explain the AI client has a technical rendering issue."
                 ),
             }
             trace = ToolTrace(
@@ -1260,9 +1271,11 @@ class ToolRegistry:
             "stock_image",
             (
                 "Resolve a Harmonise product image from an exact image path, exact SKU, or product-family search, "
-                "then return the HTTP image URL plus MCP-native image content when it can be fetched and rendered. "
-                "When native image blocks are not visible, use the returned rendering fallback order: browser HTML "
-                "preview, desktop python3 local-file preview, then plain Markdown/link."
+                "then return the HTTP image URL plus MCP-native encoded image content when it can be fetched. "
+                "Rendering fallback order: render encoded MCP image content first, then download the resolved URI "
+                "locally and render it, then activate the script/runtime environment before running the provided "
+                "python3 preview script, then show only the best URI and explain any inline-rendering failure as an "
+                "AI client technical issue."
             ),
             StockImageArgs,
             stock_image,

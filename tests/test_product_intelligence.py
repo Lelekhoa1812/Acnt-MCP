@@ -110,7 +110,7 @@ def test_product_intelligence_filters_and_ranks_derived_metrics() -> None:
     assert rows[0]["rankUnit"] == "m3"
 
 
-def test_mcp_adapter_returns_text_and_image_content() -> None:
+def test_mcp_adapter_returns_image_content_before_text_fallback_contract() -> None:
     adapter = McpToolAdapter(orchestrator_service=object(), default_session_id="test", logger=object())  # type: ignore[arg-type]
     image_data = base64.b64encode(b"fake-image").decode("ascii")
     result = adapter._success_result(
@@ -121,10 +121,10 @@ def test_mcp_adapter_returns_text_and_image_content() -> None:
         )
     )
 
-    assert result.content[0].type == "text"
-    assert result.content[1].type == "image"
-    assert result.content[1].data == image_data
-    assert result.content[1].mimeType == "image/jpeg"
+    assert result.content[0].type == "image"
+    assert result.content[0].data == image_data
+    assert result.content[0].mimeType == "image/jpeg"
+    assert result.content[1].type == "text"
 
 
 def _settings() -> Settings:
@@ -213,16 +213,28 @@ async def test_stock_image_resolves_exact_image_file_name_and_renders_mcp_image(
     assert result.data["imageUrl"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
     rendering = result.data["rendering"]
     assert rendering["fallbackOrder"] == [
-        "mcp_image_content",
-        "browser_html_preview",
-        "desktop_local_file",
-        "plain_link",
+        "encoded_mcp_image_content",
+        "download_resolved_uri_local_file",
+        "activated_environment_script_preview",
+        "plain_best_uri",
     ]
+    assert "encoded MCP image content" in rendering["steps"][0]
+    assert "Download bestResolvedUri locally" in rendering["steps"][1]
+    assert "activate" in rendering["steps"][2]
+    assert "AI client's technical rendering issue" in rendering["steps"][3]
+    assert rendering["bestResolvedUri"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
+    assert rendering["defaultThumbnailUri"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
+    assert "Do not run scripts before trying this encoded image path" in rendering["encoded"]["instruction"]
+    assert "download bestResolvedUri to a local file" in rendering["localFile"]["instruction"]
     assert "browser" in rendering
     assert "htmlTemplate" in rendering["browser"]
     assert "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg" in rendering["browser"]["htmlTemplate"]
     assert "desktop" in rendering
+    assert "always activate the script/runtime environment" in rendering["desktop"]["instruction"]
+    assert "source .venv/bin/activate" in rendering["desktop"]["instruction"]
     assert "python3" in rendering["desktop"]["pythonSnippet"]
+    assert rendering["uriOnly"]["bestUriToShow"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
+    assert "AI client has a technical issue rendering the image inline" in rendering["uriOnly"]["instruction"]
     assert rendering["markdown"] == "![Harmonise product image](https://images.harmonise.test/fl-la-la-lam-1-ble.jpg)"
     assert len(result.mcp_content) == 1
 
@@ -356,6 +368,9 @@ async def test_stock_image_promotes_thumbnail_to_first_available_high_resolution
         jpg_url,
     ]
     assert result.data["imageUrl"] == jpg_url
+    assert result.data["rendering"]["bestResolvedUri"] == jpg_url
+    assert result.data["rendering"]["defaultThumbnailUri"] == thumb_url
+    assert result.data["rendering"]["uriOnly"]["fallbackThumbnailUri"] == thumb_url
     assert result.data["rendering"]["markdown"] == f"![Harmonise product image]({jpg_url})"
     assert result.mcp_content[0].mimeType == "image/jpeg"
     assert any("higher-resolution" in note for note in result.data["resolutionNotes"])

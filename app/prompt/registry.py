@@ -72,8 +72,10 @@ SYSTEM_BEHAVIOR_RULES = [
     (
         "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` "
         "for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering. When "
-        "`stock_image` native image content is not visible, follow its rendering fallback order: browser HTML "
-        "preview, desktop python3 local-file preview, then plain Markdown/link."
+        "rendering `stock_image`, follow its fallback order: encoded MCP image content first, then download the "
+        "resolved URI locally and render that file, then activate the script/runtime environment before running "
+        "the provided python3 preview script, then show only the best URI and explain any inline-rendering failure "
+        "as an AI client technical issue."
     ),
     "For multi-item requests, execute one `stock_search` per item term; deduplicate multi-pass results by product id and SKU.",
     "For product-family requests, resolve candidate rows, fetch needed family details, and prefer one compact stock-detail path; do not stack `stock_snapshot`, `stock_detail`, and `stock_compare` unless each hop adds missing evidence.",
