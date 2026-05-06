@@ -126,6 +126,23 @@ def test_settings_supports_unbounded_harmonise_timeout() -> None:
     assert bounded_settings.harmonise_timeout_seconds == 2.5
 
 
+def test_settings_lifts_tiny_mcp_idle_timeout_to_safety_floor() -> None:
+    settings = Settings(
+        _env_file=None,
+        mcp_session_idle_timeout_seconds=5,
+        mcp_session_idle_timeout_min_seconds=1800,
+    )
+
+    assert settings.effective_mcp_session_idle_timeout_seconds == 1800
+    assert any("using 1800s instead of 5s" in note for note in settings.startup_notes())
+
+
+def test_settings_can_disable_mcp_idle_reaping() -> None:
+    settings = Settings(_env_file=None, mcp_session_idle_timeout_seconds=0)
+
+    assert settings.effective_mcp_session_idle_timeout_seconds is None
+
+
 def test_settings_reads_max_cap_variant_from_environment(monkeypatch) -> None:  # noqa: ANN001
     assert Settings(_env_file=None).max_cap_variant == 20
 

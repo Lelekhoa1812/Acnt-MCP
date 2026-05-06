@@ -434,7 +434,7 @@ def build_streamable_mcp_manager(settings: Settings) -> StreamableHTTPSessionMan
         stateless=settings.mcp_stateless,
         security_settings=security_settings,
         retry_interval=settings.mcp_retry_interval_ms,
-        session_idle_timeout=settings.mcp_session_idle_timeout_seconds,
+        session_idle_timeout=settings.effective_mcp_session_idle_timeout_seconds,
     )
 
 
@@ -582,7 +582,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "mcp_auth_required": resolved_settings.mcp_require_bearer_token,
             "mcp_oauth_enabled": resolved_settings.mcp_browser_oauth_enabled,
             "identity_auth_enabled": resolved_settings.identity_auth_enabled,
-            "mcp_session_idle_timeout_seconds": resolved_settings.mcp_session_idle_timeout_seconds,
+            "mcp_session_idle_timeout_seconds": resolved_settings.effective_mcp_session_idle_timeout_seconds,
             "logo_url": resolved_settings.resolved_server_logo_url,
         }
 

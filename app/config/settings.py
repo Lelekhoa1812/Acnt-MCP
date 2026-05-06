@@ -140,6 +140,16 @@ class Settings(BaseSettings):
         ge=0,
         alias="HTH_MCP_SESSION_IDLE_TIMEOUT_SECONDS",
     )
+    # Root Cause vs Logic: hosted MCP deployments are easy to misconfigure with
+    # a single-digit idle timeout, which causes normal connector polling gaps to
+    # reap sessions and force repeated initialize/list-tools cycles. Keep a
+    # configurable floor for stateful HTTP sessions while still allowing `0` to
+    # disable idle reaping completely.
+    mcp_session_idle_timeout_min_seconds: float = Field(
+        1800.0,
+        ge=1,
+        alias="HTH_MCP_SESSION_IDLE_TIMEOUT_MIN_SECONDS",
+    )
     mcp_bearer_token: str | None = Field(None, alias="HTH_MCP_BEARER_TOKEN")
     # Motivation vs Logic: remote Claude web connectors can complete OAuth, but
     # many hosted connector UIs do not let you pre-supply a bearer token. Keep
@@ -342,6 +352,16 @@ class Settings(BaseSettings):
                 "HTH_LOCAL_CHAT_MEMORY_ENABLED=true; local `/api/v1/query` calls retain a short in-process "
                 f"conversation buffer ({self.local_chat_memory_turns} turns, device-local only, non-Redis)."
             )
+        effective_mcp_idle_timeout = self.effective_mcp_session_idle_timeout_seconds
+        if (
+            self.mcp_session_idle_timeout_seconds
+            and effective_mcp_idle_timeout is not None
+            and effective_mcp_idle_timeout != self.mcp_session_idle_timeout_seconds
+        ):
+            notes.append(
+                "HTH_MCP_SESSION_IDLE_TIMEOUT_SECONDS is below the stateful MCP safety floor; using "
+                f"{effective_mcp_idle_timeout:g}s instead of {self.mcp_session_idle_timeout_seconds:g}s."
+            )
         if not self.mcp_bearer_token:
             notes.append(
                 "HTH_MCP_BEARER_TOKEN is not configured; the public `/mcp` transport will accept unauthenticated requests."
@@ -408,6 +428,20 @@ class Settings(BaseSettings):
     @property
     def parsed_mcp_oauth_auto_trusted_redirect_domains(self) -> list[str]:
         return [domain.lower() for domain in self._split_csv(self.mcp_oauth_auto_trusted_redirect_domains)]
+
+    @property
+    def effective_mcp_session_idle_timeout_seconds(self) -> float | None:
+        if self.mcp_stateless:
+            return None
+
+        configured = self.mcp_session_idle_timeout_seconds
+        if configured is None or configured == 0:
+            return None
+
+        retry_floor = 0.0
+        if self.mcp_retry_interval_ms is not None:
+            retry_floor = (self.mcp_retry_interval_ms / 1000) * 3
+        return max(configured, self.mcp_session_idle_timeout_min_seconds, retry_floor)
 
     @property
     def parsed_auth_required_claims(self) -> list[str]:
