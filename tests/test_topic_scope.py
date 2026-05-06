@@ -18,12 +18,7 @@ from app.prompt.context import render_session_context
 
 def build_engine_settings() -> Settings:
     return Settings(
-        local_harmonise=True,
         log_level="warning",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url="redis://127.0.0.1:65535",
         enable_mock_ui_simulation=False,

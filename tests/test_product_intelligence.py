@@ -129,17 +129,10 @@ def test_mcp_adapter_returns_text_and_image_content() -> None:
 
 def _settings() -> Settings:
     return Settings(
-        _env_file=None,
-        local_harmonise=True,
         log_level="warning",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
-        cloud_harmonise_image="https://images.harmonise.test",
     )
 
 

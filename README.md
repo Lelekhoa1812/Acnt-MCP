@@ -349,6 +349,8 @@ Identity enforcement is separate from the OAuth bridge. Read `docs/phase2/auth.m
 
 ## Tests
 
+Stock-related tests (`tests/test_app.py`, `tests/test_mcp.py`, `tests/test_engine.py`, and others) **do not** force the in-process Harmonise simulator. They use Harmonise settings from the repo `.env` at the project root. Set `LOCAL_HARMONISE=false` and point `CLOUD_HARMONISE_ENDPOINT` (for example `https://ase-backend-sales-dev-australiasoutheast.azurewebsites.net`) plus `CLOUD_HARMONISE_API` before running pytest so catalogue and snapshot assertions hit the same backend as your deployment.
+
 ```bash
 pytest
 ```

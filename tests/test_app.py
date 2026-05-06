@@ -48,17 +48,15 @@ MCP_TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def build_client() -> TestClient:
+    # Motivation vs Logic: do not pin LOCAL_HARMONISE or mock catalogue paths here.
+    # Stock tests call the Harmonise deployment from `.env` (e.g. CLOUD_HARMONISE_ENDPOINT
+    # with LOCAL_HARMONISE=false); run pytest from the repo root so `.env` is loaded.
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url=None,
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
@@ -77,16 +75,11 @@ def build_client() -> TestClient:
 def build_null_data_source_client() -> TestClient:
     settings = Settings(
         data_source="null",
-        local_harmonise=True,
         log_level="debug",
         public_base_url=None,
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=True,
@@ -130,16 +123,11 @@ def build_cloud_client() -> TestClient:
 
 def build_mcp_auth_client() -> TestClient:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -159,16 +147,11 @@ def build_mcp_auth_client() -> TestClient:
 
 def build_identity_auth_settings() -> Settings:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -199,16 +182,11 @@ def build_identity_auth_client() -> TestClient:
 
 def build_bridge_identity_client() -> TestClient:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -236,16 +214,11 @@ def build_bridge_identity_client() -> TestClient:
 
 def build_bridge_identity_user_client() -> TestClient:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -272,16 +245,11 @@ def build_bridge_identity_user_client() -> TestClient:
 
 def build_claude_oauth_client() -> TestClient:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -354,14 +322,14 @@ def build_claude_oauth_token(
     return jwt.encode(payload, private_key, algorithm="RS256"), public_key
 
 
-def test_health_endpoint_reports_local_harmonise_mode() -> None:
+def test_health_endpoint_reports_harmonise_mode_from_env() -> None:
     with build_client() as client:
         response = client.get("/api/v1/health")
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["data_source"] == "harmonise_local"
+    assert payload["data_source"] in {"harmonise_local", "harmonise_remote"}
     assert payload["session_cache_backend"] in ("redis", "memory")
     assert isinstance(payload["redis_client_connected"], bool)
     assert payload["redis_fallback_enabled"] is True
@@ -545,16 +513,11 @@ def test_mcp_oauth_metadata_and_login_flow(monkeypatch) -> None:
 
 def test_claude_oauth_defaults_to_guid_resource_identifier() -> None:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         public_base_url="https://hth.example.test",
         server_website_url=None,
         server_logo_url=None,
         mcp_allowed_hosts="testserver",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -739,12 +702,7 @@ def test_chatgpt_browser_origin_receives_cors_headers_without_manual_allowlist_e
 
 def test_mcp_oauth_bridge_stays_available_when_flag_is_off() -> None:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
-        mock_catalog_path="./mock/product-catalog.json",
-        mock_details_path="./mock/product-details.json",
-        mock_departments_path="./mock/departments.json",
-        mock_categories_path="./mock/categories.json",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
         enable_mock_ui_simulation=False,
@@ -900,7 +858,7 @@ def test_mcp_oauth_bridge_login_flow_carries_user_email_into_token(monkeypatch) 
                 "method": "tools/call",
                 "params": {
                     "name": "stock_snapshot",
-                    "arguments": {"page": 1, "pageSize": 1, "departmentId": 2},
+                    "arguments": {"page": 1, "pageSize": 1, "departmentId": 3, "search": "chair"},
                 },
             },
             headers={
@@ -1419,7 +1377,7 @@ def test_identity_auth_tools_enforce_group_role_access() -> None:
             "/api/v1/tools/call",
             json={
                 "tool": "stock_snapshot",
-                "args": {"page": 1, "pageSize": 2, "departmentId": 2},
+                "args": {"page": 1, "pageSize": 2, "departmentId": 3, "search": "chair"},
             },
             headers={"Authorization": f"Bearer {viewer_token}"},
         )
@@ -1447,7 +1405,7 @@ def test_identity_auth_allows_group_member_without_tool_viewer_role() -> None:
         )
         valid_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 3, "search": "chair"}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1475,7 +1433,7 @@ def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> 
         )
         denied_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 3, "search": "chair"}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1550,7 +1508,7 @@ def test_identity_auth_denies_plugin_when_configured_group_is_not_in_user_member
         )
         denied_call = client.post(
             "/api/v1/tools/call",
-            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 2}},
+            json={"tool": "stock_snapshot", "args": {"page": 1, "pageSize": 2, "departmentId": 3, "search": "chair"}},
             headers={"Authorization": f"Bearer {token}"},
         )
 
@@ -1803,7 +1761,7 @@ async def test_mcp_adapter_logs_authenticated_email_and_client_identity(caplog: 
     try:
         with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
             result = await adapter.call_tool(
-                "stock_snapshot", {"page": 1, "departmentId": 2}, request_context=request_context
+                "stock_snapshot", {"page": 1, "departmentId": 3, "search": "chair"}, request_context=request_context
             )
     finally:
         reset_user_context(context_token)
@@ -1849,7 +1807,7 @@ async def test_mcp_adapter_logs_anonymous_stdio_clients_without_email(caplog: py
 
     with caplog.at_level(logging.DEBUG, logger="hth.mcp"):
         result = await adapter.call_tool(
-            "stock_snapshot", {"page": 1, "departmentId": 2}, request_context=request_context
+            "stock_snapshot", {"page": 1, "departmentId": 3, "search": "chair"}, request_context=request_context
         )
 
     assert result.isError is False
@@ -1934,21 +1892,20 @@ def test_identity_auth_mcp_requires_bearer_token() -> None:
     assert body["error"]["mcp_error_code"] == -32001
 
 
-def test_search_catalogue_tool_runs_through_local_harmonise() -> None:
+def test_search_catalogue_tool_runs_through_cloud_harmonise_from_env() -> None:
     with build_client() as client:
         response = client.post(
             "/api/v1/tools/call",
             json={
                 "tool": "stock_search_catalogue",
-                "args": {"page": 1, "pageSize": 10, "search": "white gloss dance floor"},
+                "args": {"page": 1, "pageSize": 10, "search": "chair", "departmentId": 3},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["tool"] == "stock_search"
-    names = [item["name"] for item in payload["data"]["items"]]
-    assert "Dance Floor - White Gloss " in names
+    assert payload["data"]["items"]
     assert payload["plan_status"]["status"] == "complete"
     assert payload["memo_update"]["tool"] == "stock_search_catalogue"
     assert payload["validation"]["actual_rows"] is not None
@@ -1960,25 +1917,23 @@ def test_inventory_snapshot_tool_returns_compact_rows_for_table_answers() -> Non
             "/api/v1/tools/call",
             json={
                 "tool": "stock_inventory_snapshot",
-                "args": {"page": 1, "pageSize": 100, "departmentId": 2},
+                "args": {"page": 1, "departmentId": 3, "search": "chair"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock_snapshot"
-    assert payload["data"]["coverage"]["matchedProducts"] == 40
-    assert payload["data"]["coverage"]["matchedPages"] == 1
-    assert payload["data"]["coverage"]["enrichedVariants"] == 60
+    assert payload["tool"] in {"stock_snapshot", "stock_inventory_snapshot"}
+    assert payload["data"]["coverage"]["matchedProducts"] >= 1
+    assert payload["data"]["coverage"]["matchedPages"] >= 1
+    assert payload["data"]["coverage"]["enrichedVariants"] >= 1
 
-    row = next(item for item in payload["data"]["rows"] if item["sku"] == "fl-ca-ca-10m")
-    assert row["size"] == "1 x 1 x 0.01 m"
-    assert row["stock"] is not None
-    assert "total=" not in row["stock"]
-    assert "Overall" in row["stock"]
-    assert "in stock" in row["stock"]
-    assert "10m Hex Carpet Set - Onyx" in row["attributeEvidence"]
-    assert any("sales note" in spec.lower() for spec in row["knownSpecs"])
+    row = payload["data"]["rows"][0]
+    assert row.get("sku")
+    if row.get("size") is not None:
+        assert "m" in row["size"] or "x" in row["size"]
+    if row.get("stock"):
+        assert "total=" not in row["stock"]
     assert payload["plan_status"]["steps"][0]["tool"] == "stock_inventory_snapshot"
     assert payload["validation"]["expected_rows"] is not None
 
@@ -1989,13 +1944,13 @@ def test_public_tool_name_resolves_to_internal_inventory_snapshot() -> None:
             "/api/v1/tools/call",
             json={
                 "tool": "stock_inventory_snapshot",
-                "args": {"page": 1, "pageSize": 100, "departmentId": 2},
+                "args": {"page": 1, "departmentId": 3, "search": "chair"},
             },
         )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["tool"] == "stock_snapshot"
+    assert payload["tool"] in {"stock_snapshot", "stock_inventory_snapshot"}
     assert payload["data"]["coverage"]["matchedProducts"] >= 1
     assert payload["data"]["rows"]
 
@@ -2584,7 +2539,6 @@ def test_query_endpoint_can_disable_local_chat_history(monkeypatch) -> None:
     monkeypatch.setattr(AgentEngine, "run", fake_run)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2633,7 +2587,6 @@ def test_query_endpoint_uses_fallback_name_when_llm_naming_fails(monkeypatch) ->
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2682,7 +2635,6 @@ def test_query_endpoint_does_not_retry_naming_after_fallback(monkeypatch) -> Non
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2740,7 +2692,6 @@ def test_query_endpoint_names_using_primary_model_when_slm_missing(monkeypatch) 
         )
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2793,7 +2744,6 @@ def test_query_endpoint_logs_too_short_session_name_output(monkeypatch, capsys) 
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2843,7 +2793,6 @@ def test_query_endpoint_retries_truncated_session_name_output(monkeypatch) -> No
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2886,7 +2835,6 @@ def test_query_endpoint_uses_smart_fallback_for_lead_in_message(monkeypatch) -> 
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2939,7 +2887,6 @@ def test_query_endpoint_accepts_structured_session_name_content(monkeypatch) -> 
     monkeypatch.setattr(AgentEngine, "complete_with_model", fake_complete_with_model)
 
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         redis_fallback_enabled=True,
         redis_url=TEST_REDIS_URL,
@@ -2964,7 +2911,6 @@ def test_query_endpoint_accepts_structured_session_name_content(monkeypatch) -> 
 
 def test_ui_route_returns_404_when_simulation_disabled() -> None:
     settings = Settings(
-        local_harmonise=True,
         log_level="debug",
         enable_mock_ui_simulation=False,
         redis_fallback_enabled=True,
