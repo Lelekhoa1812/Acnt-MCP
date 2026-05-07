@@ -143,23 +143,28 @@ class McpToolAdapter:
         if result.validation is not None:
             envelope["validation"] = result.validation.model_dump(mode="json")
 
-        # Motivation vs Logic: stock image previews should give MCP clients the
-        # encoded image block before fallback instructions, while structuredContent
-        # still carries the JSON contract for clients that read tool metadata first.
         content: list[
             types.TextContent
             | types.ImageContent
             | types.AudioContent
             | types.ResourceLink
             | types.EmbeddedResource
-        ] = [
-            types.ImageContent(type=item.type, data=item.data, mimeType=item.mimeType)
-            for item in result.mcp_content
         ]
-        content.append(types.TextContent(type="text", text=json.dumps(envelope, ensure_ascii=False, sort_keys=True)))
+        if result.mcp_content:
+            # Motivation vs Logic: image-capable MCP clients expect encoded image
+            # blocks in `content` using the protocol shape `{type,data,mimeType}`;
+            # keep fallback instructions in structuredContent so image rendering
+            # is not broken by an adjacent text block.
+            content = [
+                types.ImageContent(type=item.type, data=item.data, mimeType=item.mimeType)
+                for item in result.mcp_content
+            ]
+        else:
+            content = [types.TextContent(type="text", text=json.dumps(envelope, ensure_ascii=False, sort_keys=True))]
         return types.CallToolResult(
             content=content,
             structuredContent=envelope,
+            isError=False,
         )
 
     def _error_result(self, exc: Exception) -> types.CallToolResult:

@@ -206,8 +206,7 @@ def build_stock_image_rendering_payload(
   </script>
 </body>
 </html>"""
-    python_snippet = f"""python3 - <<'PY'
-from pathlib import Path
+    python_program = f"""from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -222,7 +221,18 @@ with NamedTemporaryFile(delete=False, suffix=path_suffix) as image_file:
     image_file.write(image_bytes)
     image_path = image_file.name
 
-print(f"![Harmonise product image]({{image_path}})")
+print(f"![Harmonise product image]({{image_path}})")"""
+    python_snippet = f"""python3 - <<'PY'
+{python_program}
+PY"""
+    automatic_render_command = f"""set -e
+HTH_STOCK_IMAGE_PREVIEW_ENV="${{TMPDIR:-/tmp}}/hth-mcp-stock-image-preview/.venv"
+if [ ! -x "$HTH_STOCK_IMAGE_PREVIEW_ENV/bin/python3" ]; then
+  python3 -m venv "$HTH_STOCK_IMAGE_PREVIEW_ENV"
+fi
+. "$HTH_STOCK_IMAGE_PREVIEW_ENV/bin/activate"
+python3 - <<'PY'
+{python_program}
 PY"""
     return {
         "fallbackOrder": [
@@ -237,13 +247,15 @@ PY"""
                 "Render that image directly in the UI for user review. If the user cannot see it, continue to Step 2."
             ),
             (
-                "Step 2: Download bestResolvedUri locally, then render the downloaded local image file to the user. "
-                "If local download or local image rendering fails, continue to Step 3."
+                "Step 2: Automatically download bestResolvedUri locally, then render the downloaded local image "
+                "file to the user. If the client cannot perform a direct download/render, immediately run "
+                "localFile.automaticRenderCommand; do not ask the user to request a script environment. If local "
+                "rendering still fails, continue to Step 3."
             ),
             (
                 "Step 3: Run the provided script preview only after activating the script/runtime environment. "
-                "Use the repo's documented environment pattern when available, for example `source .venv/bin/activate`, "
-                "then run rendering.desktop.pythonSnippet with python3. If the script preview fails, continue to Step 4."
+                "Prefer desktop.automaticRenderCommand because it creates and activates its own environment, then "
+                "runs python3. If the script preview fails, continue to Step 4."
             ),
             (
                 "Step 4: Show only uriOnly.bestUriToShow. Clearly explain that due to the AI client's technical "
@@ -253,16 +265,30 @@ PY"""
         "bestResolvedUri": image_url,
         "defaultThumbnailUri": fallback_uri,
         "encoded": {
+            "mcpContentShape": {
+                "content": [
+                    {
+                        "type": "image",
+                        "data": "<base64 image data from MCP ImageContent>",
+                        "mimeType": "<image/png, image/jpeg, image/webp, or image/gif>",
+                    }
+                ],
+                "isError": False,
+            },
             "instruction": (
-                "First render the encoded MCP image content returned as native image content by the tool. "
-                "Do not run scripts before trying this encoded image path."
+                "First render the encoded MCP image content returned as native image content by the tool. The "
+                "protocol content array must contain image blocks shaped like encoded.mcpContentShape, with type, "
+                "base64 data, and mimeType. Do not run scripts before trying this encoded image path."
             ),
         },
         "localFile": {
             "instruction": (
-                "If encoded image rendering is not visible, download bestResolvedUri to a local file and render "
-                "that local image file in the UI for user review before trying the script preview."
+                "If encoded image rendering is not visible, automatically download bestResolvedUri to a local file "
+                "and render that local image file in the UI for user review. If the client needs a script "
+                "environment to download or render from the URI, run automaticRenderCommand immediately; do not ask "
+                "the user to tell you to create one."
             ),
+            "automaticRenderCommand": automatic_render_command,
         },
         "browser": {
             "instruction": (
@@ -273,12 +299,13 @@ PY"""
         },
         "desktop": {
             "instruction": (
-                "Before running this snippet, always activate the script/runtime environment, using the repo's "
-                "documented environment when available, for example `source .venv/bin/activate`. Then run the "
-                "python3 snippet to download bestResolvedUri to a temporary local file and show the printed "
-                "Markdown image path with its absolute file path."
+                "Use automaticRenderCommand when direct local-file rendering is unavailable. It creates a temporary "
+                "script environment if needed, activates it, runs python3, downloads bestResolvedUri to a temporary "
+                "local image file, and prints Markdown with the absolute file path. Do not wait for the user to ask "
+                "for a script environment."
             ),
             "pythonSnippet": python_snippet,
+            "automaticRenderCommand": automatic_render_command,
         },
         "uriOnly": {
             "bestUriToShow": image_url,

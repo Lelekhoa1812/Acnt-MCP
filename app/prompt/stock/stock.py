@@ -67,10 +67,11 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking, `stock_variant_rank` for "
             "which-variant-within-a-family resolution, and `stock_image` only when the user explicitly needs a "
             "Harmonise image. To render `stock_image`, follow `stock_image.rendering.fallbackOrder`: first render "
-            "encoded MCP image content to the UI; if not visible, download the resolved URI locally and render that "
-            "file; if that fails, activate the script/runtime environment before running the provided python3 preview "
-            "script; if all rendering fails, show only the best resolved URI (falling back to the default thumbnail) "
-            "and explain that the AI client has a technical rendering issue."
+            "encoded MCP image content to the UI; if not visible, automatically download the resolved URI locally "
+            "and render that file; if the client needs a script environment, run the provided automatic preview "
+            "command because it creates and activates one without user prompting; if all rendering fails, show only "
+            "the best resolved URI (falling back to the default thumbnail) and explain that the AI client has a "
+            "technical rendering issue."
         ),
         (
             "If a single-product search with a multi-word phrase returns no rows, retry with a shorter "

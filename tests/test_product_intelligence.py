@@ -124,7 +124,9 @@ def test_mcp_adapter_returns_image_content_before_text_fallback_contract() -> No
     assert result.content[0].type == "image"
     assert result.content[0].data == image_data
     assert result.content[0].mimeType == "image/jpeg"
-    assert result.content[1].type == "text"
+    assert len(result.content) == 1
+    assert result.isError is False
+    assert result.structuredContent == {"data": {"rows": []}}
 
 
 def _settings() -> Settings:
@@ -219,20 +221,25 @@ async def test_stock_image_resolves_exact_image_file_name_and_renders_mcp_image(
         "plain_best_uri",
     ]
     assert "encoded MCP image content" in rendering["steps"][0]
-    assert "Download bestResolvedUri locally" in rendering["steps"][1]
-    assert "activate" in rendering["steps"][2]
+    assert "Automatically download bestResolvedUri locally" in rendering["steps"][1]
+    assert "do not ask the user to request a script environment" in rendering["steps"][1]
+    assert "creates and activates its own environment" in rendering["steps"][2]
     assert "AI client's technical rendering issue" in rendering["steps"][3]
     assert rendering["bestResolvedUri"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
     assert rendering["defaultThumbnailUri"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
     assert "Do not run scripts before trying this encoded image path" in rendering["encoded"]["instruction"]
-    assert "download bestResolvedUri to a local file" in rendering["localFile"]["instruction"]
+    assert "automatically download bestResolvedUri to a local file" in rendering["localFile"]["instruction"]
+    assert "automaticRenderCommand" in rendering["localFile"]
+    assert "python3 -m venv" in rendering["localFile"]["automaticRenderCommand"]
     assert "browser" in rendering
     assert "htmlTemplate" in rendering["browser"]
     assert "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg" in rendering["browser"]["htmlTemplate"]
     assert "desktop" in rendering
-    assert "always activate the script/runtime environment" in rendering["desktop"]["instruction"]
-    assert "source .venv/bin/activate" in rendering["desktop"]["instruction"]
+    assert "creates a temporary script environment" in rendering["desktop"]["instruction"]
+    assert "Do not wait for the user to ask" in rendering["desktop"]["instruction"]
     assert "python3" in rendering["desktop"]["pythonSnippet"]
+    assert "python3 -m venv" in rendering["desktop"]["automaticRenderCommand"]
+    assert ". \"$HTH_STOCK_IMAGE_PREVIEW_ENV/bin/activate\"" in rendering["desktop"]["automaticRenderCommand"]
     assert rendering["uriOnly"]["bestUriToShow"] == "https://images.harmonise.test/fl-la-la-lam-1-ble.jpg"
     assert "AI client has a technical issue rendering the image inline" in rendering["uriOnly"]["instruction"]
     assert rendering["markdown"] == "![Harmonise product image](https://images.harmonise.test/fl-la-la-lam-1-ble.jpg)"

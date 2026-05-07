@@ -1071,7 +1071,7 @@ Response JSON:
 Response notes:
 - `imageUrl`: The HTTP image URL that the assistant can cite.
 - `mcp_content`: If the image fetch succeeds, MCP may attach binary image content outside the JSON body.
-- `rendering`: Browser and desktop fallback instructions when the host does not display native MCP image content. Follow `fallbackOrder`: encoded MCP image content, local download of the resolved URI, activated-environment `python3` script preview, then best URI only with an AI client rendering-issue explanation.
+- `rendering`: Browser and desktop fallback instructions when the host does not display native MCP image content. Follow `fallbackOrder`: encoded MCP image content, automatic local download of the resolved URI, automatic preview command that creates and activates its script environment, then best URI only with an AI client rendering-issue explanation.
 - Thumbnail URLs are fetched as high-resolution candidates first by stripping `_thumb`, then trying `.jpg` and `.jpeg`, before falling back to the original thumbnail URL.
 - `coverage`: Whether image resolution was partial.
 

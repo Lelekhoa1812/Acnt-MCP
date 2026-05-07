@@ -35,7 +35,7 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Use stock_list_category before" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
     assert "encoded MCP image content" in MCP_SERVER_INSTRUCTIONS
-    assert "activated-environment python3 script preview" in MCP_SERVER_INSTRUCTIONS
+    assert "automatic preview command that creates and activates its script environment" in MCP_SERVER_INSTRUCTIONS
     assert "grouped aggregation already paginates" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 

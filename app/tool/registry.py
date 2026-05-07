@@ -718,10 +718,11 @@ class ToolRegistry:
                     "Use this tool when the user explicitly needs a Harmonise product image. It can resolve from an "
                     "exact image path, exact SKU, or a product-family search, and it returns both the HTTP image URL "
                     "and MCP-native encoded image content when binary fetch succeeds. Follow rendering.fallbackOrder: "
-                    "try encoded MCP image content in the UI first; if not visible, download the resolved URI locally "
-                    "and render that file; if that fails, activate the script/runtime environment before running "
-                    "rendering.desktop.pythonSnippet; if all rendering fails, show rendering.uriOnly.bestUriToShow "
-                    "and explain the AI client has a technical rendering issue."
+                    "try encoded MCP image content in the UI first; if not visible, automatically download the "
+                    "resolved URI locally and render that file; if a script environment is needed, run "
+                    "rendering.desktop.automaticRenderCommand because it creates and activates one without user "
+                    "prompting; if all rendering fails, show rendering.uriOnly.bestUriToShow and explain the AI "
+                    "client has a technical rendering issue."
                 ),
             }
             trace = ToolTrace(
@@ -1272,10 +1273,10 @@ class ToolRegistry:
             (
                 "Resolve a Harmonise product image from an exact image path, exact SKU, or product-family search, "
                 "then return the HTTP image URL plus MCP-native encoded image content when it can be fetched. "
-                "Rendering fallback order: render encoded MCP image content first, then download the resolved URI "
-                "locally and render it, then activate the script/runtime environment before running the provided "
-                "python3 preview script, then show only the best URI and explain any inline-rendering failure as an "
-                "AI client technical issue."
+                "Rendering fallback order: render encoded MCP image content first, then automatically download the "
+                "resolved URI locally and render it, then run the provided automatic preview command that creates "
+                "and activates its script environment, then show only the best URI and explain any inline-rendering "
+                "failure as an AI client technical issue."
             ),
             StockImageArgs,
             stock_image,

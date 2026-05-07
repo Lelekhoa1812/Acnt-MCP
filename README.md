@@ -160,7 +160,7 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
   - **Purpose:** Resolves a Harmonise product image from an exact image path, exact SKU, or product-family search, then returns the best available HTTP image URL, MCP-native image content when rendering succeeds, and browser/desktop fallback rendering instructions.
   - **Arguments:** `imageFileName`, `sku`, or `search`, plus optional `departmentId`, `categoryId`, `page`.
   - **Example input:** `{"sku": "fl-la-la-lam-1-gre"}`.
-  - **Example output:** `{"source": "sku", "imageFileName": "...", "imageUrl": "...", "rendering": {...}, "coverage": {...}}` plus inline encoded MCP image content when fetch succeeds. Thumbnail URLs are promoted to an available high-resolution sibling (`.png`, `.jpg`, `.jpeg`) before falling back to `_thumb`. Use `rendering.fallbackOrder`: encoded MCP image content, local download of the resolved URI, activated-environment `python3` script preview, then best URI only with an AI client rendering-issue explanation.
+  - **Example output:** `{"source": "sku", "imageFileName": "...", "imageUrl": "...", "rendering": {...}, "coverage": {...}}` plus inline encoded MCP image content when fetch succeeds. Thumbnail URLs are promoted to an available high-resolution sibling (`.png`, `.jpg`, `.jpeg`) before falling back to `_thumb`. Use `rendering.fallbackOrder`: encoded MCP image content, automatic local download of the resolved URI, automatic preview command that creates and activates its script environment, then best URI only with an AI client rendering-issue explanation.
 
 - **`stock_compare`**
   - **Purpose:** Side-by-side comparison of 2‑20 SKUs. Each row includes state stock, pricing, media, and coverage.
