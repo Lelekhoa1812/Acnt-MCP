@@ -3022,7 +3022,7 @@ class AgentEngine:
             return "weather"
         if tool_name.startswith("ebay_"):
             return "ecommerce"
-        if tool_name.startswith("opencollective_"):
+        if tool_name.startswith("accounting_"):
             return "accounting"
         if tool_name.startswith("openlibrary_"):
             return "retail"

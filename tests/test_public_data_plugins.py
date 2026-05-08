@@ -8,6 +8,7 @@ import pytest
 
 from app.config import Settings
 from app.tool.accounting import (
+    OpenCollectiveAccountSearchArgs,
     AccountingService,
     OpenCollectiveBudgetLookupArgs,
     OpenCollectiveExpenseCreateArgs,
@@ -15,6 +16,8 @@ from app.tool.accounting import (
     OpenCollectiveExpenseProcessArgs,
     OpenCollectiveExpenseUpdateArgs,
     OpenCollectiveExpenseListArgs,
+    OpenCollectiveExpenseWorkflowArgs,
+    OpenCollectiveFinancialSnapshotArgs,
     OpenCollectiveTransactionAllArgs,
 )
 from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
@@ -128,7 +131,8 @@ async def test_opencollective_service_uses_personal_token_and_graphql_shapes_pay
                     }
                 },
             )
-        if body["query"].startswith("query BudgetLookup"):
+        if "BudgetLookup($slug" in body["query"]:
+            amt = lambda cents, cur="USD": {"value": cents / 100.0, "currency": cur, "valueInCents": float(cents)}
             return httpx.Response(
                 200,
                 json={
@@ -137,7 +141,13 @@ async def test_opencollective_service_uses_personal_token_and_graphql_shapes_pay
                             "id": "acct-1",
                             "slug": "webpack",
                             "name": "webpack",
-                            "stats": {"balance": 1234, "yearlyBudget": 6000, "monthlySpending": 250},
+                            "stats": {
+                                "balance": amt(1234),
+                                "yearlyBudget": amt(600_00),
+                                "monthlySpending": amt(250_00),
+                                "totalAmountReceived": amt(50_000_00),
+                                "totalAmountSpent": amt(10_000_00),
+                            },
                         }
                     }
                 },
@@ -155,9 +165,229 @@ async def test_opencollective_service_uses_personal_token_and_graphql_shapes_pay
 
     assert expense_data["account"]["expenses"]["totalCount"] == 2
     assert txn_data["account"]["transactions"]["totalCount"] == 3
-    assert budget_data["account"]["stats"]["balance"] == 1234
+    assert budget_data["account"]["stats"]["balance"]["valueInCents"] == 1234.0
     assert seen[0]["headers"]["personal-token"] == "oc-personal-token"
     assert str(seen[0]["path"]).rstrip("/") == "/graphql/v2"
+
+    await service.close()
+
+
+@pytest.mark.anyio
+async def test_opencollective_financial_snapshot_summarizes_open_liabilities() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        query = body["query"]
+        if "query FinancialSnapshot" in query:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "account": {
+                            "id": "acct-1",
+                            "slug": "webpack",
+                            "name": "webpack",
+                            "type": "COLLECTIVE",
+                            "stats": {
+                                "balance": {"value": 123.45, "currency": "USD", "valueInCents": 12345},
+                                "yearlyBudget": {"value": 600, "currency": "USD", "valueInCents": 60000},
+                                "monthlySpending": {"value": 250, "currency": "USD", "valueInCents": 25000},
+                                "totalAmountReceived": {"value": 1000, "currency": "USD", "valueInCents": 100000},
+                                "totalAmountSpent": {"value": 500, "currency": "USD", "valueInCents": 50000},
+                            },
+                            "expenses": {
+                                "totalCount": 3,
+                                "nodes": [
+                                    {"id": "exp-1", "status": "PENDING", "amount": 42, "currency": "USD", "description": "Hosting"},
+                                    {"id": "exp-2", "status": "APPROVED", "amount": 58, "currency": "USD", "description": "Contractor"},
+                                    {"id": "exp-3", "status": "PAID", "amount": 11, "currency": "USD", "description": "Coffee"},
+                                ],
+                            },
+                            "transactions": {
+                                "totalCount": 2,
+                                "nodes": [{"id": "txn-1", "amount": 100, "currency": "USD", "description": "Donation"}],
+                            },
+                        }
+                    }
+                },
+            )
+        return httpx.Response(400, json={"error": "unexpected query"})
+
+    settings = _settings()
+    store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
+    service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
+    service._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.opencollective_graphql_url)
+
+    data, _, notes = await service.financial_snapshot(OpenCollectiveFinancialSnapshotArgs(slug="webpack"))
+
+    assert data["account"]["slug"] == "webpack"
+    assert data["summary"]["expense_count"] == 3
+    assert data["summary"]["open_liability_count"] == 2
+    assert data["summary"]["open_liability_amount_total"] == 100.0
+    assert notes == []
+
+    await service.close()
+
+
+@pytest.mark.anyio
+async def test_opencollective_service_resolves_missing_slugs_via_account_search() -> None:
+    seen: list[dict[str, object]] = []
+    budget_calls = {"apac-growth": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        seen.append(body)
+        query = body["query"]
+        variables = body["variables"]
+        if "query BudgetLookup" in query and variables["slug"] == "apac-growth":
+            budget_calls["apac-growth"] += 1
+            if budget_calls["apac-growth"] == 1:
+                return httpx.Response(200, json={"data": {"account": None}})
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "account": {
+                            "id": "acct-2",
+                            "slug": "apac-growth",
+                            "name": "APAC Growth",
+                            "stats": {
+                                "balance": {"value": 50, "currency": "USD", "valueInCents": 5000},
+                                "yearlyBudget": {"value": 100, "currency": "USD", "valueInCents": 10000},
+                                "monthlySpending": {"value": 12, "currency": "USD", "valueInCents": 1200},
+                                "totalAmountReceived": {"value": 200, "currency": "USD", "valueInCents": 20000},
+                                "totalAmountSpent": {"value": 150, "currency": "USD", "valueInCents": 15000},
+                            },
+                        }
+                    }
+                },
+            )
+        if "query AccountSearch" in query:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "accounts": {
+                            "totalCount": 1,
+                            "nodes": [
+                                {"id": "acct-2", "slug": "apac-growth", "name": "APAC Growth", "type": "COLLECTIVE"}
+                            ],
+                        }
+                    }
+                },
+            )
+        return httpx.Response(400, json={"error": "unexpected query"})
+
+    settings = _settings()
+    store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
+    service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
+    service._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.opencollective_graphql_url)
+
+    budget_data, _, notes = await service.budget_lookup(OpenCollectiveBudgetLookupArgs(slug="apac-growth"))
+    search_data, _, _ = await service.account_search(OpenCollectiveAccountSearchArgs(search_term="APAC Growth"))
+
+    assert budget_data["account"]["slug"] == "apac-growth"
+    assert budget_data["account"]["stats"]["balance"]["valueInCents"] == 5000
+    assert notes == ["Resolved Open Collective account 'apac-growth' to 'apac-growth' via accounts search."]
+    assert search_data["accounts"]["totalCount"] == 1
+    assert seen[0]["variables"]["slug"] == "apac-growth"
+    assert "query AccountSearch" in seen[1]["query"]
+
+    await service.close()
+
+
+@pytest.mark.anyio
+async def test_opencollective_expense_workflow_routes_mutations_by_action() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        query = body["query"]
+        seen.append(query)
+        base = {
+            "id": "ex_111",
+            "slug": "expense-111",
+            "status": "PENDING",
+            "description": "Test expense",
+            "type": "INVOICE",
+            "amount": 100,
+            "currency": "USD",
+        }
+        if "createExpense" in query:
+            return httpx.Response(200, json={"data": {"createExpense": base}})
+        if "editExpense" in query:
+            return httpx.Response(200, json={"data": {"editExpense": {**base, "status": "APPROVED"}}})
+        if "deleteExpense" in query:
+            return httpx.Response(200, json={"data": {"deleteExpense": {**base, "status": "DELETED"}}})
+        if "processExpense" in query:
+            return httpx.Response(200, json={"data": {"processExpense": {**base, "status": "APPROVED"}}})
+        return httpx.Response(400, json={"error": "unexpected query"})
+
+    settings = _settings()
+    store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
+    service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
+    service._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.opencollective_graphql_url)
+
+    create_args = OpenCollectiveExpenseWorkflowArgs(
+        action="CREATE",
+        account={"slug": "webpack"},
+        expense={
+            "description": "Create test",
+            "type": "INVOICE",
+            "payee": {"slug": "webpack"},
+            "payoutMethod": {"type": "OTHER", "name": "Manual payout", "data": {"content": "manual"}},
+        },
+        privateComment="created in test",
+    )
+    created, _, _ = await service.expense_workflow(create_args)
+    assert created["expense"]["status"] == "PENDING"
+
+    process_args = OpenCollectiveExpenseWorkflowArgs(
+        action="PROCESS",
+        expense={"id": "ex_111"},
+        processAction="APPROVE",
+        message="Approve in test",
+    )
+    processed, _, _ = await service.expense_workflow(process_args)
+    assert processed["expense"]["status"] == "APPROVED"
+    assert "createExpense" in seen[0]
+    assert "processExpense" in seen[1]
+
+    await service.close()
+
+
+@pytest.mark.anyio
+async def test_opencollective_account_search_returns_close_match_and_create_guidance() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        query = body["query"]
+        if "query AccountSearch" in query:
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "accounts": {
+                            "totalCount": 2,
+                            "nodes": [
+                                {"id": "acct-3", "slug": "japan-ops", "name": "Japan Ops", "type": "COLLECTIVE"},
+                                {"id": "acct-4", "slug": "japan-ops-events", "name": "Japan Ops Events", "type": "COLLECTIVE"},
+                            ],
+                        }
+                    }
+                },
+            )
+        return httpx.Response(400, json={"error": "unexpected query"})
+
+    settings = _settings()
+    store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
+    service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
+    service._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.opencollective_graphql_url)
+
+    data, _, notes = await service.account_search(OpenCollectiveAccountSearchArgs(search_term="Japan Ops"))
+
+    assert data["resolution"]["status"] == "recommended"
+    assert data["resolution"]["recommended"]["slug"] == "japan-ops"
+    assert "closest match" in notes[0].lower()
+    assert "create a new one" in notes[0]
 
     await service.close()
 

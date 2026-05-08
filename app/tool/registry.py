@@ -36,12 +36,15 @@ from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSo
 from app.tool.news.formatter import format_news_articles, format_news_sources
 from app.tool.accounting import (
     AccountingService,
+    OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
     OpenCollectiveExpenseProcessArgs,
     OpenCollectiveExpenseUpdateArgs,
+    OpenCollectiveExpenseWorkflowArgs,
+    OpenCollectiveFinancialSnapshotArgs,
     OpenCollectiveTransactionAllArgs,
 )
 from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
@@ -2306,7 +2309,7 @@ class ToolRegistry:
                     expense_count = expenses.get("totalCount")
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_expense_list",
+                tool="accounting_expense_list",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2314,7 +2317,7 @@ class ToolRegistry:
                 result_count=expense_count if isinstance(expense_count, int) else None,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="opencollective_expense_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="accounting_expense_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
         async def transaction_all(validated: OpenCollectiveTransactionAllArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.transaction_all(validated)
@@ -2326,7 +2329,7 @@ class ToolRegistry:
                     transaction_count = transactions.get("totalCount")
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_transaction_all",
+                tool="accounting_transaction_all",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2335,7 +2338,83 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="opencollective_transaction_all",
+                tool="accounting_transaction_all",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        # Motivation vs Logic: expose account search explicitly so the agent can resolve labels before spending a budget lookup on a guessed slug.
+        async def account_search(validated: OpenCollectiveAccountSearchArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.account_search(validated)
+            accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
+            result_count = None
+            if isinstance(accounts, dict):
+                result_count = accounts.get("totalCount")
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_account_search",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> accounts.searchTerm",
+                result_count=result_count if isinstance(result_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="accounting_account_search",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def financial_snapshot(validated: OpenCollectiveFinancialSnapshotArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.financial_snapshot(validated)
+            account = data.get("account", {}) if isinstance(data, dict) else {}
+            summary = data.get("summary", {}) if isinstance(data, dict) else {}
+            expense_count = None
+            transaction_count = None
+            if isinstance(summary, dict):
+                expense_count = summary.get("expense_count")
+                transaction_count = summary.get("transaction_count")
+            result_count = expense_count if isinstance(expense_count, int) else None
+            if result_count is None and isinstance(transaction_count, int):
+                result_count = transaction_count
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_financial_snapshot",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> account.stats, account.expenses, account.transactions",
+                result_count=result_count,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="accounting_financial_snapshot",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def expense_workflow(validated: OpenCollectiveExpenseWorkflowArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.expense_workflow(validated)
+            operation = data.get("expense", {}) if isinstance(data, dict) else {}
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_expense_workflow",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> createExpense/editExpense/deleteExpense/processExpense",
+                result_count=1 if isinstance(operation, dict) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="accounting_expense_workflow",
                 data=data,
                 llm_content=data,
                 normalization_notes=notes,
@@ -2346,7 +2425,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.accounting_service.budget_lookup(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_budget_lookup",
+                tool="accounting_budget_lookup",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2354,13 +2433,13 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="opencollective_budget_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="accounting_budget_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
         async def expense_create(validated: OpenCollectiveExpenseCreateArgs, _: str | None, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.create_expense(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_expense_create",
+                tool="accounting_expense_create",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2369,7 +2448,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="opencollective_expense_create",
+                tool="accounting_expense_create",
                 data=data,
                 llm_content=data,
                 normalization_notes=notes,
@@ -2380,7 +2459,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.accounting_service.edit_expense(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_expense_update",
+                tool="accounting_expense_update",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2389,7 +2468,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="opencollective_expense_update",
+                tool="accounting_expense_update",
                 data=data,
                 llm_content=data,
                 normalization_notes=notes,
@@ -2400,7 +2479,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.accounting_service.delete_expense(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_expense_delete",
+                tool="accounting_expense_delete",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2409,7 +2488,7 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="opencollective_expense_delete",
+                tool="accounting_expense_delete",
                 data=data,
                 llm_content=data,
                 normalization_notes=notes,
@@ -2420,7 +2499,7 @@ class ToolRegistry:
             data, cache_status, notes = await self.accounting_service.process_expense(validated)
             trace = ToolTrace(
                 thought=thought,
-                tool="opencollective_expense_process",
+                tool="accounting_expense_process",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -2429,55 +2508,81 @@ class ToolRegistry:
                 normalization_notes=notes,
             )
             return ToolResult(
-                tool="opencollective_expense_process",
+                tool="accounting_expense_process",
                 data=data,
                 llm_content=data,
                 normalization_notes=notes,
                 trace=trace,
             )
 
-        # Motivation vs Logic: expose CRUD operations so finance workflows can create/edit/delete/approve public expenses.
+        # Motivation vs Logic: expose high-level accountant-style tools publicly, while keeping the granular
+        # expense/ledger mutations available as hidden implementation primitives for fallback and compatibility.
         self._register(
-            "opencollective_expense_list",
+            "accounting_account_search",
+            "Open Collective account search for resolving human labels, ambiguous collective names, closest-match suggestions, and create-confirmation decisions before ledger actions.",
+            OpenCollectiveAccountSearchArgs,
+            account_search,
+        )
+        self._register(
+            "accounting_financial_snapshot",
+            "Open Collective financial snapshot for a reconciled view of budget, recent expenses, transactions, and open liabilities in one call.",
+            OpenCollectiveFinancialSnapshotArgs,
+            financial_snapshot,
+        )
+        self._register(
+            "accounting_expense_workflow",
+            "Open Collective expense workflow for creating, editing, deleting, and processing expenses from one structured action tool.",
+            OpenCollectiveExpenseWorkflowArgs,
+            expense_workflow,
+        )
+        self._register(
+            "accounting_expense_list",
             "Open Collective expense list for public, read-only collective expense reports and ledger entries.",
             OpenCollectiveExpenseListArgs,
             expense_list,
+            visible=False,
         )
         self._register(
-            "opencollective_transaction_all",
+            "accounting_transaction_all",
             "Open Collective transaction ledger lookup for public transaction histories and audit-style browsing.",
             OpenCollectiveTransactionAllArgs,
             transaction_all,
+            visible=False,
         )
         self._register(
-            "opencollective_expense_create",
+            "accounting_expense_create",
             "Open Collective expense creation for submitting public invoices or receipts (requires expenses scope).",
             OpenCollectiveExpenseCreateArgs,
             expense_create,
+            visible=False,
         )
         self._register(
-            "opencollective_expense_update",
+            "accounting_expense_update",
             "Open Collective expense editing for correcting or annotating existing public ledger entries.",
             OpenCollectiveExpenseUpdateArgs,
             expense_update,
+            visible=False,
         )
         self._register(
-            "opencollective_expense_delete",
+            "accounting_expense_delete",
             "Open Collective expense delete for removing rejected/public expenses where allowed.",
             OpenCollectiveExpenseDeleteArgs,
             expense_delete,
+            visible=False,
         )
         self._register(
-            "opencollective_expense_process",
+            "accounting_expense_process",
             "Open Collective expense processing for approving, scheduling, paying, or rejecting expenses.",
             OpenCollectiveExpenseProcessArgs,
             expense_process,
+            visible=False,
         )
         self._register(
-            "opencollective_budget_lookup",
+            "accounting_budget_lookup",
             "Open Collective budget lookup for public balance and financial-health snapshots.",
             OpenCollectiveBudgetLookupArgs,
             budget_lookup,
+            visible=False,
         )
 
     def _register_retail(self) -> None:

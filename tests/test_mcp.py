@@ -35,6 +35,9 @@ def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Use stock_list_category before" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_rank for complex" in MCP_SERVER_INSTRUCTIONS
     assert "stock_list_category when categoryId is not known" in MCP_SERVER_INSTRUCTIONS
+    assert "accounting_account_search" in MCP_SERVER_INSTRUCTIONS
+    assert "accounting_financial_snapshot" in MCP_SERVER_INSTRUCTIONS
+    assert "accounting_expense_workflow" in MCP_SERVER_INSTRUCTIONS
     assert "encoded MCP image content" in MCP_SERVER_INSTRUCTIONS
     assert "automatic preview command that creates and activates its script environment" in MCP_SERVER_INSTRUCTIONS
     assert "uses snapshot pagination and SKU enrichment" in MCP_SERVER_INSTRUCTIONS
@@ -117,13 +120,16 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "ebay_item_search" in tool_names
     assert "ebay_item_detail" in tool_names
     assert "ebay_category_tree" in tool_names
-    assert "opencollective_expense_list" in tool_names
-    assert "opencollective_transaction_all" in tool_names
-    assert "opencollective_budget_lookup" in tool_names
-    assert "opencollective_expense_create" in tool_names
-    assert "opencollective_expense_update" in tool_names
-    assert "opencollective_expense_delete" in tool_names
-    assert "opencollective_expense_process" in tool_names
+    assert "accounting_account_search" in tool_names
+    assert "accounting_financial_snapshot" in tool_names
+    assert "accounting_expense_workflow" in tool_names
+    assert "accounting_expense_list" not in tool_names
+    assert "accounting_transaction_all" not in tool_names
+    assert "accounting_budget_lookup" not in tool_names
+    assert "accounting_expense_create" not in tool_names
+    assert "accounting_expense_update" not in tool_names
+    assert "accounting_expense_delete" not in tool_names
+    assert "accounting_expense_process" not in tool_names
     assert "openlibrary_book_search" in tool_names
     assert "openlibrary_isbn_lookup" in tool_names
     assert "openlibrary_subject_list" in tool_names

@@ -14,10 +14,17 @@ class _OpenCollectiveBaseArgs(BaseModel):
     @field_validator("slug")
     @classmethod
     def _strip_slug(cls, value: str) -> str:
-        cleaned = value.strip()
+        cleaned = _strip_text(value)
         if not cleaned:
             raise ValueError("slug must not be empty.")
         return cleaned
+
+
+def _strip_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
 
 
 class OpenCollectiveExpenseListArgs(_OpenCollectiveBaseArgs):
@@ -26,10 +33,7 @@ class OpenCollectiveExpenseListArgs(_OpenCollectiveBaseArgs):
     @field_validator("search_term")
     @classmethod
     def _strip_search_term(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
+        return _strip_text(value)
 
 
 class OpenCollectiveTransactionAllArgs(_OpenCollectiveBaseArgs):
@@ -38,15 +42,76 @@ class OpenCollectiveTransactionAllArgs(_OpenCollectiveBaseArgs):
     @field_validator("search_term")
     @classmethod
     def _strip_search_term(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        cleaned = value.strip()
-        return cleaned or None
+        return _strip_text(value)
 
 
 class OpenCollectiveBudgetLookupArgs(_OpenCollectiveBaseArgs):
     @model_validator(mode="after")
     def _validate_slug(self) -> "OpenCollectiveBudgetLookupArgs":
+        return self
+
+
+class OpenCollectiveAccountSearchArgs(BaseModel):
+    search_term: str = Field(description="Open Collective account search term.")
+    limit: int = Field(10, ge=1, le=25, description="Maximum search matches to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the search result set.")
+    include_archived: bool = Field(False, description="Include archived accounts in the search.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str) -> str:
+        cleaned = _strip_text(value)
+        if not cleaned:
+            raise ValueError("search_term must not be empty.")
+        return cleaned
+
+
+class OpenCollectiveFinancialSnapshotArgs(_OpenCollectiveBaseArgs):
+    expense_limit: int = Field(20, ge=1, le=100, description="Maximum expense rows to include.")
+    expense_offset: int = Field(0, ge=0, le=10_000, description="Offset into the expense rows.")
+    transaction_limit: int = Field(20, ge=1, le=100, description="Maximum transaction rows to include.")
+    transaction_offset: int = Field(0, ge=0, le=10_000, description="Offset into the transaction rows.")
+    expense_search_term: str | None = Field(None, description="Optional search filter for expenses.")
+    transaction_search_term: str | None = Field(None, description="Optional search filter for transactions.")
+    include_open_liabilities: bool = Field(True, description="Include derived open-liability summaries.")
+
+    @field_validator("expense_search_term", "transaction_search_term")
+    @classmethod
+    def _strip_optional_search(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class ExpenseWorkflowAction(str, Enum):
+    CREATE = "CREATE"
+    EDIT = "EDIT"
+    DELETE = "DELETE"
+    PROCESS = "PROCESS"
+
+
+class OpenCollectiveExpenseWorkflowArgs(BaseModel):
+    action: ExpenseWorkflowAction = Field(description="Expense workflow step to execute.")
+    account: AccountReferenceInput | None = Field(None, description="Account receiving the expense for create actions.")
+    expense: dict[str, Any] = Field(..., description="Expense payload for create/edit/delete/process actions.")
+    privateComment: str | None = Field(None, description="Private comment for create actions.")
+    processAction: ExpenseProcessAction | None = Field(None, description="Expense process action for workflow processing.")
+    message: str | None = Field(None, description="Optional workflow message.")
+    paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
+
+    @model_validator(mode="after")
+    def _validate_workflow_shape(self) -> "OpenCollectiveExpenseWorkflowArgs":
+        if self.action == ExpenseWorkflowAction.CREATE:
+            if self.account is None:
+                raise ValueError("provide 'account' for CREATE actions.")
+            if not self.expense:
+                raise ValueError("provide 'expense' for CREATE actions.")
+        elif self.action == ExpenseWorkflowAction.PROCESS:
+            if self.processAction is None:
+                raise ValueError("provide 'processAction' for PROCESS actions.")
+            if not self.expense:
+                raise ValueError("provide 'expense' for PROCESS actions.")
+        elif self.action in {ExpenseWorkflowAction.EDIT, ExpenseWorkflowAction.DELETE}:
+            if not self.expense:
+                raise ValueError("provide 'expense' for EDIT and DELETE actions.")
         return self
 
 
