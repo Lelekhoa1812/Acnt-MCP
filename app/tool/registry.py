@@ -34,7 +34,16 @@ from app.tool.stock.media import (
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.tool.news.formatter import format_news_articles, format_news_sources
-from app.tool.accounting import AccountingService, OpenCollectiveBudgetLookupArgs, OpenCollectiveExpenseListArgs, OpenCollectiveTransactionAllArgs
+from app.tool.accounting import (
+    AccountingService,
+    OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveExpenseCreateArgs,
+    OpenCollectiveExpenseDeleteArgs,
+    OpenCollectiveExpenseListArgs,
+    OpenCollectiveExpenseProcessArgs,
+    OpenCollectiveExpenseUpdateArgs,
+    OpenCollectiveTransactionAllArgs,
+)
 from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
 from app.tool.retail import OpenLibraryBookSearchArgs, OpenLibraryIsbnLookupArgs, OpenLibraryService, OpenLibrarySubjectListArgs
 from app.resolver import ResolverService
@@ -2347,6 +2356,87 @@ class ToolRegistry:
             )
             return ToolResult(tool="opencollective_budget_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
+        async def expense_create(validated: OpenCollectiveExpenseCreateArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.create_expense(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_expense_create",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> createExpense",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="opencollective_expense_create",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def expense_update(validated: OpenCollectiveExpenseUpdateArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.edit_expense(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_expense_update",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> editExpense",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="opencollective_expense_update",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def expense_delete(validated: OpenCollectiveExpenseDeleteArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.delete_expense(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_expense_delete",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> deleteExpense",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="opencollective_expense_delete",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def expense_process(validated: OpenCollectiveExpenseProcessArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.process_expense(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_expense_process",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> processExpense",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="opencollective_expense_process",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        # Motivation vs Logic: expose CRUD operations so finance workflows can create/edit/delete/approve public expenses.
         self._register(
             "opencollective_expense_list",
             "Open Collective expense list for public, read-only collective expense reports and ledger entries.",
@@ -2358,6 +2448,30 @@ class ToolRegistry:
             "Open Collective transaction ledger lookup for public transaction histories and audit-style browsing.",
             OpenCollectiveTransactionAllArgs,
             transaction_all,
+        )
+        self._register(
+            "opencollective_expense_create",
+            "Open Collective expense creation for submitting public invoices or receipts (requires expenses scope).",
+            OpenCollectiveExpenseCreateArgs,
+            expense_create,
+        )
+        self._register(
+            "opencollective_expense_update",
+            "Open Collective expense editing for correcting or annotating existing public ledger entries.",
+            OpenCollectiveExpenseUpdateArgs,
+            expense_update,
+        )
+        self._register(
+            "opencollective_expense_delete",
+            "Open Collective expense delete for removing rejected/public expenses where allowed.",
+            OpenCollectiveExpenseDeleteArgs,
+            expense_delete,
+        )
+        self._register(
+            "opencollective_expense_process",
+            "Open Collective expense processing for approving, scheduling, paying, or rejecting expenses.",
+            OpenCollectiveExpenseProcessArgs,
+            expense_process,
         )
         self._register(
             "opencollective_budget_lookup",

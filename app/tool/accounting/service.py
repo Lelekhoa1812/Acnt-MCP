@@ -6,9 +6,104 @@ from typing import Any
 
 import httpx
 
-from app.tool.accounting.model import OpenCollectiveBudgetLookupArgs, OpenCollectiveExpenseListArgs, OpenCollectiveTransactionAllArgs
+from app.tool.accounting.model import (
+    OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveExpenseCreateArgs,
+    OpenCollectiveExpenseDeleteArgs,
+    OpenCollectiveExpenseListArgs,
+    OpenCollectiveExpenseProcessArgs,
+    OpenCollectiveExpenseUpdateArgs,
+    OpenCollectiveTransactionAllArgs,
+)
 from app.config import Settings, UpstreamServiceError
 from app.store import AppKeyValueStore
+
+
+_CREATE_EXPENSE_MUTATION = """
+mutation CreateExpense($account: AccountReferenceInput!, $expense: ExpenseCreateInput!, $privateComment: String) {
+  createExpense(account: $account, expense: $expense, privateComment: $privateComment) {
+    id
+    legacyId
+    slug
+    status
+    type
+    description
+    amount
+    currency
+    privateMessage
+    reference
+    payoutMethod {
+      id
+      type
+      publicId
+    }
+    payee {
+      id
+      slug
+      name
+    }
+    host {
+      id
+      slug
+      name
+    }
+    items {
+      id
+      description
+      incurredAt
+      url
+      amount {
+        currency
+        value
+      }
+    }
+  }
+}
+""".strip()
+
+_EDIT_EXPENSE_MUTATION = """
+mutation EditExpense($expense: ExpenseUpdateInput!) {
+  editExpense(expense: $expense) {
+    id
+    slug
+    status
+    description
+    amount
+    currency
+    reference
+    privateMessage
+  }
+}
+""".strip()
+
+_DELETE_EXPENSE_MUTATION = """
+mutation DeleteExpense($expense: ExpenseReferenceInput!) {
+  deleteExpense(expense: $expense) {
+    id
+    slug
+    status
+  }
+}
+""".strip()
+
+_PROCESS_EXPENSE_MUTATION = """
+mutation ProcessExpense(
+  $expense: ExpenseReferenceInput!
+  $action: ExpenseProcessAction!
+  $message: String
+  $paymentParams: ProcessExpensePaymentParams
+) {
+  processExpense(expense: $expense, action: $action, message: $message, paymentParams: $paymentParams) {
+    id
+    slug
+    status
+    type
+    amount
+    currency
+    privateMessage
+  }
+}
+""".strip()
 
 
 class AccountingService:
@@ -140,6 +235,59 @@ query BudgetLookup($slug: String!) {
         payload = await self._post_graphql(query, {"slug": args.slug})
         return self._shape_graphql_payload("budget_lookup", args, payload), []
 
+    async def create_expense(self, args: OpenCollectiveExpenseCreateArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _CREATE_EXPENSE_MUTATION,
+            {
+                "account": args.account.model_dump(mode="json", exclude_none=True),
+                "expense": args.expense.model_dump(mode="json", exclude_none=True),
+                "privateComment": args.privateComment,
+            },
+        )
+        return (
+            self._shape_expense_operation_payload("opencollective_expense_create", args, payload, "createExpense"),
+            "live",
+            [],
+        )
+
+    async def edit_expense(self, args: OpenCollectiveExpenseUpdateArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _EDIT_EXPENSE_MUTATION,
+            {"expense": args.expense.model_dump(mode="json", exclude_none=True)},
+        )
+        return (
+            self._shape_expense_operation_payload("opencollective_expense_update", args, payload, "editExpense"),
+            "live",
+            [],
+        )
+
+    async def delete_expense(self, args: OpenCollectiveExpenseDeleteArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _DELETE_EXPENSE_MUTATION,
+            {"expense": args.expense.model_dump(mode="json", exclude_none=True)},
+        )
+        return (
+            self._shape_expense_operation_payload("opencollective_expense_delete", args, payload, "deleteExpense"),
+            "live",
+            [],
+        )
+
+    async def process_expense(self, args: OpenCollectiveExpenseProcessArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _PROCESS_EXPENSE_MUTATION,
+            {
+                "expense": args.expense.model_dump(mode="json", exclude_none=True),
+                "action": args.action.value,
+                "message": args.message,
+                "paymentParams": args.paymentParams.model_dump(mode="json", exclude_none=True) if args.paymentParams else None,
+            },
+        )
+        return (
+            self._shape_expense_operation_payload("opencollective_expense_process", args, payload, "processExpense"),
+            "live",
+            [],
+        )
+
     async def _post_graphql(self, query: str, variables: dict[str, object]) -> dict[str, Any]:
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.settings.opencollective_pat_token:
@@ -170,5 +318,20 @@ query BudgetLookup($slug: String!) {
             "tool": tool_name,
             "query": args.model_dump(mode="json", exclude_none=True),
             "account": account,
+            "raw": data,
+        }
+
+    # Motivation vs Logic: expose the same expense payload shape for all mutations so MCP tracing stays predictable.
+    def _shape_expense_operation_payload(
+        self,
+        tool_name: str,
+        args: Any,
+        data: dict[str, Any],
+        operation_key: str,
+    ) -> dict[str, object]:
+        return {
+            "tool": tool_name,
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "expense": data.get(operation_key),
             "raw": data,
         }

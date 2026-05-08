@@ -120,6 +120,10 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "opencollective_expense_list" in tool_names
     assert "opencollective_transaction_all" in tool_names
     assert "opencollective_budget_lookup" in tool_names
+    assert "opencollective_expense_create" in tool_names
+    assert "opencollective_expense_update" in tool_names
+    assert "opencollective_expense_delete" in tool_names
+    assert "opencollective_expense_process" in tool_names
     assert "openlibrary_book_search" in tool_names
     assert "openlibrary_isbn_lookup" in tool_names
     assert "openlibrary_subject_list" in tool_names

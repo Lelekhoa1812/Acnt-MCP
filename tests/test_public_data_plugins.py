@@ -7,7 +7,16 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.tool.accounting import AccountingService, OpenCollectiveBudgetLookupArgs, OpenCollectiveExpenseListArgs, OpenCollectiveTransactionAllArgs
+from app.tool.accounting import (
+    AccountingService,
+    OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveExpenseCreateArgs,
+    OpenCollectiveExpenseDeleteArgs,
+    OpenCollectiveExpenseProcessArgs,
+    OpenCollectiveExpenseUpdateArgs,
+    OpenCollectiveExpenseListArgs,
+    OpenCollectiveTransactionAllArgs,
+)
 from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
 from app.prompt.registry import build_registry_prompt_policy
 from app.tool.retail import OpenLibraryBookSearchArgs, OpenLibraryIsbnLookupArgs, OpenLibraryService, OpenLibrarySubjectListArgs
@@ -149,6 +158,81 @@ async def test_opencollective_service_uses_personal_token_and_graphql_shapes_pay
     assert budget_data["account"]["stats"]["balance"] == 1234
     assert seen[0]["headers"]["personal-token"] == "oc-personal-token"
     assert str(seen[0]["path"]).rstrip("/") == "/graphql/v2"
+
+    await service.close()
+
+
+@pytest.mark.anyio
+async def test_opencollective_service_mutations_support_create_edit_delete_and_process() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        query = body["query"]
+        base = {
+            "id": "ex_111",
+            "slug": "expense-111",
+            "status": "PENDING",
+            "description": "Test expense",
+            "type": "INVOICE",
+            "amount": 100,
+            "currency": "USD",
+        }
+        if "createExpense" in query:
+            return httpx.Response(200, json={"data": {"createExpense": base}})
+        if "editExpense" in query:
+            updated = {**base, "status": "APPROVED", "description": "Updated description"}
+            return httpx.Response(200, json={"data": {"editExpense": updated}})
+        if "deleteExpense" in query:
+            deleted = {**base, "status": "DELETED"}
+            return httpx.Response(200, json={"data": {"deleteExpense": deleted}})
+        if "processExpense" in query:
+            processed = {**base, "status": "APPROVED", "privateMessage": "Approved via tool"}
+            return httpx.Response(200, json={"data": {"processExpense": processed}})
+        return httpx.Response(400, json={"error": "unexpected query"})
+
+    settings = _settings()
+    store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
+    service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
+    service._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url=settings.opencollective_graphql_url.rstrip("/"),
+    )
+
+    create_args = OpenCollectiveExpenseCreateArgs(
+        account={"slug": "webpack"},
+        expense={
+            "description": "Create test",
+            "type": "INVOICE",
+            "payee": {"slug": "webpack"},
+            "payoutMethod": {"type": "OTHER", "name": "Manual payout", "data": {"content": "manual"}},
+        },
+        privateComment="created in test",
+    )
+    created, _, _ = await service.create_expense(create_args)
+    assert created["expense"]["status"] == "PENDING"
+
+    update_args = OpenCollectiveExpenseUpdateArgs(
+        expense={
+            "id": "ex_111",
+            "description": "Update test",
+            "type": "INVOICE",
+            "payee": {"slug": "webpack"},
+            "payoutMethod": {"type": "OTHER"},
+        },
+    )
+    updated, _, _ = await service.edit_expense(update_args)
+    assert updated["expense"]["status"] == "APPROVED"
+
+    deleted, _, _ = await service.delete_expense(OpenCollectiveExpenseDeleteArgs(expense={"id": "ex_111"}))
+    assert deleted["expense"]["status"] == "DELETED"
+
+    processed, _, _ = await service.process_expense(
+        OpenCollectiveExpenseProcessArgs(
+            expense={"id": "ex_111"},
+            action="APPROVE",
+            message="Approving via test",
+        )
+    )
+    assert processed["expense"]["status"] == "APPROVED"
 
     await service.close()
 
