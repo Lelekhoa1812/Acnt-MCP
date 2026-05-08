@@ -715,7 +715,7 @@ class StockInventorySnapshotArgs(BaseModel):
         return self
 
 
-class StockAggregateArgs(BaseModel):
+class StockAvailabilityArgs(BaseModel):
     search: str | None = Field(
         None,
         description="Product, family, or category phrase to aggregate; use together with departmentId and/or categoryId, or supply at least one scope filter.",
@@ -741,13 +741,13 @@ class StockAggregateArgs(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_catalogue_filters(self) -> "StockAggregateArgs":
+    def validate_catalogue_filters(self) -> "StockAvailabilityArgs":
         search = (self.search or "").strip() or None
         if not stock_catalogue_filter_scope_present(
             search=search, department_id=self.departmentId, category_id=self.categoryId
         ):
             raise ValueError(
-                "stock_aggregate requires at least one of search, departmentId, or categoryId. "
+                "stock_availability requires at least one of search, departmentId, or categoryId. "
                 "Provide a non-empty search phrase and/or department or category scope so totals are scoped."
             )
         return self
@@ -765,41 +765,41 @@ class StockProductFamilyInventoryArgs(BaseModel):
     )
 
 
-class StockVariantRankArgs(BaseModel):
-    page: int = Field(1, ge=1, description="Catalogue page to start from before family variant ranking.")
-    search: str = Field(description="Named product or family text whose variants should be ranked.")
-    departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
-    categoryId: CoercedOptionalStockCategoryId = Field(
-        None,
-        description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
-    )
-    region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
-        "overall",
-        description="State or overall stock field for stock/hirable metrics.",
-    )
-    metric: Literal[
-        "stock",
-        "hirable",
-        "length",
-        "width",
-        "height",
-        "area",
-        "volume",
-        "cost",
-        "replacementValue",
-        "generalRate",
-        "expoRate",
-        "hireRate",
-    ] = Field(
-        "stock",
-        description="Ranking metric: stock/hirable availability, physical size, derived area/volume, or pricing.",
-    )
-    direction: Literal["most", "least"] = Field("most", description="Rank highest values first with most, or lowest first.")
-    attributeFilters: list[ProductAttributeFilter] = Field(
-        default_factory=list,
-        description="LLM-supplied aesthetic/style filters; values are not hard-coded by the tool.",
-    )
-    limit: int = Field(10, ge=1, le=50, description="Maximum ranked variants to return.")
+# class StockVariantRankArgs(BaseModel):
+#     page: int = Field(1, ge=1, description="Catalogue page to start from before family variant ranking.")
+#     search: str = Field(description="Named product or family text whose variants should be ranked.")
+#     departmentId: int | None = Field(None, description="Optional supported department filter; use stock_scope for supported IDs.")
+#     categoryId: CoercedOptionalStockCategoryId = Field(
+#         None,
+#         description="Supported category UUID from stock_scope when known; string or whole-number JSON (coerced to string).",
+#     )
+#     region: Literal["VIC", "NSW", "QLD", "overall"] = Field(
+#         "overall",
+#         description="State or overall stock field for stock/hirable metrics.",
+#     )
+#     metric: Literal[
+#         "stock",
+#         "hirable",
+#         "length",
+#         "width",
+#         "height",
+#         "area",
+#         "volume",
+#         "cost",
+#         "replacementValue",
+#         "generalRate",
+#         "expoRate",
+#         "hireRate",
+#     ] = Field(
+#         "stock",
+#         description="Ranking metric: stock/hirable availability, physical size, derived area/volume, or pricing.",
+#     )
+#     direction: Literal["most", "least"] = Field("most", description="Rank highest values first with most, or lowest first.")
+#     attributeFilters: list[ProductAttributeFilter] = Field(
+#         default_factory=list,
+#         description="LLM-supplied aesthetic/style filters; values are not hard-coded by the tool.",
+#     )
+#     limit: int = Field(10, ge=1, le=50, description="Maximum ranked variants to return.")
 
 
 class ProductAttributeFilter(BaseModel):
@@ -813,7 +813,7 @@ class ProductAttributeFilter(BaseModel):
     )
 
 
-class StockSpecsRankArgs(BaseModel):
+class StockRankArgs(BaseModel):
     search: str | None = Field(
         None,
         description="Prompt-supplied family, category, style, or product phrase. Omit only for deliberately broad scoped ranking.",

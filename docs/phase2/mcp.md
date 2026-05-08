@@ -44,10 +44,10 @@ The current FastAPI app run `uvicorn app.main:app` exposes diagnostics plus `Str
 ## Claude.ai tool-choice checks
 - Supported scope/counts: ask “how many department and category of stock do we have?” and confirm Claude uses `stock_scope`, not raw Harmonise metadata.
 - Product-family availability: ask “let me know about our Alto chair stock availability” and confirm Claude uses `stock_snapshot` and summarizes every returned variant/SKU.
-- Grouped regional totals: ask “which type of chair has the most stock in NSW production-wise?” and confirm Claude uses `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. It should not use variant ranking for this grain.
-- Regional variant ranking: ask “which Charlie chair variant is most in stock in Victoria?” and confirm Claude uses `stock_variant_rank` with `metric="stock"` and `region="VIC"`.
+- Grouped regional totals: ask “which type of chair has the most stock in NSW production-wise?” and confirm Claude uses `stock_availability` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. It should not use variant ranking for this grain.
+- Regional variant ranking: ask “which Charlie chair variant is most in stock in Victoria?” and confirm Claude uses `stock_rank` with `groupBy="variant"`, `metric="stock"`, and `region="VIC"`.
 - Exact variant detail: use `stock_detail` after a SKU or product ID is known.
-- Fallback planning: if the first stock search returns no rows, partial coverage, or timeouts, Claude should retry with a shorter distinctive phrase or broader `stock_scope` filter before reporting the limitation. Grouped aggregation now paginates automatically in the backend, so the model should not try to tune `pageSize`.
+- Fallback planning: if the first stock search returns no rows, partial coverage, or timeouts, Claude should retry with a shorter distinctive phrase while preserving obvious category intent. If no trusted categoryId is available, it should use `stock_list_category` for the descriptor before retrying the distinctive model token with categoryId. Grouped aggregation and ranking paginate automatically in the backend, so the model should not try to tune `pageSize`.
 - Avoid hidden/admin tools in normal Claude.ai discovery: deprecated aliases, raw local metadata, and session clearing are kept callable for compatibility but should not appear as primary choices.
 
 Running `python3 -m app.mcp.server` remains useful for local CLI clients, but browser-based Claude access must go through the `/mcp` transport hosted on Azure.

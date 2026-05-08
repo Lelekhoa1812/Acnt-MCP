@@ -138,23 +138,17 @@ This category surfaces Harmonise-backed inventory discovery, product/family deta
   - **Arguments:** `search`, `departmentId`, `categoryId`, etc., with controls for `includeKnownSpecs`.
   - **Example output:** `{"rows": [...], "coverage": {...}, "evidence": [...]}` where `rows` already include `stock`, `knownSpecs`, and `attributeEvidence` for downstream summarization.
 
-- **`stock_aggregate`**
+- **`stock_availability`**
   - **Purpose:** Sums stock or hirable counts across all resolved inventory rows and ranks grouped totals. Use for “most/least by type/family/category/state/all inventory” questions.
   - **Arguments:** `search`, `region`, `measure`, `groupBy`, `direction`, `limit`, optional `departmentId`/`categoryId`.
   - **Example input:** `{"search": "chair", "region": "NSW", "measure": "stock", "groupBy": "product", "direction": "most"}`.
   - **Example output:** Ranked groups with `rankValue`, summed `stock`/`hirable` totals, contributing variants, and coverage notes.
 
-- **`stock_specs_rank`**
+- **`stock_rank`**
   - **Purpose:** Ranks resolved products or variants by stock, hirable, dimensions, derived area/volume, or pricing metrics. Use for complex stock/spec ranking rather than grouped totals.
   - **Arguments:** `search`, `metric`, `groupBy`, `region`, `direction`, `attributeFilters`, `limit`, optional department/category-based filters.
   - **Example input:** `{"search": "Charlie chair", "metric": "cost", "groupBy": "variant", "region": "VIC", "direction": "most"}`.
   - **Example output:** Ranked rows with `rankValue`, contributing variants, pricing/dimension evidence, and coverage/guidance.
-
-- **`stock_variant_rank`**
-  - **Purpose:** Ranks resolved variants within a named family by stock, hirable, dimensions, derived area/volume, or pricing metrics. Use only for intra-family variant/SKU ranking, not grouped type totals.
-  - **Arguments:** `search`, `metric`, `region`, `direction`, `attributeFilters`, `limit`, optional department/category-based filters.
-  - **Example input:** `{"search": "Charlie chair", "metric": "stock", "region": "VIC", "direction": "most"}`.
-  - **Example output:** Variant-ranked rows with `groupBy="variant"`, `rankValue`, dimensions/pricing/media, and coverage/guidance.
 
 - **`stock_image`**
   - **Purpose:** Resolves a Harmonise product image from an exact image path, exact SKU, or product-family search, then returns the best available HTTP image URL, MCP-native image content when rendering succeeds, and browser/desktop fallback rendering instructions.
@@ -244,8 +238,8 @@ Example Claude.ai tool routing:
 - “How many department and category of stock do we have?” -> `stock_scope`.
 - “Show me stools” -> `stock_list_category` first, then `stock_snapshot` or `stock_search` with the returned `categoryId`.
 - “Let me know about our Alto chair stock availability.” -> `stock_snapshot` with `search="Alto chair"` and `departmentId=3`, then summarize every variant.
-- “Which type of chair has the most stock in NSW production-wise?” -> `stock_aggregate` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. The backend caps page size at 50 and paginates through the full matching catalogue automatically.
-- “Which Charlie chair variant is most in stock in Victoria?” -> `stock_variant_rank` with `search="Charlie chair"`, `metric="stock"`, `region="VIC"`, and `direction="most"`.
+- “Which type of chair has the most stock in NSW production-wise?” -> `stock_availability` with prompt-supplied `search`, `region="NSW"`, `measure="stock"`, `groupBy="product"`, and `direction="most"`. The backend caps page size at 50 and paginates through the full matching catalogue automatically.
+- “Which Charlie chair variant is most in stock in Victoria?” -> `stock_rank` with `search="Charlie chair"`, `groupBy="variant"`, `metric="stock"`, `region="VIC"`, and `direction="most"`.
 
 ## Local setup
 

@@ -43,7 +43,7 @@ from app.schemas import (
     ProductListItemDtoPagedResponse,
     ResolverDisambiguateCandidatesArgs,
     SessionToolArgs,
-    StockAggregateArgs,
+    StockAvailabilityArgs,
     StockCompareVariantsArgs,
     StockCountItemsArgs,
     StockExtractVariantEvidenceArgs,
@@ -57,8 +57,7 @@ from app.schemas import (
     StockListCategoryArgs,
     StockProductFamilyInventoryArgs,
     StockSearchCatalogueArgs,
-    StockSpecsRankArgs,
-    StockVariantRankArgs,
+    StockRankArgs,
     ToolDefinition,
     ToolResult,
     ToolTrace,
@@ -337,11 +336,11 @@ class ToolRegistry:
             # hammer `/api/v1/products?page=N&pageSize=20` and return huge payloads
             # when the user had supplied a focused phrase. Direct stock_search now
             # requires at least one real filter; broad inventory flows should use
-            # stock_snapshot/stock_aggregate with the same filter minimum and capped catalogue paging.
+            # stock_snapshot/stock_availability with the same filter minimum and capped catalogue paging.
             if not validated.search and validated.departmentId is None and validated.categoryId is None:
                 raise ParameterMappingError(
                     "stock_search requires at least one of search, departmentId, or categoryId. "
-                    "Use stock_snapshot or stock_aggregate with at least one of those filters for broad inventory retrieval."
+                    "Use stock_snapshot or stock_availability with at least one of those filters for broad inventory retrieval."
                 )
             data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
             trace = ToolTrace(
@@ -442,8 +441,8 @@ class ToolRegistry:
                 trace=trace,
             )
 
-        async def aggregate_stock(validated: StockAggregateArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.aggregate_stock(validated)
+        async def stock_availability(validated: StockAvailabilityArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.inventory_service.stock_availability(validated)
             ranked_groups = self._aggregate_snapshot_evidence(
                 data.evidence,
                 region=validated.region,
@@ -472,7 +471,7 @@ class ToolRegistry:
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_aggregate",
+                tool="stock_availability",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -481,15 +480,15 @@ class ToolRegistry:
                 normalization_notes=notes + data.coverage.limitations,
             )
             return ToolResult(
-                tool="stock_aggregate",
+                tool="stock_availability",
                 data=payload,
                 llm_content=payload,
                 normalization_notes=notes + data.coverage.limitations,
                 trace=trace,
             )
 
-        async def stock_specs_rank(
-            validated: StockSpecsRankArgs, _: str | None, thought: str
+        async def stock_rank(
+            validated: StockRankArgs, _: str | None, thought: str
         ) -> ToolResult:
             snapshot_args = StockInventorySnapshotArgs(
                 page=validated.page,
@@ -510,7 +509,7 @@ class ToolRegistry:
             limitations = list(data.coverage.limitations) + filter_notes
             if not ranked_rows:
                 limitations.append(
-                    "No ranked stock specs rows were produced. Try a narrower product/category phrase, "
+                    "No ranked stock rows were produced. Try a narrower product/category phrase, "
                     "or call stock_scope first to pass a departmentId/categoryId filter."
                 )
             payload = {
@@ -535,16 +534,16 @@ class ToolRegistry:
             }
             trace = ToolTrace(
                 thought=thought,
-                tool="stock_specs_rank",
+                tool="stock_rank",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="harmonise -> inventory_snapshot.evidence[*] -> stock specs ranking",
+                source_data="harmonise -> inventory_snapshot.evidence[*] -> stock ranking",
                 result_count=len(ranked_rows),
                 normalization_notes=notes + limitations,
             )
             return ToolResult(
-                tool="stock_specs_rank",
+                tool="stock_rank",
                 data=payload,
                 llm_content=payload,
                 normalization_notes=notes + limitations,
@@ -757,7 +756,7 @@ class ToolRegistry:
                     ),
                     "live_inventory": (
                         "For products, variants, or availability inside a category, use stock_snapshot or "
-                        "stock_aggregate with the returned department/category ids."
+                        "stock_availability with the returned department/category ids."
                     ),
                 },
             }
@@ -798,7 +797,7 @@ class ToolRegistry:
                     for match in matches
                 ],
                 "guidance": (
-                    "Use the returned categoryId with stock_snapshot, stock_search, stock_aggregate, or ranking "
+                    "Use the returned categoryId with stock_snapshot, stock_search, stock_availability, or ranking "
                     "tools for broad item-type requests. If status is ambiguous, use the top likely category IDs "
                     "for broad discovery or ask the user to choose when the meanings differ."
                 ),
@@ -815,7 +814,7 @@ class ToolRegistry:
             return ToolResult(tool="stock_list_category", data=payload, llm_content=payload, trace=trace)
 
         async def collect_family_evidence(
-            validated: StockProductFamilyInventoryArgs | StockVariantRankArgs,
+            validated: StockProductFamilyInventoryArgs,
         ) -> tuple[list[NormalizedEvidence], str, list[str], dict[str, Any]]:
             catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
                 StockSearchCatalogueArgs(
@@ -916,66 +915,66 @@ class ToolRegistry:
                 trace=trace,
             )
 
-        async def stock_variant_rank(
-            validated: StockVariantRankArgs, _: str | None, thought: str
-        ) -> ToolResult:
-            evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
-            filtered_evidence, ranked, filter_notes = rank_evidence_with_filters(
-                evidence_items,
-                metric=validated.metric,
-                region=validated.region,
-                group_by="variant",
-                direction=validated.direction,
-                limit=validated.limit,
-                attribute_filters=validated.attributeFilters,
-            )
-            limitations = list(coverage["limitations"]) + filter_notes
-            if not ranked:
-                limitations.append(
-                    "No variant ranking rows were produced. Try a narrower family phrase or resolve the family with stock_search first."
-                )
-            payload = {
-                "query": validated.search,
-                "region": validated.region,
-                "metric": validated.metric,
-                "direction": validated.direction,
-                "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
-                "rows": ranked,
-                "coverage": {
-                    **coverage,
-                    "filteredVariants": len(filtered_evidence),
-                    "limitations": limitations,
-                    "isPartial": coverage["isPartial"] or bool(limitations),
-                },
-                "guidance": " ".join(
-                    part
-                    for part in [
-                        "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
-                        "to resolve which variant best matches the requested stock/spec metric after the family is known.",
-                        self.inventory_service.variant_cap_guidance(
-                            [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
-                        ),
-                    ]
-                    if part
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_variant_rank",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> family variant evidence[*] -> variant-only ranking",
-                result_count=len(ranked),
-                normalization_notes=notes + limitations,
-            )
-            return ToolResult(
-                tool="stock_variant_rank",
-                data=payload,
-                llm_content=payload,
-                normalization_notes=notes + limitations,
-                trace=trace,
-            )
+        # async def stock_variant_rank(
+        #     validated: StockVariantRankArgs, _: str | None, thought: str
+        # ) -> ToolResult:
+        #     evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
+        #     filtered_evidence, ranked, filter_notes = rank_evidence_with_filters(
+        #         evidence_items,
+        #         metric=validated.metric,
+        #         region=validated.region,
+        #         group_by="variant",
+        #         direction=validated.direction,
+        #         limit=validated.limit,
+        #         attribute_filters=validated.attributeFilters,
+        #     )
+        #     limitations = list(coverage["limitations"]) + filter_notes
+        #     if not ranked:
+        #         limitations.append(
+        #             "No variant ranking rows were produced. Try a narrower family phrase or resolve the family with stock_search first."
+        #         )
+        #     payload = {
+        #         "query": validated.search,
+        #         "region": validated.region,
+        #         "metric": validated.metric,
+        #         "direction": validated.direction,
+        #         "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
+        #         "rows": ranked,
+        #         "coverage": {
+        #             **coverage,
+        #             "filteredVariants": len(filtered_evidence),
+        #             "limitations": limitations,
+        #             "isPartial": coverage["isPartial"] or bool(limitations),
+        #         },
+        #         "guidance": " ".join(
+        #             part
+        #             for part in [
+        #                 "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
+        #                 "to resolve which variant best matches the requested stock/spec metric after the family is known.",
+        #                 self.inventory_service.variant_cap_guidance(
+        #                     [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
+        #                 ),
+        #             ]
+        #             if part
+        #         ),
+        #     }
+        #     trace = ToolTrace(
+        #         thought=thought,
+        #         tool="stock_variant_rank",
+        #         args=validated.model_dump(exclude_none=True),
+        #         status="ok",
+        #         cache_status=cache_status,
+        #         source_data="harmonise -> family variant evidence[*] -> variant-only ranking",
+        #         result_count=len(ranked),
+        #         normalization_notes=notes + limitations,
+        #     )
+        #     return ToolResult(
+        #         tool="stock_variant_rank",
+        #         data=payload,
+        #         llm_content=payload,
+        #         normalization_notes=notes + limitations,
+        #         trace=trace,
+        #     )
 
         async def count_items(validated: StockCountItemsArgs, _: str | None, thought: str) -> ToolResult:
             cat_args = StockSearchCatalogueArgs(
@@ -1247,26 +1246,27 @@ class ToolRegistry:
             visible=False,
         )
         self._register(
-            "stock_aggregate",
+            "stock_availability",
             (
                 "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
                 "type, product family, category, or region; product grouping answers broad wording like all inventory "
                 "or chair type. This returns summed groups, not single-variant rankings. Requires at least one of "
-                "search, departmentId, or categoryId so the underlying snapshot stays scoped. Use stock_specs_rank "
+                "search, departmentId, or categoryId so the underlying snapshot stays scoped. Use stock_rank "
                 "when the question also needs dimensions, pricing, attribute/style filters, or department grouping."
             ),
-            StockAggregateArgs,
-            aggregate_stock,
+            StockAvailabilityArgs,
+            stock_availability,
         )
         self._register(
-            "stock_specs_rank",
+            "stock_rank",
             (
                 "Rank and filter Harmonise products or variants by stock, hirable availability, physical dimensions, "
                 "derived area/volume, replacement cost, hire rates, hierarchy, state, and LLM-supplied aesthetic "
-                "attributes. Use for complex stock/spec ranking questions; use stock_image for Harmonise image retrieval and rendering."
+                "attributes. Use for complex stock/spec ranking questions; use groupBy=variant for variant ranking "
+                "inside a resolved family and stock_image for Harmonise image retrieval/rendering."
             ),
-            StockSpecsRankArgs,
-            stock_specs_rank,
+            StockRankArgs,
+            stock_rank,
         )
         self._register(
             "stock_image",
@@ -1290,21 +1290,21 @@ class ToolRegistry:
             product_family_inventory,
             visible=False,
         )
-        self._register(
-            "stock_variant_rank",
-            (
-                "Rank variants within a named product/family by stock, hirable, dimensions, derived area/volume, or "
-                "pricing metrics. Use only for intra-family variant or SKU resolution once the question is about which "
-                "specific variant best matches the requested metric."
-            ),
-            StockVariantRankArgs,
-            stock_variant_rank,
-        )
+        # self._register(
+        #     "stock_variant_rank",
+        #     (
+        #         "Rank variants within a named product/family by stock, hirable, dimensions, derived area/volume, or "
+        #         "pricing metrics. Use only for intra-family variant or SKU resolution once the question is about which "
+        #         "specific variant best matches the requested metric."
+        #     ),
+        #     StockVariantRankArgs,
+        #     stock_variant_rank,
+        # )
         self._register(
             "stock_count_items",
             (
                 "Deprecated count helper. Hidden from normal MCP discovery; use stock_scope for supported counts and "
-                "stock_aggregate for grouped inventory totals."
+                "stock_availability for grouped inventory totals."
             ),
             StockCountItemsArgs,
             count_items,
@@ -1313,7 +1313,7 @@ class ToolRegistry:
         self._register(
             "stock_hirable_by_state",
             (
-                "Deprecated per-state family helper. Hidden from normal MCP discovery; use stock_aggregate for grouped "
+                "Deprecated per-state family helper. Hidden from normal MCP discovery; use stock_availability for grouped "
                 "stock or hirable totals by state."
             ),
             StockHirableByStateArgs,

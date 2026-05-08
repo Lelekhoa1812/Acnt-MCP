@@ -14,7 +14,7 @@ from app.config import Settings, UpstreamServiceError
 from app.tool.stock.service import InventoryService
 from app.tool.stock.source import HarmoniseInventorySource
 from app.schemas import (
-    StockAggregateArgs,
+    StockAvailabilityArgs,
     StockExtractVariantEvidenceArgs,
     StockGetProductArgs,
     StockInventorySnapshotArgs,
@@ -969,7 +969,7 @@ async def test_stock_search_caps_large_product_family_variants_and_guides_narrow
 
 
 @pytest.mark.anyio
-async def test_stock_aggregate_preserves_specific_search_and_surfaces_variant_cap_guidance(monkeypatch) -> None:  # noqa: ANN001
+async def test_stock_availability_preserves_specific_search_and_surfaces_variant_cap_guidance(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setenv("MAX_CAP_VARIANT", "20")
     settings = Settings(
         local_harmonise=False,
@@ -993,7 +993,7 @@ async def test_stock_aggregate_preserves_specific_search_and_surfaces_variant_ca
     )
 
     try:
-        snapshot, _, _ = await service.aggregate_stock(StockAggregateArgs(search=search))
+        snapshot, _, _ = await service.stock_availability(StockAvailabilityArgs(search=search))
     finally:
         await source.close()
         await key_value_store.close()

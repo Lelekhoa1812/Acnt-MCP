@@ -33,7 +33,7 @@ from app.schemas import (
     ProductVariantDto,
     ProvenanceSnapshot,
     StockApiDepartmentDto,
-    StockAggregateArgs,
+    StockAvailabilityArgs,
     StockCategoryDtoPagedResponse,
     StockExtractVariantEvidenceArgs,
     StockGetCategoriesArgs,
@@ -514,9 +514,9 @@ class InventoryService:
         )
         return response, self._combine_cache_statuses(cache_statuses), notes
 
-    async def aggregate_stock(
+    async def stock_availability(
         self,
-        args: StockAggregateArgs,
+        args: StockAvailabilityArgs,
     ) -> tuple[InventorySnapshotResponse, str, list[str]]:
         # Motivation vs Logic: grouped totals need stable backend-owned paging
         # so the caller cannot accidentally force oversized catalogue pulls.

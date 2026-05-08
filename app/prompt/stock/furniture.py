@@ -319,12 +319,17 @@ def furniture_category_rules() -> list[str]:
         (
             "For general item types, plural nouns, or broad classifications (for example coffee tables, stools, "
             "ottomans, or dining furniture), call `stock_list_category` before item search. Use its returned "
-            "`categoryId` with `stock_snapshot`, `stock_search`, `stock_aggregate`, or ranking tools instead of "
+            "`categoryId` with `stock_snapshot`, `stock_search`, `stock_availability`, or ranking tools instead of "
             "starting with a plain text catalogue search."
         ),
         (
             "Keep specific product/model names on the direct product evidence path; do not insert "
             "`stock_list_category` when the user names one recognizable product line or SKU."
+        ),
+        (
+            "When a direct multi-token product search fails and a generic descriptor clearly maps to a category "
+            "(for example chair, table, stool, or lounge), preserve that category intent: use a trusted categoryId "
+            "from this reference or call `stock_list_category`, then retry the distinctive model token with categoryId."
         ),
         (
             "If category confidence is uncertain, skip `categoryId` and prioritize name-driven "
@@ -362,7 +367,7 @@ Assistant: classify this as live category inventory exploration, call stock_list
 
 FURNITURE Example 5:
 User: Is the Arc lounge chair in stock?
-Assistant: treat as a single-product availability check; call stock_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; avoid extra search hops if the snapshot already returns rows with stock evidence. Include returned capped variants (with colours/sizes) and state availability before concluding.
+Assistant: treat as a single-product availability check; call stock_snapshot with departmentId=3 and search terms from the product name (e.g. the distinctive model tokens). Add categoryId only if the user clearly points at a mapped category; if a fallback is needed, preserve that categoryId while trimming to the model token. Include returned capped variants (with colours/sizes) and state availability before concluding.
 
 FURNITURE Example 6:
 User: Tell me if the Spencer chair is still available.

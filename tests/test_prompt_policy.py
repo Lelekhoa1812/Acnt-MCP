@@ -67,6 +67,10 @@ def test_render_planner_requires_dag_metadata_and_stock_only_contract() -> None:
     assert "mapped_furniture_category_count" in planner_prompt
     assert "follow-up retrieval step" in planner_prompt
     assert "broader or shorter fallback search text" in planner_prompt
+    assert "stock_rank" in planner_prompt
+    assert "stock_variant_rank" not in planner_prompt
+    assert "stock_list_category` for the descriptor" in planner_prompt
+    assert "retry the distinctive token with categoryId" in planner_prompt
     assert "page size 20" in planner_prompt
     assert "capped at 20 variants" in planner_prompt
     assert "distinctive product/model token" in planner_prompt

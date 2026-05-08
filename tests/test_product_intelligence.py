@@ -141,11 +141,11 @@ def _settings() -> Settings:
 
 
 @pytest.mark.anyio
-async def test_stock_specs_rank_tool_uses_mock_harmonise_without_inline_images() -> None:
+async def test_stock_rank_tool_uses_mock_harmonise_without_inline_images() -> None:
     container = await build_container(_settings())
     try:
         result = await container.tool_registry.call_tool(
-            "stock_specs_rank",
+            "stock_rank",
             {
                 "search": "carpet",
                 "metric": "cost",
@@ -159,7 +159,7 @@ async def test_stock_specs_rank_tool_uses_mock_harmonise_without_inline_images()
     finally:
         await container.close()
 
-    assert result.tool == "stock_specs_rank"
+    assert result.tool == "stock_rank"
     assert result.data["rows"]
     assert result.data["metric"] == "cost"
     assert result.data["coverage"]["filteredVariants"] >= len(result.data["rows"])
@@ -167,14 +167,15 @@ async def test_stock_specs_rank_tool_uses_mock_harmonise_without_inline_images()
 
 
 @pytest.mark.anyio
-async def test_stock_variant_rank_supports_non_stock_metrics_and_attribute_filters() -> None:
+async def test_stock_rank_supports_variant_grouping_non_stock_metrics_and_attribute_filters() -> None:
     container = await build_container(_settings())
     try:
         result = await container.tool_registry.call_tool(
-            "stock_variant_rank",
+            "stock_rank",
             {
                 "search": "Laminate Timber Floor",
                 "metric": "cost",
+                "groupBy": "variant",
                 "region": "VIC",
                 "direction": "least",
                 "attributeFilters": [{"field": "variantName", "value": "Grey Ash"}],
@@ -184,7 +185,7 @@ async def test_stock_variant_rank_supports_non_stock_metrics_and_attribute_filte
     finally:
         await container.close()
 
-    assert result.tool == "stock_variant_rank"
+    assert result.tool == "stock_rank"
     assert result.data["metric"] == "cost"
     assert result.data["rows"]
     assert result.data["coverage"]["filteredVariants"] >= 1

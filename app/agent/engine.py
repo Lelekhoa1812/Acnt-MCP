@@ -50,9 +50,8 @@ _SEARCH_SPLITTABLE_TOOLS: frozenset[str] = frozenset(
         "stock_search_catalogue",
         "stock_snapshot",
         "stock_inventory_snapshot",
-        "stock_aggregate",
-        "stock_specs_rank",
-        "stock_variant_rank",
+        "stock_availability",
+        "stock_rank",
     }
 )
 

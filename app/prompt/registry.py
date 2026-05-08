@@ -68,10 +68,10 @@ SYSTEM_BEHAVIOR_RULES = [
     "If search returns identifiers but not requested attributes, add a `stock_detail` next hop before answering.",
     "For product-name queries, use adaptive multi-pass search terms inferred from request and evidence.",
     "For high-volume searches, use paginated requests instead of one large request; prefer page size about 20 when args allow it, fetch pages in parallel when supported, and continue until no more results.",
-    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_aggregate`; the backend handles page-by-page aggregation automatically, so do not try to manage pagination in the prompt, and do not answer grouped totals from `stock_variant_rank`.",
+    "For grouped most/least inventory questions by type, family, category, state, or all inventory, use `stock_availability`; the backend handles page-by-page aggregation automatically, so do not try to manage pagination in the prompt. Scope broad aggregation with product-family terms or categoryId where possible because it uses snapshot pagination and SKU enrichment.",
     (
-        "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions, `stock_variant_rank` "
-        "for intra-family variant resolution, and `stock_image` for Harmonise image retrieval/rendering. When "
+        "Use `stock_rank` for complex stock/spec/dimension/pricing ranking questions and `groupBy=\"variant\"` "
+        "for intra-family variant resolution; use `stock_image` for Harmonise image retrieval/rendering. When "
         "rendering `stock_image`, follow its fallback order: encoded MCP image content first, then automatically "
         "download the resolved URI locally and render that file, then run the provided automatic preview command "
         "that creates and activates its script environment without user prompting, then show only the best URI and "
@@ -83,8 +83,10 @@ SYSTEM_BEHAVIOR_RULES = [
     "For mixed intents, satisfy every requested domain; ground stock/pricing before currency conversion and keep independent utility branches parallel where possible.",
     (
         "If `stock_search` returns no rows for a multi-word product phrase, replan with a shorter "
-        "distinctive product-name from the user's phrase or prior evidence (for example, if `charlie chair` "
-        "returns no rows, try `charlie`) before reporting failure."
+        "distinctive product-name from the user's phrase or prior evidence while preserving obvious category intent. "
+        "For example, if `Baxter chair` returns no rows and no trusted categoryId is known, call `stock_list_category` "
+        "for `chair`, then retry `search=\"Baxter\"` with that categoryId; if category confidence is unclear, keep "
+        "the fallback name-driven before reporting failure."
     ),
     "Stay within a reasonable latency budget: prefer answer-ready tools and bounded follow-up hops over raw retrieval chains.",
     "Never invent unsupported filters, rates, stock quantities, or historical facts.",
@@ -400,8 +402,8 @@ Rules:
 - Do not plan `stock_snapshot`, `stock_search`, `stock_detail`, `stock_get_departments`, or `stock_get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
 - For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
 - For a **narrow** ask—stock, availability, hireability, or quantity for **one** named product or product line (model name, series, or colloquial product label)—keep the plan **short**: prefer one answer-ready retrieval step when the tool args can be filled from the user phrase and capability context (for example a single `stock_snapshot` with `departmentId`, a non-empty `search` built from distinctive name tokens, and `categoryId` only when a category match is clear). Add a dependent second step only if the first hop would plausibly return no rows, ambiguous multi-product matches, or stock evidence gaps.
-- For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_aggregate`; use `stock_variant_rank` only when the user explicitly asks for variant or SKU ranking inside a resolved family.
-- Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking questions and `stock_image` when the user explicitly needs a Harmonise image.
+- For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_availability`; scope broad aggregation with exact product-family terms or categoryId where possible because it uses snapshot pagination and SKU enrichment.
+- Use `stock_rank` for complex stock/spec/dimension/pricing ranking questions, including `groupBy="variant"` when the user explicitly asks for variant or SKU ranking inside a resolved family, and use `stock_image` when the user explicitly needs a Harmonise image.
 - When the same turn only needs "is it in stock" or "how much stock" for a specific named item, do **not** add extra steps for colour, finish, or compare unless the user asked for those attributes.
 - Do not plan `session_state` or other session tools unless the user explicitly asks about the session, memory, or prior turns.
 - Build deterministic, executable DAG steps only.
@@ -409,7 +411,7 @@ Rules:
 - If a search step may return identifiers without enough user-facing detail, add a follow-up retrieval step; if naming may miss, include a broader or shorter fallback search text.
 - For high-volume searches where args allow control, plan paginated requests around page size 20, split independent pages across `parallel_group` workers when supported, and continue until no more results; do not manually tune pagination for tools whose backend already paginates.
 - If stock retrieval hits timeouts or partial coverage, add a dependent fallback step that narrows the search/filter rather than trying to tune pagination manually.
-- For multi-word product phrases, make the fallback search: keep the distinctive product/model token(s) and remove generic descriptors.
+- For multi-word product phrases, make the fallback search keep the distinctive product/model token(s) and remove generic descriptors while preserving obvious category intent. If the categoryId is not already trusted, plan `stock_list_category` for the descriptor (for example chair/table) and then retry the distinctive token with categoryId; if category confidence is unclear, keep the fallback name-driven.
 - For product name discovery, plan adaptive search passes inferred from the user request and prior evidence, then deduplicate overlaps by product id/SKU before downstream steps.
 - For multi-item requests, emit separate stock_search steps with one product target per step.
 - When the user asks about colour/finish or variant selection, plan variant-level evidence from actual fields: variant name/options, SKU, product name, or sales note; do not assume a separate colour filter field.

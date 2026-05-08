@@ -44,7 +44,7 @@ sequenceDiagram
 
     U->>C: Ask for colours, dimensions, hireable stock, and NSW ranking
     C->>M: tools/list
-    M-->>C: stock_scope, stock_list_category, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_aggregate, stock_specs_rank, stock_variant_rank, stock_image
+    M-->>C: stock_scope, stock_list_category, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_availability, stock_rank, stock_image
 
     C->>M: tools/call stock_scope
     M->>R: resolve supported departments and category routes
@@ -71,9 +71,8 @@ sequenceDiagram
             C->>M: tools/call stock_snapshot
         end
     and Rank NSW availability
-        C->>M: tools/call stock_aggregate
-        C->>M: tools/call stock_specs_rank
-        C->>M: tools/call stock_variant_rank
+        C->>M: tools/call stock_availability
+        C->>M: tools/call stock_rank
     end
 
     opt Need exact SKU detail, compare, or image proof
@@ -98,9 +97,8 @@ sequenceDiagram
 - `stock_snapshot` is the safest default for family-level availability because it returns variant rows with sizes, stock text, and hireable counts.
 - `stock_detail` is for exact product or SKU detail once Claude already knows what it is asking for.
 - `stock_compare` is for explicit side-by-side comparison of 2 to 20 resolved variants.
-- `stock_aggregate` answers grouped stock questions such as "rank these by NSW stock" or "which product family has the most stock".
-- `stock_specs_rank` is for ranking that also depends on dimensions, pricing, hierarchy, or filtered attributes.
-- `stock_variant_rank` is for ranking variants inside one family.
+- `stock_availability` answers grouped stock questions such as "rank these by NSW stock" or "which product family has the most stock".
+- `stock_rank` is for ranking that also depends on dimensions, pricing, hierarchy, filtered attributes, or variants inside one family via `groupBy="variant"`.
 - `stock_image` is optional when visual confirmation is useful.
 
 For the sample query, Claude would usually:
@@ -111,10 +109,9 @@ For the sample query, Claude would usually:
 4. Call `stock_snapshot` for each resolved family so every variant is covered.
 5. Call `stock_detail` if a SKU or exact product needs deeper metadata.
 6. Call `stock_compare` if two variants need an explicit comparison.
-7. Call `stock_aggregate` to rank NSW stock by product or family.
-8. Call `stock_specs_rank` if the user also cares about dimensions or other specs in the ranking.
-9. Call `stock_variant_rank` when the ranking should happen inside one family.
-10. Call `stock_image` if Claude should surface an image alongside the stock answer.
+7. Call `stock_availability` to rank NSW stock by product or family.
+8. Call `stock_rank` if the user also cares about dimensions or other specs in the ranking, using `groupBy="variant"` when the ranking should happen inside one family.
+9. Call `stock_image` if Claude should surface an image alongside the stock answer.
 
 ## MCP Tool Discovery
 
@@ -164,16 +161,12 @@ This is a representative `tools/list` request and response. The exact tool order
         "description": "Side-by-side comparison of already-resolved variant SKUs/identifiers."
       },
       {
-        "name": "stock_aggregate",
+        "name": "stock_availability",
         "description": "Grouped stock and hirable totals from a full inventory snapshot."
       },
       {
-        "name": "stock_specs_rank",
+        "name": "stock_rank",
         "description": "Rank and filter products or variants by stock, dimensions, pricing, hierarchy, state, and attributes."
-      },
-      {
-        "name": "stock_variant_rank",
-        "description": "Rank variants within a named product or family."
       },
       {
         "name": "stock_image",

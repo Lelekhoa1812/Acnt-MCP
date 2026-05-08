@@ -61,7 +61,7 @@ sequenceDiagram
 
     U->>C: Ask for colours, dimensions, hireable stock, and NSW ranking
     C->>M: tools/list
-    M-->>C: stock_scope, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_aggregate, stock_specs_rank, stock_variant_rank, stock_image
+    M-->>C: stock_scope, stock_disambiguate, stock_search, stock_snapshot, stock_detail, stock_compare, stock_availability, stock_rank, stock_image
 
     C->>M: tools/call stock_scope
     M->>R: resolve supported departments and category routes
@@ -79,9 +79,8 @@ sequenceDiagram
             C->>M: tools/call stock_snapshot
         end
     and Rank NSW availability
-        C->>M: tools/call stock_aggregate
-        C->>M: tools/call stock_specs_rank
-        C->>M: tools/call stock_variant_rank
+        C->>M: tools/call stock_availability
+        C->>M: tools/call stock_rank
     end
 
     opt Need exact SKU detail, compare, or image proof

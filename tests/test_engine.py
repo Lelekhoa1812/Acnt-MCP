@@ -71,7 +71,7 @@ async def test_search_split_heuristic_expands_shared_suffix_multi_item_queries()
 
 
 @pytest.mark.anyio
-async def test_expand_single_item_search_calls_splits_stock_aggregate_multi_item_queries() -> None:
+async def test_expand_single_item_search_calls_splits_stock_availability_multi_item_queries() -> None:
     container = await build_container(build_engine_settings())
     try:
         expanded = await container.agent_engine._expand_single_item_search_calls(
@@ -80,7 +80,7 @@ async def test_expand_single_item_search_calls_splits_stock_aggregate_multi_item
                     "id": "aggregate_1",
                     "type": "function",
                     "function": {
-                        "name": "stock_aggregate",
+                        "name": "stock_availability",
                         "arguments": json.dumps(
                             {
                                 "search": "Baxter, Charlie, and Alto chair",

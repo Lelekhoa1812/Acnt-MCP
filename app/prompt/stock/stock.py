@@ -59,13 +59,13 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
             "hop only if the first hop cannot identify the product or stock."
         ),
         (
-            "Grouped most/least questions by type, family, category, state, or all inventory: use `stock_aggregate` "
-            "with prompt-supplied search/filter arguments; the backend paginates automatically, so do not try to "
-            "manage pagination in the prompt; do not answer grouped totals from variant ranking."
+            "Grouped most/least questions by type, family, category, state, or all inventory: use `stock_availability` "
+            "with prompt-supplied search/filter arguments; it uses snapshot pagination and SKU enrichment, so prefer "
+            "exact product-family terms or clear `categoryId` filters and do not try to manage pagination in the prompt."
         ),
         (
-            "Use `stock_specs_rank` for complex stock/spec/dimension/pricing ranking, `stock_variant_rank` for "
-            "which-variant-within-a-family resolution, and `stock_image` only when the user explicitly needs a "
+            "Use `stock_rank` for complex stock/spec/dimension/pricing ranking and use `groupBy=\"variant\"` for "
+            "which-variant-within-a-family resolution. Use `stock_image` only when the user explicitly needs a "
             "Harmonise image. To render `stock_image`, follow `stock_image.rendering.fallbackOrder`: first render "
             "encoded MCP image content to the UI; if not visible, automatically download the resolved URI locally "
             "and render that file; if the client needs a script environment, run the provided automatic preview "
@@ -75,12 +75,15 @@ def _build_routing_rules(route: StockPromptRoute) -> list[str]:
         ),
         (
             "If a single-product search with a multi-word phrase returns no rows, retry with a shorter "
-            "distinctive product term from the user's phrase or prior evidence (for example, if `charlie chair` "
-            "returns no rows, try `charlie`) before reporting failure."
+            "distinctive product term from the user's phrase or prior evidence while preserving obvious category "
+            "intent. For example, if `Baxter chair` returns no rows and no trusted categoryId is known, call "
+            "`stock_list_category` for `chair`, then retry `search=\"Baxter\"` with that categoryId; if category "
+            "confidence is unclear, keep the fallback name-driven before reporting failure."
         ),
         (
-            "If stock retrieval times out or comes back partial, retry with a narrower search phrase or filter; "
-            "grouped aggregation already paginates through catalogue results in the backend."
+            "If stock retrieval times out or comes back partial, retry with a narrower search phrase or filter. For "
+            "product-family/product-name asks, resolve the exact family or use categoryId to shortlist candidates "
+            "before relying on broad catalogue pagination or SKU hydration."
         ),
         # Motivation vs Logic: when users only cite the product name, the prompt should still surface capped variants.
         (

@@ -358,7 +358,7 @@ def test_null_data_source_disables_harmonise_tools(monkeypatch) -> None:
     assert "stock_search" not in tool_names
     assert "stock_scope" not in tool_names
     assert "stock_snapshot" not in tool_names
-    assert "stock_aggregate" not in tool_names
+    assert "stock_availability" not in tool_names
     assert "news_search" in tool_names
     assert "weather_current" in tool_names
     assert "fx_convert" in tool_names
@@ -1336,8 +1336,9 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     assert "session_clear_state" not in tool_names
     assert "stock_search" in tool_names
     assert "stock_get_product_family_inventory" not in tool_names
-    assert "stock_specs_rank" in tool_names
-    assert "stock_variant_rank" in tool_names
+    assert "stock_rank" in tool_names
+    assert "stock_specs_rank" not in tool_names
+    assert "stock_variant_rank" not in tool_names
     assert "stock_image" in tool_names
     assert "stock_rank_variants_by_stock" not in tool_names
     assert "product_intelligence_rank" not in tool_names

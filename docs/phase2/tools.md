@@ -13,9 +13,8 @@
 | `stock_detail` | Stock discovery | Exact product-family or SKU detail | When the assistant already knows the exact product id or SKU |
 | `stock_compare` | Stock discovery | Side-by-side comparison of resolved variants | When the user wants to compare two or more known variants |
 | `stock_snapshot` | Stock evidence | Answer-ready family snapshot with variant rows | When the user asks for availability, sizes, stock, or hireable counts for a named family |
-| `stock_aggregate` | Stock analytics | Grouped totals by product, category, variant, or department | When the user asks for most/least stock or grouped totals |
-| `stock_specs_rank` | Stock analytics | Rank by stock, hirable, dimensions, area, volume, or pricing | When the question combines stock with specs, price, or attribute filters |
-| `stock_variant_rank` | Stock analytics | Rank variants inside one product family | When the user wants to know which variant is “best”, “largest”, “most in stock”, etc. |
+| `stock_availability` | Stock analytics | Grouped totals by product, category, variant, or department | When the user asks for most/least stock or grouped totals |
+| `stock_rank` | Stock analytics | Rank by stock, hirable, dimensions, area, volume, or pricing | When the question combines stock with specs, price, attribute filters, or variant ranking via `groupBy="variant"` |
 | `stock_image` | Stock evidence | Resolve and fetch a Harmonise product image | When the user explicitly wants product imagery |
 | `session_state` | Session memory | Read the current session summary and memo | When the user asks about previous context or prior turns |
 | `Non-stock Tools` | `news`, `weather`, `currency`  |
@@ -82,7 +81,7 @@ Response JSON:
     ],
     "guidance": {
       "purpose": "Use this tool for supported stock scope, department/category counts, and categoryId routing. It is the MCP-visible source of truth for supported inventory capability.",
-      "live_inventory": "For products, variants, or availability inside a category, use stock_snapshot or stock_aggregate with the returned department/category ids."
+      "live_inventory": "For products, variants, or availability inside a category, use stock_snapshot or stock_availability with the returned department/category ids."
     }
   },
   "answer_ready": {
@@ -105,7 +104,7 @@ Response JSON:
     ],
     "guidance": {
       "purpose": "Use this tool for supported stock scope, department/category counts, and categoryId routing. It is the MCP-visible source of truth for supported inventory capability.",
-      "live_inventory": "For products, variants, or availability inside a category, use stock_snapshot or stock_aggregate with the returned department/category ids."
+      "live_inventory": "For products, variants, or availability inside a category, use stock_snapshot or stock_availability with the returned department/category ids."
     }
   },
   "normalization_notes": []
@@ -166,7 +165,7 @@ Response JSON:
         "matchedOn": ["token_overlap", "route_leaf", "phrase_substring", "fuzzy_name"]
       }
     ],
-    "guidance": "Use the returned categoryId with stock_snapshot, stock_search, stock_aggregate, or ranking tools for broad item-type requests. If status is ambiguous, use the top likely category IDs for broad discovery or ask the user to choose when the meanings differ."
+    "guidance": "Use the returned categoryId with stock_snapshot, stock_search, stock_availability, or ranking tools for broad item-type requests. If status is ambiguous, use the top likely category IDs for broad discovery or ask the user to choose when the meanings differ."
   },
   "answer_ready": {
     "query": "stools",
@@ -181,7 +180,7 @@ Response JSON:
         "matchedOn": ["token_overlap", "route_leaf", "phrase_substring", "fuzzy_name"]
       }
     ],
-    "guidance": "Use the returned categoryId with stock_snapshot, stock_search, stock_aggregate, or ranking tools for broad item-type requests. If status is ambiguous, use the top likely category IDs for broad discovery or ask the user to choose when the meanings differ."
+    "guidance": "Use the returned categoryId with stock_snapshot, stock_search, stock_availability, or ranking tools for broad item-type requests. If status is ambiguous, use the top likely category IDs for broad discovery or ask the user to choose when the meanings differ."
   },
   "normalization_notes": []
 }
@@ -1098,7 +1097,7 @@ flowchart TD
 
 These tools rank or group product evidence after the family is known.
 
-### `stock_aggregate`
+### `stock_availability`
 
 Purpose:
 - Group and rank totals by product, category, or variant.
@@ -1226,7 +1225,7 @@ Real Harmonise request example:
 GET /api/v1/products?page=1&pageSize=20&search=Alto%20chair&departmentId=3&categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e
 ```
 
-### `stock_specs_rank`
+### `stock_rank`
 
 Purpose:
 - Rank products or variants by stock, hirable availability, physical size, area, volume, or pricing.
@@ -1368,133 +1367,6 @@ Real Harmonise request example:
 GET /api/v1/products?page=1&pageSize=10&search=Arc%20bar%20table&departmentId=3&categoryId=b7d70000-eacf-fc4c-61b4-08de7f1acabd
 ```
 
-### `stock_variant_rank`
-
-Purpose:
-- Rank variants within one resolved family.
-
-When called:
-- The assistant knows the family and the user wants the best matching variant.
-
-Example trigger:
-- “Which Alto chair variant is most in stock in Victoria?”
-
-Request JSON:
-
-```json
-{
-  "page": 1,
-  "search": "Alto chair",
-  "departmentId": 3,
-  "categoryId": "b7d70000-eacf-fc4c-c59a-08de7f19d85e",
-  "region": "VIC",
-  "metric": "stock",
-  "direction": "most",
-  "attributeFilters": [],
-  "limit": 10
-}
-```
-
-Parameter notes:
-- `page`: Snapshot start page.
-- `search`: Family phrase.
-- `departmentId`: Department filter.
-- `categoryId`: Category UUID filter.
-- `region`: State or overall region.
-- `metric`: Stock, hirable, dimension, area, volume, or pricing metric.
-- `direction`: `most` or `least`.
-- `attributeFilters`: Optional filters.
-- `limit`: Maximum rows.
-Response JSON:
-
-```json
-{
-  "data": {
-    "query": "Alto chair",
-    "region": "VIC",
-    "metric": "stock",
-    "direction": "most",
-    "attributeFilters": [],
-    "rows": [
-      {
-        "rank": 1,
-        "group": "Alto Chair  - Black",
-        "groupBy": "variant",
-        "region": "VIC",
-        "measure": "stock",
-        "rankValue": 127,
-        "stock": { "overall": 195, "VIC": 127, "NSW": 68, "QLD": 0 },
-        "hirable": { "overall": 172, "VIC": 112, "NSW": 60, "QLD": 0 },
-        "variantCount": 1,
-        "productIds": ["b7d70000-eacf-fc4c-f7fd-08de7f1ac218"],
-        "categoryIds": ["b7d70000-eacf-fc4c-c59a-08de7f19d85e"],
-        "variants": [
-          {
-            "product": "Alto Chair",
-            "variant": "Alto Chair  - Black",
-            "sku": "fn-se-ch-alt-bla",
-            "stock": 127,
-            "hirable": 112
-          }
-        ],
-        "missingStockFields": []
-      },
-      {
-        "rank": 2,
-        "group": "Alto Chair  - Blush",
-        "groupBy": "variant",
-        "region": "VIC",
-        "measure": "stock",
-        "rankValue": 80,
-        "stock": { "overall": 100, "VIC": 80, "NSW": 20, "QLD": 0 },
-        "hirable": { "overall": 77, "VIC": 60, "NSW": 17, "QLD": 0 },
-        "variantCount": 1,
-        "productIds": ["b7d70000-eacf-fc4c-f816-08de7f1ac218"],
-        "categoryIds": ["b7d70000-eacf-fc4c-c59a-08de7f19d85e"],
-        "variants": [
-          {
-            "product": "Alto Chair",
-            "variant": "Alto Chair  - Blush",
-            "sku": "fn-se-ch-alt-blu",
-            "stock": 80,
-            "hirable": 60
-          }
-        ],
-        "missingStockFields": []
-      }
-    ],
-    "coverage": {
-      "requestedPage": 1,
-      "requestedPageSize": 20,
-      "matchedProducts": 1,
-      "matchedPages": 1,
-      "enrichedProducts": 1,
-      "enrichedVariants": 1,
-      "isPartial": false,
-      "limitations": [],
-      "variantCaps": [],
-      "filteredVariants": 1
-    },
-    "guidance": "Rows are ranked only at variant grain within the resolved product family/families. Use this tool to resolve which variant best matches the requested stock/spec metric after the family is known."
-  },
-  "answer_ready": {
-    "...": "same variant ranking result, ready for the assistant"
-  },
-  "normalization_notes": []
-}
-```
-
-Response notes:
-- `rows`: Variants ranked within the family.
-- `groupBy`: Usually `variant`.
-- `coverage.filteredVariants`: Number of variants that survived filtering.
-
-Real Harmonise request example:
-
-```text
-GET /api/v1/products?page=1&pageSize=20&search=Alto%20chair&departmentId=3&categoryId=b7d70000-eacf-fc4c-c59a-08de7f19d85e
-```
-
 Flow chart:
 
 ```mermaid
@@ -1502,7 +1374,7 @@ flowchart TD
     U[User asks for ranking or comparison] --> C[Claude loads prompt policy and tools/list]
     C --> S[stock_search or stock_snapshot]
     S --> H[Harmonise /api/v1/products]
-    H --> A[stock_aggregate / stock_specs_rank / stock_variant_rank]
+    H --> A[stock_availability / stock_rank]
     A --> R[Claude answers with ranked evidence]
 ```
 

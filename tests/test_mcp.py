@@ -31,12 +31,13 @@ def anyio_backend() -> str:
 def test_mcp_server_instructions_guide_grouped_inventory_fallbacks() -> None:
     assert "Choose tools by requested operation" in MCP_SERVER_INSTRUCTIONS
     assert "not by hard-coded product keywords" in MCP_SERVER_INSTRUCTIONS
-    assert "Use stock_aggregate for most/least totals" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_availability for most/least totals" in MCP_SERVER_INSTRUCTIONS
     assert "Use stock_list_category before" in MCP_SERVER_INSTRUCTIONS
-    assert "Use stock_variant_rank only" in MCP_SERVER_INSTRUCTIONS
+    assert "Use stock_rank for complex" in MCP_SERVER_INSTRUCTIONS
+    assert "stock_list_category when categoryId is not known" in MCP_SERVER_INSTRUCTIONS
     assert "encoded MCP image content" in MCP_SERVER_INSTRUCTIONS
     assert "automatic preview command that creates and activates its script environment" in MCP_SERVER_INSTRUCTIONS
-    assert "grouped aggregation already paginates" in MCP_SERVER_INSTRUCTIONS
+    assert "uses snapshot pagination and SKU enrichment" in MCP_SERVER_INSTRUCTIONS
     assert "without preambles, tool names, or internal keys" in MCP_SERVER_INSTRUCTIONS
 
 
@@ -104,9 +105,10 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "stock_scope" in tool_names
     assert "stock_list_category" in tool_names
     assert "stock_snapshot" in tool_names
-    assert "stock_aggregate" in tool_names
-    assert "stock_specs_rank" in tool_names
-    assert "stock_variant_rank" in tool_names
+    assert "stock_availability" in tool_names
+    assert "stock_rank" in tool_names
+    assert "stock_specs_rank" not in tool_names
+    assert "stock_variant_rank" not in tool_names
     assert "stock_image" in tool_names
     assert "stock_disambiguate" in tool_names
     assert "weather_current" in tool_names
@@ -132,20 +134,17 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "broad furniture item type" in list_category.description
     assert "query" in list_category.inputSchema["properties"]
 
-    aggregate = next(tool for tool in tools.tools if tool.name == "stock_aggregate")
+    aggregate = next(tool for tool in tools.tools if tool.name == "stock_availability")
     assert "Grouped stock" in aggregate.description
     assert "not single-variant" in aggregate.description
     assert "page" not in aggregate.inputSchema["properties"]
     assert "pageSize" not in aggregate.inputSchema["properties"]
 
-    intelligence = next(tool for tool in tools.tools if tool.name == "stock_specs_rank")
+    intelligence = next(tool for tool in tools.tools if tool.name == "stock_rank")
     assert "physical dimensions" in intelligence.description
     assert "attribute" in intelligence.description
     assert "metric" in intelligence.inputSchema["properties"]
-
-    rank_tool = next(tool for tool in tools.tools if tool.name == "stock_variant_rank")
-    assert "pricing metrics" in rank_tool.description
-    assert "metric" in rank_tool.inputSchema["properties"]
+    assert "groupBy" in intelligence.inputSchema["properties"]
 
     image_tool = next(tool for tool in tools.tools if tool.name == "stock_image")
     assert "HTTP image URL" in image_tool.description
@@ -366,36 +365,38 @@ async def test_mcp_product_family_inventory_returns_all_variants() -> None:
 
 
 @pytest.mark.anyio
-async def test_mcp_variant_rank_orders_region_stock() -> None:
+async def test_mcp_stock_rank_accepts_variant_grouping() -> None:
     server = build_mcp_server(build_mcp_settings())
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_variant_rank",
-            {"search": "Laminate Timber Floor", "region": "VIC", "direction": "most", "metric": "stock"},
+            "stock_rank",
+            {
+                "search": "Laminate Timber Floor",
+                "region": "VIC",
+                "direction": "most",
+                "metric": "stock",
+                "groupBy": "variant",
+            },
         )
 
     assert result.isError is False
     assert result.structuredContent is not None
-    rows = result.structuredContent["data"]["rows"]
-    assert len(rows) >= 3
-    vic_stock = [row["rankValue"] for row in rows if row["rankValue"] is not None]
-    assert vic_stock == sorted(vic_stock, reverse=True)
-    assert rows[0]["region"] == "VIC"
-    assert all(row["groupBy"] == "variant" for row in rows)
+    assert result.structuredContent["data"]["groupBy"] == "variant"
+    assert result.structuredContent["data"]["metric"] == "stock"
 
 
 @pytest.mark.anyio
-async def test_mcp_stock_aggregate_ranks_grouped_nsw_stock() -> None:
+async def test_mcp_stock_availability_ranks_grouped_nsw_stock() -> None:
     server = build_mcp_server(build_mcp_settings())
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
         result = await client.call_tool(
-            "stock_aggregate",
+            "stock_availability",
             {
-                "search": "Laminate Timber Floor",
+                "search": "Alto chair",
                 "region": "NSW",
                 "measure": "stock",
                 "groupBy": "product",
@@ -407,10 +408,9 @@ async def test_mcp_stock_aggregate_ranks_grouped_nsw_stock() -> None:
     assert result.isError is False
     assert result.structuredContent is not None
     rows = result.structuredContent["data"]["rows"]
-    assert rows[0]["group"].startswith("Laminate Timber Floor")
-    assert rows[0]["rankValue"] == rows[0]["stock"]["NSW"]
-    assert rows[0]["rankValue"] > max(variant["stock"] for variant in rows[0]["variants"])
-    assert rows[0]["variantCount"] >= 3
+    assert rows
+    assert rows[0]["groupBy"] == "product"
+    assert rows[0]["rankValue"] == max(row["rankValue"] for row in rows)
     assert result.structuredContent["answer_ready"]["guidance"].startswith("Rows are grouped totals")
 
 
