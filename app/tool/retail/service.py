@@ -16,7 +16,7 @@ class OpenLibraryService:
         self.settings = settings
         self.key_value_store = key_value_store
         self.logger = logger
-        self._client = httpx.AsyncClient(base_url="https://openlibrary.org", timeout=30)
+        self._client = httpx.AsyncClient(base_url="https://openlibrary.org", timeout=30, follow_redirects=True)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -66,7 +66,10 @@ class OpenLibraryService:
         response = await self._client.get(path, params={k: v for k, v in params.items() if v is not None})
         if response.status_code >= 400:
             raise UpstreamServiceError(response.status_code, response.text, request=self._request_label(path, params))
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:  # Root Cause vs Logic: OpenLibrary occasionally returns empty/non-JSON bodies even on 200s; surface as UpstreamServiceError rather than crashing later.
+            raise UpstreamServiceError(502, f"Open Library returned an unreadable payload: {exc}", request=self._request_label(path, params))
         if not isinstance(payload, dict):
             raise UpstreamServiceError(502, "Open Library returned an unexpected payload.", request=self._request_label(path, params))
         return payload
