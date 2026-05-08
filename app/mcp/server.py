@@ -16,7 +16,7 @@ from app.mcp.adapter import McpToolAdapter
 
 
 MCP_SERVER_INSTRUCTIONS = (
-    "Harmonise inventory MCP server. Choose tools by requested operation, not by hard-coded product keywords. "
+    "Harmonise and public-data MCP server. Choose tools by requested operation, not by hard-coded product keywords. "
     "Use stock_scope for supported departments/categories and categoryId routing. Use stock_list_category before "
     "item search for broad item types, plural nouns, or category-like phrases, then pass returned categoryId filters "
     "to inventory tools. Use stock_snapshot for named family availability or broad variant tables. "
@@ -25,7 +25,11 @@ MCP_SERVER_INSTRUCTIONS = (
     "it uses snapshot pagination and SKU enrichment. Use stock_rank for complex hierarchy, dimension, pricing, "
     "attribute/style, state, and variant ranking; use groupBy='variant' when the user asks which variant or SKU "
     "ranks highest/lowest within a resolved family. Use stock_image "
-    "for Harmonise image retrieval/rendering; follow its rendering fallback order: encoded MCP image content, "
+    "for Harmonise image retrieval/rendering; use ebay_item_search, ebay_item_detail, and ebay_category_tree for "
+    "live marketplace discovery; use opencollective_expense_list, opencollective_transaction_all, and "
+    "opencollective_budget_lookup for public finance transparency; use openlibrary_book_search, "
+    "openlibrary_isbn_lookup, and openlibrary_subject_list for public book and subject browsing. "
+    "Follow stock_image rendering fallback order: encoded MCP image content, "
     "automatic local download of the resolved URI, automatic preview command that creates and activates its script "
     "environment, then best URI only with an AI client technical rendering issue explanation. Use stock_detail for exact product/SKU detail and stock_compare "
     "only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no rows, partial "

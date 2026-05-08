@@ -461,7 +461,19 @@ class SessionState(BaseModel):
 
 class ThoughtBlock(BaseModel):
     goal: str
-    entity_guess: Literal["product", "variant", "category", "department", "weather", "news", "currency", "unknown"]
+    entity_guess: Literal[
+        "product",
+        "variant",
+        "category",
+        "department",
+        "weather",
+        "news",
+        "currency",
+        "ecommerce",
+        "accounting",
+        "retail",
+        "unknown",
+    ]
     strategy: str
     tool: str
     args_draft: dict[str, Any] = Field(default_factory=dict)

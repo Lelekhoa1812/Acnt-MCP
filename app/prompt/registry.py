@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.prompt.currency import CURRENCY_EXAMPLES
+from app.prompt.ecommerce import ECOMMERCE_PROMPT
+from app.prompt.accounting import ACCOUNTING_PROMPT
+from app.prompt.retail import RETAIL_PROMPT
 from app.prompt.context import render_plan_context, render_session_context
 from app.prompt.news import NEWS_EXAMPLES
 from app.prompt.stock import StockPromptPolicy, build_stock_prompt_policy
@@ -29,7 +32,7 @@ CORE_SCOPE = [
     "specifications and stock visibility",
     "side-by-side comparisons",
     "clarification when inventory matches are ambiguous",
-    "external plugin exploration for weather, news, and currency APIs",
+    "external plugin exploration for weather, news, currency, ecommerce, accounting, and retail APIs",
 ]
 
 OUT_OF_SCOPE = [
@@ -39,10 +42,18 @@ OUT_OF_SCOPE = [
     "event line items",
 ]
 
+PLUGIN_PROMPTS = {
+    "weather": {"examples": WEATHER_EXAMPLES, "rules": []},
+    "currency": {"examples": CURRENCY_EXAMPLES, "rules": []},
+    "news": {"examples": NEWS_EXAMPLES, "rules": []},
+    "ecommerce": ECOMMERCE_PROMPT,
+    "accounting": ACCOUNTING_PROMPT,
+    "retail": RETAIL_PROMPT,
+}
+
 PLUGIN_EXAMPLES = {
-    "weather": WEATHER_EXAMPLES,
-    "currency": CURRENCY_EXAMPLES,
-    "news": NEWS_EXAMPLES,
+    name: prompt["examples"]
+    for name, prompt in PLUGIN_PROMPTS.items()
 }
 
 # Motivation vs Logic: keep the registry prompt compact while preserving the
@@ -54,14 +65,14 @@ SYSTEM_BEHAVIOR_RULES = [
     "Claude times out at 180s; target completion within 170s without sacrificing accuracy.",
     "For live external facts, retrieve first, validate second, answer last; use supplied policy metadata for static capability facts.",
     "Use exact identifiers before broad search; build tool args from schema + evidence; never hard-code unsupported filters or keyword lists.",
-    "Use tools instead of guessing for live inventory, product, weather, news, and currency facts.",
+    "Use tools instead of guessing for live inventory, product, weather, news, currency, ecommerce, accounting, and retail facts.",
     "Route named-category exploration to live inventory, not capability listing.",
     "If multiple products plausibly match, ask for clarification. If one product is confirmed, do not ask variant clarification; aggregate variants, respecting the 20-variant cap.",
     "For ambiguity, follow resolver payload: use explicit options for selectable sets; use total match count + short hints for large sets.",
     "Do not call `stock_disambiguate` after product confirmation; use `stock_detail` or `stock_snapshot` for variant details.",
     "For products with >5 variants, prefer `stock_snapshot` over `stock_compare` unless side-by-side compare is required.",
     "Harmonise stock tools are source of truth for live inventory; stock prompt policy is source of truth for supported department/category capability metadata.",
-    "Weather/news/currency tools are auxiliary; keep vendor limits explicit.",
+    "Weather/news/currency/ecommerce/accounting/retail tools are auxiliary; keep vendor limits explicit.",
     "If asked about bookings, quotes, reservations, or event line items, say this workflow is not implemented in the current tool contract.",
     "For news: use `news_headlines` for live/regional coverage, `news_search` for broader research, and `news_sources` for outlets; ground claims in `topSources`, `topKeywords`, `publishedRange`, and `totalResults`.",
     "For news success claims, require `matchConfidence >= 0.4` and at least one `matchingArticle` with requested tokens; cite `matchingKeywords`.",
@@ -121,8 +132,8 @@ SYSTEM_BEHAVIOR_RULES = [
 THOUGHT_FORMAT = """
 <thought>
 goal: short operational goal
-entity_guess: product | variant | category | department | weather | news | currency | unknown
-intent_class: stock | weather | news | currency | mixed
+entity_guess: product | variant | category | department | weather | news | currency | ecommerce | accounting | retail | unknown
+intent_class: stock | weather | news | currency | ecommerce | accounting | retail | mixed
 strategy: exact lookup | catalogue search | metadata narrowing | clarification | external retrieval | replan
 tool: tool name
 args_draft: short JSON-like args
@@ -205,9 +216,10 @@ def build_registry_prompt_policy(
         [
             (
                 "Route intent before planning: use stock tools for inventory/product requests, "
-                "and use weather/news/currency plugins for those utility intents."
+                "and use weather/news/currency/ecommerce/accounting/retail plugins for those utility intents."
             ),
             *(stock_policy.behavior_rules if include_stock_policy else []),
+            *_build_prompt_rules(route),
             *_build_plugin_routing_rules(route),
         ]
     )
@@ -257,6 +269,19 @@ def _build_plugin_routing_rules(route: PromptRegistryRoute) -> list[str]:
     return rules
 
 
+def _build_prompt_rules(route: PromptRegistryRoute) -> list[str]:
+    rules: list[str] = []
+    for plugin_name in route.plugin_intents:
+        prompt = PLUGIN_PROMPTS.get(plugin_name)
+        if not prompt:
+            continue
+        for rule in prompt.get("rules", []):
+            rule_text = str(rule).strip()
+            if rule_text:
+                rules.append(rule_text)
+    return rules
+
+
 def _build_registry_examples(
     route: PromptRegistryRoute,
     *,
@@ -287,11 +312,11 @@ def _should_include_stock_policy(
 ) -> bool:
     if intent_classes:
         normalized = {str(value).strip().lower() for value in intent_classes if str(value).strip()}
-        if normalized and normalized.issubset({"weather", "news", "currency"}):
+        if normalized and normalized.issubset({"weather", "news", "currency", "ecommerce", "accounting", "retail"}):
             return False
     # Motivation vs Logic: stock policy should stay visible by default, but pure
     # plugin requests need a smaller prompt so unrelated furniture examples do
-    # not compete with weather/news/currency routing.
+    # not compete with weather/news/currency/ecommerce/accounting/retail routing.
     return True
 
 
@@ -338,7 +363,7 @@ def render_system(
     behavior_rules = _dedupe_preserving_order(SYSTEM_BEHAVIOR_RULES + routed_policy.behavior_rules)
     examples_block = f"\nExamples:\n{routed_policy.examples}" if routed_policy.examples else ""
     return f"""
-Role: Harmonise Orchestrator (stock-first Phase 1 runtime).
+Role: Harmonise Orchestrator (multi-domain Phase 1 runtime).
 
 In scope:
 {_render_bullets(CORE_SCOPE)}
@@ -392,7 +417,7 @@ Each non-empty step object must include:
 - validation: null
 
 Rules:
-- Before building steps, classify the user request into intent domains and emit `intent_classes` using one or more of: capability, stock, inventory_search, product_detail, comparison, follow_up, weather, news, currency, mixed, out_of_scope.
+- Before building steps, classify the user request into intent domains and emit `intent_classes` using one or more of: capability, stock, inventory_search, product_detail, comparison, follow_up, ecommerce, accounting, retail, weather, news, currency, mixed, out_of_scope.
 - Keep the DAG latency-aware: prefer bounded, answer-ready tools over long overlapping retrieval chains.
 - If the request asks only about supported departments, supported categories, taxonomy counts, tool capability, or current stock scope, use the Capability context below, emit `intent_classes: ["capability"]`, set `steps: []`, and set `status: complete`. The composer will phrase the answer; your goal string may summarize what to cover (e.g. list all categories vs count only).
 - Use Capability context both for those empty-step answers and, in stock plans, to pick consistent `departmentId`/`categoryId` and category reasoning without extra metadata tool calls when the mapping is clear from the JSON.
@@ -401,6 +426,9 @@ Rules:
 - Keep specific product/model/SKU requests on the direct product evidence path, usually `stock_snapshot` with distinctive name tokens, without inserting `stock_list_category`.
 - Do not plan `stock_snapshot`, `stock_search`, `stock_detail`, `stock_get_departments`, or `stock_get_categories` for pure capability/taxonomy/count questions that the Capability context already answers.
 - For live product, variant, stock quantity, size, pricing, or availability questions, include at least one executable retrieval step.
+- For e-commerce marketplace questions, use ecommerce intent and plan `ebay_item_search`, `ebay_item_detail`, or `ebay_category_tree`.
+- For public finance/transparency questions, use accounting intent and plan `opencollective_expense_list`, `opencollective_transaction_all`, or `opencollective_budget_lookup`.
+- For book/catalog browsing questions, use retail intent and plan `openlibrary_book_search`, `openlibrary_isbn_lookup`, or `openlibrary_subject_list`.
 - For a **narrow** ask—stock, availability, hireability, or quantity for **one** named product or product line (model name, series, or colloquial product label)—keep the plan **short**: prefer one answer-ready retrieval step when the tool args can be filled from the user phrase and capability context (for example a single `stock_snapshot` with `departmentId`, a non-empty `search` built from distinctive name tokens, and `categoryId` only when a category match is clear). Add a dependent second step only if the first hop would plausibly return no rows, ambiguous multi-product matches, or stock evidence gaps.
 - For grouped most/least inventory questions by type, family, category, state, or all inventory, plan `stock_availability`; scope broad aggregation with exact product-family terms or categoryId where possible because it uses snapshot pagination and SKU enrichment.
 - Use `stock_rank` for complex stock/spec/dimension/pricing ranking questions, including `groupBy="variant"` when the user explicitly asks for variant or SKU ranking inside a resolved family, and use `stock_image` when the user explicitly needs a Harmonise image.
@@ -418,7 +446,8 @@ Rules:
 - When catalogue rows include multiple variants, schedule only the detail retrieval needed to answer, capped at 20 variants unless the user narrows the request.
 - For product-family requests, prefer one compact stock-detail path first; avoid planning both `stock_snapshot` and `stock_compare` unless the first path cannot satisfy the requested evidence.
 - Do not plan duplicate semantic retrieval for the same stock family once a planned tool already returns size, stock, pricing, and variant evidence in one payload.
-- For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news) and keep dependencies clear.
+- For mixed-domain asks, include explicit steps for each requested domain (stock, currency, weather, news, ecommerce, accounting, retail) and keep dependencies clear.
+- For mixed-domain asks that include e-commerce, accounting, or retail, keep those branches explicit and grounded in the correct provider.
 - For mixed stock + currency + news asks, plan stock retrieval before currency conversion, and keep unrelated utility branches parallel only when they do not depend on stock output.
 - Never mark the plan complete while requested attributes are still missing and additional retrieval paths remain; append replan steps instead.
 - If the session summary reports `memory_scope: topic_shift`, treat earlier entities as background only and plan from the new target entity; do not reuse unrelated identifiers.

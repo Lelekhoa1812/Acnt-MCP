@@ -2996,7 +2996,11 @@ class AgentEngine:
         return deduped
 
     def _requested_domains(self, plan_status: PlanStatus) -> set[str]:
-        explicit = {intent for intent in plan_status.intent_classes if intent in {"stock", "weather", "news", "currency"}}
+        explicit = {
+            intent
+            for intent in plan_status.intent_classes
+            if intent in {"stock", "weather", "news", "currency", "ecommerce", "accounting", "retail"}
+        }
         if explicit:
             return explicit
 
@@ -3016,6 +3020,12 @@ class AgentEngine:
             return "currency"
         if tool_name.startswith("weather_"):
             return "weather"
+        if tool_name.startswith("ebay_"):
+            return "ecommerce"
+        if tool_name.startswith("opencollective_"):
+            return "accounting"
+        if tool_name.startswith("openlibrary_"):
+            return "retail"
         return None
 
     def _grounded_fallback_answer(

@@ -114,6 +114,15 @@ async def test_mcp_initialize_and_list_tools() -> None:
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
     assert "fx_convert" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "ebay_item_detail" in tool_names
+    assert "ebay_category_tree" in tool_names
+    assert "opencollective_expense_list" in tool_names
+    assert "opencollective_transaction_all" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
+    assert "openlibrary_isbn_lookup" in tool_names
+    assert "openlibrary_subject_list" in tool_names
     assert "weather_resolve" not in tool_names
     assert "stock_get_departments" not in tool_names
     assert "stock_get_categories" not in tool_names

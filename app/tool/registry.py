@@ -34,6 +34,9 @@ from app.tool.stock.media import (
 from app.tool.stock.service import InventoryService
 from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
 from app.tool.news.formatter import format_news_articles, format_news_sources
+from app.tool.accounting import AccountingService, OpenCollectiveBudgetLookupArgs, OpenCollectiveExpenseListArgs, OpenCollectiveTransactionAllArgs
+from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
+from app.tool.retail import OpenLibraryBookSearchArgs, OpenLibraryIsbnLookupArgs, OpenLibraryService, OpenLibrarySubjectListArgs
 from app.resolver import ResolverService
 from app.schemas import (
     InventorySnapshotResponse,
@@ -99,6 +102,9 @@ class ToolRegistry:
         news_service: NewsService,
         weather_service: WeatherService,
         currency_service: CurrencyService,
+        ecommerce_service: EcommerceService,
+        accounting_service: AccountingService,
+        retail_service: OpenLibraryService,
         logger: logging.Logger,
         *,
         inventory_tools_enabled: bool = True,
@@ -109,6 +115,9 @@ class ToolRegistry:
         self.news_service = news_service
         self.weather_service = weather_service
         self.currency_service = currency_service
+        self.ecommerce_service = ecommerce_service
+        self.accounting_service = accounting_service
+        self.retail_service = retail_service
         self.logger = logger
         self.inventory_tools_enabled = inventory_tools_enabled and inventory_service is not None
         self._tools: dict[str, ToolSpec] = {}
@@ -122,6 +131,9 @@ class ToolRegistry:
         self._register_news()
         self._register_weather()
         self._register_currency()
+        self._register_ecommerce()
+        self._register_accounting()
+        self._register_retail()
         self._tool_name_map = McpToolNameMap(list(self._tools))
 
     def list_tools(
@@ -2209,4 +2221,211 @@ class ToolRegistry:
             CurrencyFluctuationArgs,
             fluctuation,
             visible=False,
+        )
+
+    def _register_ecommerce(self) -> None:
+        async def item_search(validated: EbayItemSearchArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.ecommerce_service.item_search(validated)
+            items = data.get("items", []) if isinstance(data, dict) else []
+            trace = ToolTrace(
+                thought=thought,
+                tool="ebay_item_search",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="ebay -> item_summary/search.itemSummaries[*]",
+                result_count=len(items) if isinstance(items, list) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="ebay_item_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def item_detail(validated: EbayItemDetailArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.ecommerce_service.item_detail(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="ebay_item_detail",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="ebay -> item/{item_id}",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="ebay_item_detail", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def category_tree(validated: EbayCategoryTreeArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.ecommerce_service.category_tree(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="ebay_category_tree",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="ebay -> commerce/taxonomy/category_tree",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="ebay_category_tree", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        self._register(
+            "ebay_item_search",
+            "eBay Browse API item search for live product discovery, pricing, availability, and listing summaries.",
+            EbayItemSearchArgs,
+            item_search,
+        )
+        self._register(
+            "ebay_item_detail",
+            "eBay Browse API item lookup for listing metadata, seller details, images, and availability signals.",
+            EbayItemDetailArgs,
+            item_detail,
+        )
+        self._register(
+            "ebay_category_tree",
+            "eBay Taxonomy API category tree lookup for marketplace hierarchy and category navigation.",
+            EbayCategoryTreeArgs,
+            category_tree,
+        )
+
+    def _register_accounting(self) -> None:
+        async def expense_list(validated: OpenCollectiveExpenseListArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.expense_list(validated)
+            account = data.get("account", {}) if isinstance(data, dict) else {}
+            expense_count = None
+            if isinstance(account, dict):
+                expenses = account.get("expenses")
+                if isinstance(expenses, dict):
+                    expense_count = expenses.get("totalCount")
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_expense_list",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> account.expenses",
+                result_count=expense_count if isinstance(expense_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="opencollective_expense_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def transaction_all(validated: OpenCollectiveTransactionAllArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.transaction_all(validated)
+            account = data.get("account", {}) if isinstance(data, dict) else {}
+            transaction_count = None
+            if isinstance(account, dict):
+                transactions = account.get("transactions")
+                if isinstance(transactions, dict):
+                    transaction_count = transactions.get("totalCount")
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_transaction_all",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> account.transactions",
+                result_count=transaction_count if isinstance(transaction_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(
+                tool="opencollective_transaction_all",
+                data=data,
+                llm_content=data,
+                normalization_notes=notes,
+                trace=trace,
+            )
+
+        async def budget_lookup(validated: OpenCollectiveBudgetLookupArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.budget_lookup(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="opencollective_budget_lookup",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> account.stats",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="opencollective_budget_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        self._register(
+            "opencollective_expense_list",
+            "Open Collective expense list for public, read-only collective expense reports and ledger entries.",
+            OpenCollectiveExpenseListArgs,
+            expense_list,
+        )
+        self._register(
+            "opencollective_transaction_all",
+            "Open Collective transaction ledger lookup for public transaction histories and audit-style browsing.",
+            OpenCollectiveTransactionAllArgs,
+            transaction_all,
+        )
+        self._register(
+            "opencollective_budget_lookup",
+            "Open Collective budget lookup for public balance and financial-health snapshots.",
+            OpenCollectiveBudgetLookupArgs,
+            budget_lookup,
+        )
+
+    def _register_retail(self) -> None:
+        async def book_search(validated: OpenLibraryBookSearchArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.retail_service.book_search(validated)
+            search = data.get("search", {}) if isinstance(data, dict) else {}
+            result_count = search.get("numFound") if isinstance(search, dict) else None
+            trace = ToolTrace(
+                thought=thought,
+                tool="openlibrary_book_search",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="openlibrary -> search.json.docs[*]",
+                result_count=result_count if isinstance(result_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="openlibrary_book_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def isbn_lookup(validated: OpenLibraryIsbnLookupArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.retail_service.isbn_lookup(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="openlibrary_isbn_lookup",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="openlibrary -> isbn/{id}.json",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="openlibrary_isbn_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def subject_list(validated: OpenLibrarySubjectListArgs, _: str | None, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.retail_service.subject_list(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="openlibrary_subject_list",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="openlibrary -> subjects/{subject}.json",
+                result_count=1,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="openlibrary_subject_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        self._register(
+            "openlibrary_book_search",
+            "Open Library search for public book discovery by title, author, subject, or free-text query.",
+            OpenLibraryBookSearchArgs,
+            book_search,
+        )
+        self._register(
+            "openlibrary_isbn_lookup",
+            "Open Library ISBN lookup for book metadata and catalog details.",
+            OpenLibraryIsbnLookupArgs,
+            isbn_lookup,
+        )
+        self._register(
+            "openlibrary_subject_list",
+            "Open Library subject browse for catalog browsing by book subject or classification.",
+            OpenLibrarySubjectListArgs,
+            subject_list,
         )

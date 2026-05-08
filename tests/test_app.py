@@ -362,6 +362,9 @@ def test_null_data_source_disables_harmonise_tools(monkeypatch) -> None:
     assert "news_search" in tool_names
     assert "weather_current" in tool_names
     assert "fx_convert" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
 
 
 def test_missing_harmonise_dependency_disables_harmonise_tools(monkeypatch) -> None:
@@ -386,6 +389,9 @@ def test_missing_harmonise_dependency_disables_harmonise_tools(monkeypatch) -> N
     assert "news_search" in tool_names
     assert "weather_current" in tool_names
     assert "fx_convert" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
 
 
 def test_mcp_unauthorized_response_advertises_oauth_metadata() -> None:
@@ -1348,6 +1354,15 @@ def test_tools_endpoint_lists_stock_and_plugin_tools() -> None:
     assert "weather_current" in tool_names
     assert "news_search" in tool_names
     assert "fx_convert" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "ebay_item_detail" in tool_names
+    assert "ebay_category_tree" in tool_names
+    assert "opencollective_expense_list" in tool_names
+    assert "opencollective_transaction_all" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
+    assert "openlibrary_isbn_lookup" in tool_names
+    assert "openlibrary_subject_list" in tool_names
 
 
 def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
@@ -1363,6 +1378,9 @@ def test_tools_endpoint_hides_metadata_tools_in_cloud_mode() -> None:
     assert "stock_list_category" in tool_names
     assert "stock_search" in tool_names
     assert "stock_detail" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
 
 
 def test_identity_auth_tools_enforce_group_role_access() -> None:
@@ -1443,6 +1461,9 @@ def test_identity_auth_filters_tools_by_plugin_group_membership(monkeypatch) -> 
     assert "news_search" in tool_names
     assert "weather_current" in tool_names
     assert "fx_convert" in tool_names
+    assert "ebay_item_search" in tool_names
+    assert "opencollective_budget_lookup" in tool_names
+    assert "openlibrary_book_search" in tool_names
     assert "stock_snapshot" not in tool_names
     assert all("required_roles" not in tool for tool in tools_response.json()["tools"])
     assert denied_call.status_code == 403

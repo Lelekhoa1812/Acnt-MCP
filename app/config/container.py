@@ -7,6 +7,8 @@ import anyio
 
 from app.agent import AgentEngine
 from app.config.settings import Settings
+from app.tool.ecommerce import EcommerceService
+from app.tool.accounting import AccountingService
 from app.stats.service import UsageStatsService
 from app.tool.currency import CurrencyService
 from app.tool.stock.service import InventoryService
@@ -18,6 +20,7 @@ from app.session.store import SessionStore
 from app.store import AppKeyValueStore
 from app.tool.registry import ToolRegistry
 from app.tool.weather import WeatherService
+from app.tool.retail import OpenLibraryService
 
 
 @dataclass
@@ -31,6 +34,9 @@ class AppContainer:
     news_service: NewsService
     weather_service: WeatherService
     currency_service: CurrencyService
+    ecommerce_service: EcommerceService
+    accounting_service: AccountingService
+    retail_service: OpenLibraryService
     usage_stats_service: UsageStatsService
     tool_registry: ToolRegistry
     agent_engine: AgentEngine
@@ -41,6 +47,9 @@ class AppContainer:
         await self.agent_engine.close()
         if self.inventory_source is not None:
             await self.inventory_source.close()
+        await self.ecommerce_service.close()
+        await self.accounting_service.close()
+        await self.retail_service.close()
         await self.news_service.close()
         await self.weather_service.close()
         await self.currency_service.close()
@@ -120,6 +129,9 @@ async def build_container(settings: Settings) -> AppContainer:
     news_service = NewsService(settings=settings, key_value_store=key_value_store, logger=logger)
     weather_service = WeatherService(settings=settings, key_value_store=key_value_store, logger=logger)
     currency_service = CurrencyService(settings=settings, key_value_store=key_value_store, logger=logger)
+    ecommerce_service = EcommerceService(settings=settings, key_value_store=key_value_store, logger=logger)
+    accounting_service = AccountingService(settings=settings, key_value_store=key_value_store, logger=logger)
+    retail_service = OpenLibraryService(settings=settings, key_value_store=key_value_store, logger=logger)
     usage_stats_service = UsageStatsService(settings=settings, key_value_store=key_value_store)
     tool_registry = ToolRegistry(
         inventory_service=inventory_service,
@@ -128,6 +140,9 @@ async def build_container(settings: Settings) -> AppContainer:
         news_service=news_service,
         weather_service=weather_service,
         currency_service=currency_service,
+        ecommerce_service=ecommerce_service,
+        accounting_service=accounting_service,
+        retail_service=retail_service,
         logger=logger,
         inventory_tools_enabled=harmonise_inventory_tools_enabled,
     )
@@ -151,6 +166,9 @@ async def build_container(settings: Settings) -> AppContainer:
         news_service=news_service,
         weather_service=weather_service,
         currency_service=currency_service,
+        ecommerce_service=ecommerce_service,
+        accounting_service=accounting_service,
+        retail_service=retail_service,
         usage_stats_service=usage_stats_service,
         tool_registry=tool_registry,
         agent_engine=agent_engine,

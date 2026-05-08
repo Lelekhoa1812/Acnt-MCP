@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
     open_weather_api_key: str | None = Field(None, alias="OPEN_WEATHER_API")
     news_api_key: str | None = Field(None, alias="NEWS_API")
+    ebay_client_id: str | None = Field(None, alias="EBAY_CLIENT_ID")
+    ebay_client_secret: str | None = Field(None, alias="EBAY_CLIENT_SECRET")
+    ebay_marketplace_id: str = Field("EBAY_US", alias="EBAY_MARKETPLACE_ID")
+    ebay_environment: str = Field("production", alias="EBAY_ENVIRONMENT")
+    opencollective_client_id: str | None = Field(None, alias="OPENCOLLECTIVE_CLIENT_ID")
+    opencollective_client_secret: str | None = Field(None, alias="OPENCOLLECTIVE_CLIENT_SECRET")
+    opencollective_pat_token: str | None = Field(None, alias="OPENCOLLECTIVE_PAT_TOKEN")
+    opencollective_graphql_url: str = Field("https://api.opencollective.com/graphql/v2", alias="OPENCOLLECTIVE_GRAPHQL_URL")
     public_base_url: str | None = Field(None, alias="HTH_PUBLIC_BASE_URL")
     mcp_path: str = Field("/mcp", alias="HTH_MCP_PATH")
     mcp_stateless: bool = Field(False, alias="HTH_MCP_STATELESS")
@@ -557,6 +565,16 @@ class Settings(BaseSettings):
         if not authority:
             return None
         return f"{authority}/oauth2/v2.0/token"
+
+    @property
+    def resolved_ebay_base_url(self) -> str:
+        if self.ebay_environment.strip().casefold() == "sandbox":
+            return "https://api.sandbox.ebay.com"
+        return "https://api.ebay.com"
+
+    @property
+    def resolved_ebay_token_url(self) -> str:
+        return f"{self.resolved_ebay_base_url}/identity/v1/oauth2/token"
 
     @property
     def resolved_oauth_jwks_url(self) -> str | None:
