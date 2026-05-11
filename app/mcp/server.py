@@ -102,6 +102,7 @@ class StdioMcpApplication:
             orchestrator_service=container.orchestrator_service,
             default_session_id=container.settings.default_session_id,
             logger=self.logger,
+            compact_envelope=container.settings.mcp_compact_envelope,
         )
 
     def _require_container(self) -> AppContainer:

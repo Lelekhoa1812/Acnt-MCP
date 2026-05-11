@@ -203,7 +203,12 @@ async def test_mcp_cloud_mode_hides_metadata_tools() -> None:
 
 @pytest.mark.anyio
 async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
-    server = build_mcp_server(build_mcp_settings())
+    # Motivation vs Logic: compact mode (the default) drops orchestration-only
+    # fields from the MCP envelope to save tokens, so flip it off here so the
+    # test can still verify that plan/memo/validation are wired through.
+    settings = build_mcp_settings()
+    settings = settings.model_copy(update={"mcp_compact_envelope": False})
+    server = build_mcp_server(settings)
 
     async with create_connected_server_and_client_session(server) as client:
         await client.initialize()
@@ -220,6 +225,48 @@ async def test_mcp_call_tool_returns_structured_inventory_payload() -> None:
     assert result.structuredContent["memo_update"]["tool"] == "stock_search"
     assert result.structuredContent["validation"]["actual_rows"] is not None
     assert result.structuredContent["answer_ready"]["items"]
+
+
+@pytest.mark.anyio
+async def test_mcp_list_tools_advertises_output_schema() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        tools = await client.list_tools()
+
+    # Root Cause vs Logic: external MCP clients (Claude.ai, ChatGPT) warn when
+    # `outputSchema` is missing. Every advertised tool should now ship a schema.
+    for tool in tools.tools:
+        assert tool.outputSchema is not None, f"tool {tool.name} missing outputSchema"
+        props = tool.outputSchema["properties"]
+        assert "data" in props
+        assert "error" in props
+        # Compact mode is on by default, so orchestration coordination fields
+        # should not be advertised in the schema.
+        assert "plan_status" not in props
+        assert "memo_update" not in props
+        assert "validation" not in props
+
+
+@pytest.mark.anyio
+async def test_mcp_compact_envelope_strips_orchestration_fields() -> None:
+    server = build_mcp_server(build_mcp_settings())
+
+    async with create_connected_server_and_client_session(server) as client:
+        await client.initialize()
+        result = await client.call_tool(
+            "stock_search",
+            {"page": 1, "pageSize": 5, "search": "white gloss dance floor"},
+        )
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    # Compact mode is on by default; orchestration noise should be omitted.
+    assert "plan_status" not in result.structuredContent
+    assert "memo_update" not in result.structuredContent
+    assert "validation" not in result.structuredContent
+    assert "data" in result.structuredContent
 
 
 @pytest.mark.anyio

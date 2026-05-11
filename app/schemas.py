@@ -529,6 +529,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
+    output_schema: dict[str, Any] | None = None
 
 
 class AgentDebugIntent(BaseModel):

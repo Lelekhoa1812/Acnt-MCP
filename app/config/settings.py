@@ -161,6 +161,14 @@ class Settings(BaseSettings):
         ge=1,
         alias="HTH_MCP_SESSION_IDLE_TIMEOUT_MIN_SECONDS",
     )
+    # Motivation vs Logic: external MCP clients (Claude.ai/ChatGPT) flag tools
+    # without an `outputSchema` and also pay token cost for verbose envelopes.
+    # When compact mode is on we (a) advertise a trimmed envelope schema and
+    # (b) drop the internal plan/memo/validation orchestration fields from the
+    # actual response, while still keeping `data`, `answer_ready`, and
+    # `normalization_notes`. Disable only when callers genuinely consume those
+    # coordination fields over MCP.
+    mcp_compact_envelope: bool = Field(True, alias="HTH_MCP_COMPACT_ENVELOPE")
     mcp_bearer_token: str | None = Field(None, alias="HTH_MCP_BEARER_TOKEN")
     # Motivation vs Logic: remote Claude web connectors can complete OAuth, but
     # many hosted connector UIs do not let you pre-supply a bearer token. Keep

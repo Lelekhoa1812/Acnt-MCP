@@ -14,6 +14,7 @@ from app.config import (
     UnsupportedToolError,
     UpstreamServiceError,
 )
+from app.mcp.output import compact_success_envelope
 from app.orchestrator import OrchestratorService
 from app.schemas import ToolResult
 
@@ -22,24 +23,39 @@ class McpToolAdapter:
     # Motivation vs Logic: this adapter keeps the business-facing tool registry as
     # the single source of truth, while translating its schemas, session handling,
     # and results into protocol-native MCP `tools/list` and `tools/call` payloads.
-    def __init__(self, orchestrator_service: OrchestratorService, default_session_id: str, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        orchestrator_service: OrchestratorService,
+        default_session_id: str,
+        logger: logging.Logger,
+        *,
+        compact_envelope: bool = True,
+    ) -> None:
         self.orchestrator_service = orchestrator_service
         self.default_session_id = default_session_id
         self.logger = logger
+        self.compact_envelope = compact_envelope
 
     def list_tools(self) -> list[types.Tool]:
         user_context = get_user_context()
-        return [
-            types.Tool(
-                name=tool.name,
-                description=tool.description,
-                inputSchema=tool.input_schema,
-            )
-            for tool in self.orchestrator_service.tool_registry.list_tools(
-                include_hidden=False,
-                user_context=user_context,
-            )
-        ]
+        tools: list[types.Tool] = []
+        for tool in self.orchestrator_service.tool_registry.list_tools(
+            include_hidden=False,
+            user_context=user_context,
+        ):
+            kwargs: dict[str, Any] = {
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": tool.input_schema,
+            }
+            if tool.output_schema is not None:
+                # Root Cause vs Logic: MCP clients (Claude.ai, ChatGPT, Cursor)
+                # surface a "Recommended: Add an outputSchema" warning when this
+                # field is missing; advertising the envelope schema removes that
+                # warning and lets the model reason about result shape upfront.
+                kwargs["outputSchema"] = tool.output_schema
+            tools.append(types.Tool(**kwargs))
+        return tools
 
     async def call_tool(
         self,
@@ -136,12 +152,18 @@ class McpToolAdapter:
             envelope["answer_ready"] = result.llm_content
         if result.normalization_notes:
             envelope["normalization_notes"] = result.normalization_notes
-        if result.plan_status is not None:
-            envelope["plan_status"] = result.plan_status.model_dump(mode="json")
-        if result.memo_update is not None:
-            envelope["memo_update"] = result.memo_update.model_dump(mode="json")
-        if result.validation is not None:
-            envelope["validation"] = result.validation.model_dump(mode="json")
+        if not self.compact_envelope:
+            # Motivation vs Logic: orchestration fields (plan/memo/validation)
+            # are internal coordination payloads that bloat the MCP response
+            # without helping external clients. They are kept opt-in via the
+            # `compact_envelope` flag for callers that genuinely need them.
+            if result.plan_status is not None:
+                envelope["plan_status"] = result.plan_status.model_dump(mode="json")
+            if result.memo_update is not None:
+                envelope["memo_update"] = result.memo_update.model_dump(mode="json")
+            if result.validation is not None:
+                envelope["validation"] = result.validation.model_dump(mode="json")
+        envelope = compact_success_envelope(envelope, drop_orchestration=self.compact_envelope)
 
         content: list[
             types.TextContent

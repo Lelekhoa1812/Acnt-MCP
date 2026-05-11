@@ -145,6 +145,7 @@ async def build_container(settings: Settings) -> AppContainer:
         retail_service=retail_service,
         logger=logger,
         inventory_tools_enabled=harmonise_inventory_tools_enabled,
+        compact_envelope=settings.mcp_compact_envelope,
     )
     agent_engine = AgentEngine(settings=settings, tool_registry=tool_registry, logger=logger)
     orchestrator_service = OrchestratorService(

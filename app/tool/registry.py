@@ -83,6 +83,7 @@ from app.prompt.stock.furniture import furniture_capability_summary, list_furnit
 from app.session.store import SessionStore
 from app.text.utils import lexical_overlap
 from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
+from app.mcp.output import build_envelope_output_schema
 from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name, normalize_mcp_tool_name
 
 
@@ -94,6 +95,11 @@ class ToolSpec:
     handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
     visible: bool = True
     plugin: str | None = None
+    # Motivation vs Logic: optional per-tool Pydantic model describing the shape
+    # of `ToolResult.data`. When provided we embed its JSON Schema under the
+    # `data` slot of the envelope output schema; otherwise we fall back to a
+    # generic placeholder. Either way every tool advertises a real outputSchema.
+    output_model: type[BaseModel] | None = None
 
 
 # Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
@@ -120,8 +126,10 @@ class ToolRegistry:
         logger: logging.Logger,
         *,
         inventory_tools_enabled: bool = True,
+        compact_envelope: bool = True,
     ) -> None:
         self.inventory_service = inventory_service
+        self.compact_envelope = compact_envelope
         self.resolver_service = resolver_service
         self.session_store = session_store
         self.news_service = news_service
@@ -174,6 +182,7 @@ class ToolRegistry:
                     name=public_name,
                     description=spec.description,
                     input_schema=spec.model.model_json_schema(),
+                    output_schema=self._build_output_schema(spec),
                 )
             )
         return tools
@@ -203,6 +212,7 @@ class ToolRegistry:
                         "name": public_name,
                         "description": spec.description,
                         "parameters": spec.model.model_json_schema(),
+                        "returns": self._build_output_schema(spec),
                     },
                 }
             )
@@ -266,6 +276,7 @@ class ToolRegistry:
         *,
         visible: bool = True,
         plugin: str | None = None,
+        output_model: type[BaseModel] | None = None,
     ) -> None:
         self._tools[name] = ToolSpec(
             name=name,
@@ -274,7 +285,19 @@ class ToolRegistry:
             handler=handler,
             visible=visible,
             plugin=plugin or self._infer_plugin_name(name),
+            output_model=output_model,
         )
+
+    def _build_output_schema(self, spec: ToolSpec) -> dict[str, Any]:
+        # Motivation vs Logic: prefer a tool-specific data schema when the spec
+        # supplies one so MCP clients can validate concrete shapes; otherwise
+        # fall back to the shared generic envelope. Either path always returns
+        # a real schema so every tool surfaces an `outputSchema` and the model
+        # no longer logs the "Recommended: Add an outputSchema" warning.
+        data_schema: dict[str, Any] | None = None
+        if spec.output_model is not None:
+            data_schema = spec.output_model.model_json_schema()
+        return build_envelope_output_schema(data_schema, compact=self.compact_envelope)
 
     def _is_plugin_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
         if not spec.plugin:
