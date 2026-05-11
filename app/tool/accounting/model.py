@@ -88,33 +88,6 @@ class ExpenseWorkflowAction(str, Enum):
     PROCESS = "PROCESS"
 
 
-class OpenCollectiveExpenseWorkflowArgs(BaseModel):
-    action: ExpenseWorkflowAction = Field(description="Expense workflow step to execute.")
-    account: AccountReferenceInput | None = Field(None, description="Account receiving the expense for create actions.")
-    expense: dict[str, Any] = Field(..., description="Expense payload for create/edit/delete/process actions.")
-    privateComment: str | None = Field(None, description="Private comment for create actions.")
-    processAction: ExpenseProcessAction | None = Field(None, description="Expense process action for workflow processing.")
-    message: str | None = Field(None, description="Optional workflow message.")
-    paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
-
-    @model_validator(mode="after")
-    def _validate_workflow_shape(self) -> "OpenCollectiveExpenseWorkflowArgs":
-        if self.action == ExpenseWorkflowAction.CREATE:
-            if self.account is None:
-                raise ValueError("provide 'account' for CREATE actions.")
-            if not self.expense:
-                raise ValueError("provide 'expense' for CREATE actions.")
-        elif self.action == ExpenseWorkflowAction.PROCESS:
-            if self.processAction is None:
-                raise ValueError("provide 'processAction' for PROCESS actions.")
-            if not self.expense:
-                raise ValueError("provide 'expense' for PROCESS actions.")
-        elif self.action in {ExpenseWorkflowAction.EDIT, ExpenseWorkflowAction.DELETE}:
-            if not self.expense:
-                raise ValueError("provide 'expense' for EDIT and DELETE actions.")
-        return self
-
-
 class AccountReferenceInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str | None = Field(None, description="Public Open Collective account id (e.g. acc_xxx).")
@@ -234,3 +207,67 @@ class OpenCollectiveExpenseProcessArgs(BaseModel):
     action: ExpenseProcessAction = Field(..., description="Action that should be invoked.")
     message: str | None = Field(None, description="Log message attached to the action.")
     paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
+
+
+_EXPENSE_FIELD_DESCRIPTION = (
+    "Expense payload. Shape depends on `action`: "
+    "CREATE -> {description, type (INVOICE|RECEIPT), payee:{id|slug}, payoutMethod:{type,...}, "
+    "items?:[{description, amountV2:{valueInCents, currency}, incurredAt?}], currency?, tags?, ...}; "
+    "EDIT -> ExpenseCreateInput fields plus {id}; "
+    "DELETE / PROCESS -> {id} or {legacyId}."
+)
+
+
+class OpenCollectiveExpenseWorkflowArgs(BaseModel):
+    # Motivation vs Logic: the workflow tool dispatches four distinct mutations (CREATE/EDIT/DELETE/PROCESS)
+    # whose `expense` payloads have very different required fields. We expose all three concrete shapes in
+    # the schema so MCP clients can see what to populate per action, while still accepting a raw dict for
+    # forward-compatibility with future Open Collective fields.
+    action: ExpenseWorkflowAction = Field(description="Expense workflow step to execute.")
+    account: AccountReferenceInput | None = Field(None, description="Account receiving the expense for CREATE actions.")
+    expense: ExpenseUpdateInput | ExpenseCreateInput | ExpenseReferenceInput | dict[str, Any] = Field(
+        ..., description=_EXPENSE_FIELD_DESCRIPTION
+    )
+    privateComment: str | None = Field(None, description="Private comment for create actions.")
+    processAction: ExpenseProcessAction | None = Field(None, description="Expense process action for workflow processing.")
+    message: str | None = Field(None, description="Optional workflow message.")
+    paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
+
+    @model_validator(mode="after")
+    def _validate_workflow_shape(self) -> "OpenCollectiveExpenseWorkflowArgs":
+        expense_payload = self._expense_as_dict()
+        if not expense_payload:
+            raise ValueError("provide 'expense' payload.")
+        if self.action == ExpenseWorkflowAction.CREATE:
+            if self.account is None:
+                raise ValueError("provide 'account' for CREATE actions.")
+            missing = [
+                key for key in ("description", "type", "payee", "payoutMethod")
+                if not expense_payload.get(key)
+            ]
+            if missing:
+                raise ValueError(
+                    f"CREATE expense payload missing required fields: {', '.join(missing)}. "
+                    "Provide description, type (INVOICE|RECEIPT), payee:{slug|id}, payoutMethod:{type,...}."
+                )
+        elif self.action == ExpenseWorkflowAction.EDIT:
+            if not expense_payload.get("id"):
+                raise ValueError("EDIT expense payload requires 'id'.")
+        elif self.action == ExpenseWorkflowAction.DELETE:
+            if not expense_payload.get("id") and not expense_payload.get("legacyId"):
+                raise ValueError("DELETE expense payload requires 'id' or 'legacyId'.")
+        elif self.action == ExpenseWorkflowAction.PROCESS:
+            if self.processAction is None:
+                raise ValueError("provide 'processAction' for PROCESS actions.")
+            if not expense_payload.get("id") and not expense_payload.get("legacyId"):
+                raise ValueError("PROCESS expense payload requires 'id' or 'legacyId'.")
+        return self
+
+    def _expense_as_dict(self) -> dict[str, Any]:
+        if isinstance(self.expense, BaseModel):
+            return self.expense.model_dump(mode="json", exclude_none=True)
+        return dict(self.expense or {})
+
+    def expense_payload(self) -> dict[str, Any]:
+        """Return the expense payload as a plain dict suitable for GraphQL variables."""
+        return self._expense_as_dict()

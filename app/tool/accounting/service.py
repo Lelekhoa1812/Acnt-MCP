@@ -239,11 +239,12 @@ class AccountingService:
         )
 
     async def expense_workflow(self, args: OpenCollectiveExpenseWorkflowArgs) -> tuple[dict[str, object], str, list[str]]:
-        return await self._cached(
-            "accounting_expense_workflow",
-            args.model_dump(mode="json", exclude_none=True),
-            lambda: self._expense_workflow_payload(args),
-        )
+        # Root Cause vs Logic: expense_workflow dispatches createExpense/editExpense/deleteExpense/processExpense
+        # mutations - all writes - so the response must never be cached. A cached prior success would silently
+        # short-circuit later calls with identical args, and a cached prior failure would mask transient upstream
+        # issues until TTL expiry.
+        data, notes = await self._expense_workflow_payload(args)
+        return data, "live", notes
 
     async def _cached(
         self,
@@ -425,29 +426,30 @@ query BudgetLookup($slug: String!) {
         return self._shape_financial_snapshot_payload(args, payload, include_open_liabilities=args.include_open_liabilities), notes
 
     async def _expense_workflow_payload(self, args: OpenCollectiveExpenseWorkflowArgs) -> tuple[dict[str, object], list[str]]:
+        expense_payload = args.expense_payload()
         if args.action == ExpenseWorkflowAction.CREATE:
             payload = await self._post_graphql(
                 _CREATE_EXPENSE_MUTATION,
                 {
                     "account": args.account.model_dump(mode="json", exclude_none=True) if args.account else None,
-                    "expense": args.expense,
+                    "expense": expense_payload,
                     "privateComment": args.privateComment,
                 },
             )
             return self._shape_expense_operation_payload("accounting_expense_workflow", args, payload, "createExpense"), []
 
         if args.action == ExpenseWorkflowAction.EDIT:
-            payload = await self._post_graphql(_EDIT_EXPENSE_MUTATION, {"expense": args.expense})
+            payload = await self._post_graphql(_EDIT_EXPENSE_MUTATION, {"expense": expense_payload})
             return self._shape_expense_operation_payload("accounting_expense_workflow", args, payload, "editExpense"), []
 
         if args.action == ExpenseWorkflowAction.DELETE:
-            payload = await self._post_graphql(_DELETE_EXPENSE_MUTATION, {"expense": args.expense})
+            payload = await self._post_graphql(_DELETE_EXPENSE_MUTATION, {"expense": expense_payload})
             return self._shape_expense_operation_payload("accounting_expense_workflow", args, payload, "deleteExpense"), []
 
         payload = await self._post_graphql(
             _PROCESS_EXPENSE_MUTATION,
             {
-                "expense": args.expense,
+                "expense": expense_payload,
                 "action": args.processAction.value if args.processAction else None,
                 "message": args.message,
                 "paymentParams": args.paymentParams.model_dump(mode="json", exclude_none=True) if args.paymentParams else None,
