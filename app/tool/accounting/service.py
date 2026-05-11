@@ -27,29 +27,33 @@ from app.store import AppKeyValueStore
 
 
 _CREATE_EXPENSE_MUTATION = """
+fragment OCAmountFields on Amount {
+  value
+  currency
+  valueInCents
+}
+
 mutation CreateExpense($account: AccountReferenceInput!, $expense: ExpenseCreateInput!, $privateComment: String) {
   createExpense(account: $account, expense: $expense, privateComment: $privateComment) {
     id
     legacyId
-    slug
     status
     type
     description
-    amount
+    amountV2 { ...OCAmountFields }
     currency
     privateMessage
     reference
     payoutMethod {
       id
       type
-      publicId
     }
     payee {
       id
       slug
       name
     }
-    host {
+    account {
       id
       slug
       name
@@ -59,23 +63,26 @@ mutation CreateExpense($account: AccountReferenceInput!, $expense: ExpenseCreate
       description
       incurredAt
       url
-      amount {
-        currency
-        value
-      }
+      amountV2 { ...OCAmountFields }
     }
   }
 }
 """.strip()
 
 _EDIT_EXPENSE_MUTATION = """
+fragment OCAmountFields on Amount {
+  value
+  currency
+  valueInCents
+}
+
 mutation EditExpense($expense: ExpenseUpdateInput!) {
   editExpense(expense: $expense) {
     id
-    slug
+    legacyId
     status
     description
-    amount
+    amountV2 { ...OCAmountFields }
     currency
     reference
     privateMessage
@@ -87,13 +94,19 @@ _DELETE_EXPENSE_MUTATION = """
 mutation DeleteExpense($expense: ExpenseReferenceInput!) {
   deleteExpense(expense: $expense) {
     id
-    slug
+    legacyId
     status
   }
 }
 """.strip()
 
 _PROCESS_EXPENSE_MUTATION = """
+fragment OCAmountFields on Amount {
+  value
+  currency
+  valueInCents
+}
+
 mutation ProcessExpense(
   $expense: ExpenseReferenceInput!
   $action: ExpenseProcessAction!
@@ -102,10 +115,10 @@ mutation ProcessExpense(
 ) {
   processExpense(expense: $expense, action: $action, message: $message, paymentParams: $paymentParams) {
     id
-    slug
+    legacyId
     status
     type
-    amount
+    amountV2 { ...OCAmountFields }
     currency
     privateMessage
   }
@@ -507,6 +520,10 @@ query BudgetLookup($slug: String!) {
             extensions = error.get("extensions", {})
             code = extensions.get("code", "").upper() if isinstance(extensions, dict) else ""
 
+            # Personal-Token is missing a required scope (e.g. "expenses"). Surface this
+            # before generic forbidden/permission so callers can route the fix to the user.
+            if "personal token is not allowed for operations in scope" in msg or "not allowed for operations in scope" in msg:
+                return "SCOPE_MISSING"
             # Check for specific error patterns
             if "authentication" in msg or "unauthorized" in msg or code == "UNAUTHENTICATED":
                 return "AUTH"
@@ -518,11 +535,24 @@ query BudgetLookup($slug: String!) {
                 return "VALIDATION"
             if "not found" in msg:
                 return "NOT_FOUND"
-            if "permission" in msg or "forbidden" in msg:
+            if "permission" in msg or "forbidden" in msg or code == "FORBIDDEN":
                 return "PERMISSION"
 
         # Default to server error if we can't categorize
         return "SERVER_ERROR"
+
+    def _extract_missing_scope(self, errors: list[dict[str, Any]] | Any) -> str | None:
+        """Extract the missing scope name from the OC GraphQL Forbidden error message."""
+        if not isinstance(errors, list):
+            return None
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            msg = error.get("message", "")
+            match = re.search(r"scope\s+\"([^\"]+)\"", msg)
+            if match:
+                return match.group(1)
+        return None
 
     async def _post_graphql(self, query: str, variables: dict[str, object]) -> dict[str, Any]:
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -581,6 +611,28 @@ query BudgetLookup($slug: String!) {
                         raise UpstreamServiceError(
                             401,
                             "Open Collective authentication failed. Please set a valid OPENCOLLECTIVE_PAT_TOKEN.",
+                            request="POST /graphql/v2"
+                        )
+
+                    # Scope errors: don't retry; the token is valid but missing a required scope.
+                    if error_type == "SCOPE_MISSING":
+                        scope = self._extract_missing_scope(errors) or "(unknown)"
+                        raise UpstreamServiceError(
+                            403,
+                            (
+                                f"Open Collective Personal Access Token is missing required scope '{scope}'. "
+                                f"Regenerate the token at https://opencollective.com/dashboard/<your-slug>/for-developers/personal-tokens "
+                                f"with the '{scope}' scope enabled (along with 'account', 'expenses', and 'transactions' as needed), "
+                                f"then update OPENCOLLECTIVE_PAT_TOKEN."
+                            ),
+                            request="POST /graphql/v2"
+                        )
+
+                    # Generic permission errors: don't retry
+                    if error_type == "PERMISSION":
+                        raise UpstreamServiceError(
+                            403,
+                            f"Open Collective permission denied: {error_msg}",
                             request="POST /graphql/v2"
                         )
 
