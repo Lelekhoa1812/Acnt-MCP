@@ -35,11 +35,8 @@ mutation CreateExpense($account: AccountReferenceInput!, $expense: ExpenseCreate
     status
     type
     description
-    amount {
-      value
-      currency
-      valueInCents
-    }
+    amount
+    currency
     privateMessage
     reference
     payoutMethod {
@@ -78,11 +75,8 @@ mutation EditExpense($expense: ExpenseUpdateInput!) {
     slug
     status
     description
-    amount {
-      value
-      currency
-      valueInCents
-    }
+    amount
+    currency
     reference
     privateMessage
   }
@@ -111,11 +105,8 @@ mutation ProcessExpense(
     slug
     status
     type
-    amount {
-      value
-      currency
-      valueInCents
-    }
+    amount
+    currency
     privateMessage
   }
 }
@@ -169,7 +160,8 @@ query FinancialSnapshot(
         id
         type
         status
-        amount { ...OCAmountFields }
+        amount
+        currency
         description
         createdAt
         account {
@@ -267,11 +259,8 @@ query ExpenseList($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: Stri
         id
         type
         status
-        amount {
-          value
-          currency
-          valueInCents
-        }
+        amount
+        currency
         description
         createdAt
         account {
@@ -298,6 +287,12 @@ query ExpenseList($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: Stri
 
     async def _transaction_all_payload(self, args: OpenCollectiveTransactionAllArgs) -> tuple[dict[str, object], list[str]]:
         query = """
+fragment OCAmountFields on Amount {
+  value
+  currency
+  valueInCents
+}
+
 query TransactionAll($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: String) {
   account(slug: $slug, throwIfMissing: false) {
     id
@@ -309,11 +304,7 @@ query TransactionAll($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: S
         id
         type
         kind
-        amount {
-          value
-          currency
-          valueInCents
-        }
+        amount { ...OCAmountFields }
         description
         createdAt
         account {
