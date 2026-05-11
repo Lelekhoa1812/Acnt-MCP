@@ -1,39 +1,17 @@
 from __future__ import annotations
 
-import base64
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
 from pydantic import BaseModel, ValidationError
 
-from app.auth.models import UserContext
-from app.auth.context import get_user_context
-from app.auth.gateway import IdentityAuthError
-from app.tool.currency import (
-    CurrencyConvertArgs,
-    CurrencyFluctuationArgs,
-    CurrencyHistoryArgs,
-    CurrencyLatestArgs,
-    CurrencyService,
-    CurrencySymbolsArgs,
-    CurrencyTimeseriesArgs,
-)
 from app.config import ParameterMappingError, UnsupportedToolError
-from app.tool.stock.intelligence import rank_evidence_with_filters
-from app.tool.stock.media import (
-    build_harmonise_image_fetch_candidates,
-    build_harmonise_image_url,
-    build_stock_image_rendering_payload,
-    resolve_variant_harmonise_image,
-)
-from app.tool.stock.service import InventoryService
-from app.tool.news import NewsHeadlinesArgs, NewsSearchArgs, NewsService, NewsSourcesArgs
-from app.tool.news.formatter import format_news_articles, format_news_sources
+from app.mcp.output import build_envelope_output_schema
+from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name
+from app.schemas import ToolDefinition, ToolResult, ToolTrace
 from app.tool.accounting import (
     AccountingService,
     OpenCollectiveAccountSearchArgs,
@@ -47,44 +25,15 @@ from app.tool.accounting import (
     OpenCollectiveFinancialSnapshotArgs,
     OpenCollectiveTransactionAllArgs,
 )
-from app.tool.ecommerce import EcommerceService, EbayCategoryTreeArgs, EbayItemDetailArgs, EbayItemSearchArgs
-from app.tool.retail import OpenLibraryBookSearchArgs, OpenLibraryIsbnLookupArgs, OpenLibraryService, OpenLibrarySubjectListArgs
-from app.resolver import ResolverService
-from app.schemas import (
-    InventorySnapshotResponse,
-    McpImageContent,
-    NormalizedEvidence,
-    ProductListItemDto,
-    ProductListItemDtoPagedResponse,
-    ResolverDisambiguateCandidatesArgs,
-    SessionToolArgs,
-    StockAvailabilityArgs,
-    StockCompareVariantsArgs,
-    StockCountItemsArgs,
-    StockExtractVariantEvidenceArgs,
-    StockGetCategoriesArgs,
-    StockGetDepartmentsArgs,
-    StockGetProductArgs,
-    StockGetSupportedScopeArgs,
-    StockHirableByStateArgs,
-    StockImageArgs,
-    StockInventorySnapshotArgs,
-    StockListCategoryArgs,
-    StockProductFamilyInventoryArgs,
-    StockSearchCatalogueArgs,
-    StockRankArgs,
-    ToolDefinition,
-    ToolResult,
-    ToolTrace,
-    VariantCapMetadata,
+from app.tool.currency import (
+    CurrencyConvertArgs,
+    CurrencyFluctuationArgs,
+    CurrencyHistoryArgs,
+    CurrencyLatestArgs,
+    CurrencyService,
+    CurrencySymbolsArgs,
+    CurrencyTimeseriesArgs,
 )
-from app.prompt.context import render_session_context, summarize_session_state
-from app.prompt.stock.furniture import furniture_capability_summary, list_furniture_category_matches
-from app.session.store import SessionStore
-from app.text.utils import lexical_overlap
-from app.tool.weather import WeatherCurrentArgs, WeatherForecastArgs, WeatherHistoryArgs, WeatherResolveArgs, WeatherService
-from app.mcp.output import build_envelope_output_schema
-from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name, normalize_mcp_tool_name
 
 
 @dataclass
@@ -92,19 +41,12 @@ class ToolSpec:
     name: str
     description: str
     model: type[BaseModel]
-    handler: Callable[[BaseModel, str | None, str], Awaitable[ToolResult]]
+    handler: Callable[[BaseModel, str], Awaitable[ToolResult]]
     visible: bool = True
-    plugin: str | None = None
-    # Motivation vs Logic: optional per-tool Pydantic model describing the shape
-    # of `ToolResult.data`. When provided we embed its JSON Schema under the
-    # `data` slot of the envelope output schema; otherwise we fall back to a
-    # generic placeholder. Either way every tool advertises a real outputSchema.
     output_model: type[BaseModel] | None = None
 
 
-# Motivation vs Logic: debug logs are for shape and non-sensitive query params; strip
-# stable IDs and session handles so local traces stay readable without leaking long UUIDs.
-_TOOL_LOG_REDACT_KEYS: frozenset[str] = frozenset({"id", "sessionId"})
+_TOOL_LOG_REDACT_KEYS: frozenset[str] = frozenset({"id"})
 
 
 def _redact_args_for_tool_log(raw_args: dict[str, Any]) -> dict[str, Any]:
@@ -114,65 +56,27 @@ def _redact_args_for_tool_log(raw_args: dict[str, Any]) -> dict[str, Any]:
 class ToolRegistry:
     def __init__(
         self,
-        inventory_service: InventoryService | None,
-        resolver_service: ResolverService,
-        session_store: SessionStore,
-        news_service: NewsService,
-        weather_service: WeatherService,
         currency_service: CurrencyService,
-        ecommerce_service: EcommerceService,
         accounting_service: AccountingService,
-        retail_service: OpenLibraryService,
         logger: logging.Logger,
         *,
-        inventory_tools_enabled: bool = True,
         compact_envelope: bool = True,
     ) -> None:
-        self.inventory_service = inventory_service
-        self.compact_envelope = compact_envelope
-        self.resolver_service = resolver_service
-        self.session_store = session_store
-        self.news_service = news_service
-        self.weather_service = weather_service
         self.currency_service = currency_service
-        self.ecommerce_service = ecommerce_service
         self.accounting_service = accounting_service
-        self.retail_service = retail_service
         self.logger = logger
-        self.inventory_tools_enabled = inventory_tools_enabled and inventory_service is not None
+        self.compact_envelope = compact_envelope
         self._tools: dict[str, ToolSpec] = {}
-        if self.inventory_tools_enabled:
-            # Motivation vs Logic: inventory-backed tools should disappear cleanly
-            # when Harmonise is unavailable, so stock, resolver, and session
-            # registrations are kept behind one runtime capability gate.
-            self._register_stock()
-            self._register_resolver()
-            self._register_session()
-        self._register_news()
-        self._register_weather()
         self._register_currency()
-        self._register_ecommerce()
         self._register_accounting()
-        self._register_retail()
         self._tool_name_map = McpToolNameMap(list(self._tools))
 
-    def list_tools(
-        self,
-        *,
-        include_hidden: bool = True,
-        user_context: UserContext | None = None,
-    ) -> list[ToolDefinition]:
-        user_context = user_context or get_user_context()
+    def list_tools(self, *, include_hidden: bool = True) -> list[ToolDefinition]:
         tools: list[ToolDefinition] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
                 continue
-            if user_context is not None and not self._is_plugin_authorized(spec, user_context):
-                continue
             public_name = self._tool_name_map.to_public(spec.name)
-            # Root Cause vs Logic: Claude.ai rejects dotted tool identifiers, so we
-            # reuse the MCP map to keep front-end names compliant while preserving
-            # the same mapping that `_tool_name_map` already tracks for reverse resolution.
             if not is_mcp_safe_tool_name(public_name):  # pragma: no cover - defensive invariant
                 raise UnsupportedToolError(
                     f"Configured tool '{spec.name}' produced unsafe MCP name '{public_name}'."
@@ -187,24 +91,16 @@ class ToolRegistry:
             )
         return tools
 
-    def tool_payloads(
-        self,
-        *,
-        include_hidden: bool = True,
-        user_context: UserContext | None = None,
-    ) -> list[dict[str, Any]]:
-        user_context = user_context or get_user_context()
+    def tool_payloads(self, *, include_hidden: bool = True) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         for spec in self._tools.values():
             if not include_hidden and not spec.visible:
                 continue
-            if user_context is not None and not self._is_plugin_authorized(spec, user_context):
-                continue
             public_name = self._tool_name_map.to_public(spec.name)
-            # Root Cause vs Logic: keep the REST function payload signature aligned with
-            # the MCP-safe name so callers sharing these definitions stay compliant.
             if not is_mcp_safe_tool_name(public_name):  # pragma: no cover - defensive invariant
-                raise UnsupportedToolError(f"Configured tool '{spec.name}' produced unsafe MCP name '{public_name}'.")
+                raise UnsupportedToolError(
+                    f"Configured tool '{spec.name}' produced unsafe MCP name '{public_name}'."
+                )
             payloads.append(
                 {
                     "type": "function",
@@ -218,39 +114,24 @@ class ToolRegistry:
             )
         return payloads
 
-    async def call_tool(
-        self,
-        tool_name: str,
-        raw_args: dict[str, Any],
-        session_id: str | None = None,
-        thought: str = "",
-        user_context: UserContext | None = None,
-    ) -> ToolResult:
+    async def call_tool(self, tool_name: str, raw_args: dict[str, Any]) -> ToolResult:
         tool_name = self.resolve_tool_name(tool_name)
         self.logger.debug("tool_call tool=%s args=%s", tool_name, _redact_args_for_tool_log(raw_args))
         spec = self._tools.get(tool_name)
         if spec is None:
             raise UnsupportedToolError(f"Unsupported tool '{tool_name}'.")
-        user_context = user_context or get_user_context()
-        if user_context is not None:
-            self._authorize_tool_access(spec, raw_args, user_context)
         try:
             validated = spec.model.model_validate(raw_args)
         except ValidationError as exc:
             raise ParameterMappingError(self._format_validation_error(tool_name, exc)) from exc
         start = time.perf_counter()
-        result = await spec.handler(validated, session_id, thought)
-        duration_seconds = time.perf_counter() - start
-        if duration_seconds < 0:
-            duration_seconds = 0.0
+        result = await spec.handler(validated, "")
+        duration_seconds = max(0.0, time.perf_counter() - start)
         if result.trace is not None:
             result.trace.duration_seconds = duration_seconds
         return result
 
     def resolve_tool_name(self, tool_name: str) -> str:
-        # Root Cause vs Logic: `/query`, REST function payloads, and MCP all need
-        # validator-safe tool names. Resolve through the shared map at the registry
-        # boundary so future aliases still execute the same implementation.
         if tool_name in self._tools:
             return tool_name
         return self._tool_name_map.to_internal(tool_name)
@@ -275,7 +156,6 @@ class ToolRegistry:
         handler,
         *,
         visible: bool = True,
-        plugin: str | None = None,
         output_model: type[BaseModel] | None = None,
     ) -> None:
         self._tools[name] = ToolSpec(
@@ -284,1818 +164,17 @@ class ToolRegistry:
             model=model,
             handler=handler,
             visible=visible,
-            plugin=plugin or self._infer_plugin_name(name),
             output_model=output_model,
         )
 
     def _build_output_schema(self, spec: ToolSpec) -> dict[str, Any]:
-        # Motivation vs Logic: prefer a tool-specific data schema when the spec
-        # supplies one so MCP clients can validate concrete shapes; otherwise
-        # fall back to the shared generic envelope. Either path always returns
-        # a real schema so every tool surfaces an `outputSchema` and the model
-        # no longer logs the "Recommended: Add an outputSchema" warning.
         data_schema: dict[str, Any] | None = None
         if spec.output_model is not None:
             data_schema = spec.output_model.model_json_schema()
         return build_envelope_output_schema(data_schema, compact=self.compact_envelope)
 
-    def _is_plugin_authorized(self, spec: ToolSpec, user_context: UserContext) -> bool:
-        if not spec.plugin:
-            return True
-        return spec.plugin in set(user_context.plugin_permissions)
-
-    def _authorize_tool_access(self, spec: ToolSpec, raw_args: dict[str, Any], user_context: UserContext) -> None:
-        if not self._is_plugin_authorized(spec, user_context):
-            raise IdentityAuthError(
-                code="tool_access_denied",
-                message=(
-                    f"Tool '{spec.name}' requires access to the '{spec.plugin}' plugin; "
-                    f"user plugin permissions were {user_context.plugin_permissions}."
-                ),
-                status_code=403,
-            )
-        # Department-based access is disabled for now. We keep the earlier
-        # department gate commented out below as a reference for re-enable work.
-        # department_id = raw_args.get("departmentId")
-        # if department_id is None:
-        #     return
-        # if not user_context.department_claim:
-        #     raise IdentityAuthError(
-        #         code="missing_claims",
-        #         message="departmentId was supplied but no department claim is present in the token.",
-        #         status_code=403,
-        #         missing_claims=["extension_departmentId|extension_department|officeLocation"],
-        #     )
-
-    @staticmethod
-    def _infer_plugin_name(tool_name: str) -> str | None:
-        if tool_name.startswith(("stock_", "resolver_", "session_")):
-            return "stock"
-        if tool_name.startswith("news_"):
-            return "news"
-        if tool_name.startswith("weather_"):
-            return "weather"
-        if tool_name.startswith(("fx_", "currency_")):
-            return "currency"
-        return None
-
-    def _register_stock(self) -> None:
-        async def get_departments(validated: StockGetDepartmentsArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.get_departments(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_get_departments",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> departments[*]",
-                result_count=len(data),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_get_departments",
-                data=[item.model_dump(mode="json") for item in data],
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def get_categories(validated: StockGetCategoriesArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.get_categories(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_get_categories",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> categories.items[*]",
-                result_count=len(data.items),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_get_categories",
-                data=data.model_dump(mode="json"),
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def search_catalogue(validated: StockSearchCatalogueArgs, _: str | None, thought: str) -> ToolResult:
-            # Root Cause vs Logic: an empty catalogue search caused MCP clients to
-            # hammer `/api/v1/products?page=N&pageSize=20` and return huge payloads
-            # when the user had supplied a focused phrase. Direct stock_search now
-            # requires at least one real filter; broad inventory flows should use
-            # stock_snapshot/stock_availability with the same filter minimum and capped catalogue paging.
-            if not validated.search and validated.departmentId is None and validated.categoryId is None:
-                raise ParameterMappingError(
-                    "stock_search requires at least one of search, departmentId, or categoryId. "
-                    "Use stock_snapshot or stock_availability with at least one of those filters for broad inventory retrieval."
-                )
-            data, cache_status, notes = await self.inventory_service.search_catalogue(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_search",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> products.items[*]",
-                result_count=len(data.items),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_search",
-                data=data.model_dump(mode="json"),
-                llm_content=self._catalogue_model_view(data),
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def get_product(validated: StockGetProductArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.get_product(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_detail",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> products.items[*]",
-                result_count=len(data.items),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_detail",
-                data=data.model_dump(mode="json"),
-                llm_content=self._product_model_view(data),
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def extract_variant(validated: StockExtractVariantEvidenceArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.extract_variant_evidence(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_extract_variant_evidence",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data=f"harmonise -> {data.provenance.source_path}",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_extract_variant_evidence",
-                data=data.model_dump(mode="json"),
-                llm_content=self._evidence_model_view(data),
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def compare_variants(validated: StockCompareVariantsArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.compare_variants(validated.identifiers)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_compare",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> normalized variant evidence[*]",
-                result_count=len(data),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_compare",
-                data=[item.model_dump(mode="json") for item in data],
-                llm_content=[self._evidence_model_view(item) for item in data],
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def inventory_snapshot(validated: StockInventorySnapshotArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.inventory_snapshot(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_snapshot",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> inventory_snapshot.rows[*]",
-                result_count=len(data.rows),
-                normalization_notes=notes + data.coverage.limitations,
-            )
-            return ToolResult(
-                tool="stock_snapshot",
-                data=data.model_dump(mode="json"),
-                llm_content=self._inventory_snapshot_model_view(data),
-                normalization_notes=notes + data.coverage.limitations,
-                trace=trace,
-            )
-
-        async def stock_availability(validated: StockAvailabilityArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.inventory_service.stock_availability(validated)
-            ranked_groups = self._aggregate_snapshot_evidence(
-                data.evidence,
-                region=validated.region,
-                measure=validated.measure,
-                group_by=validated.groupBy,
-                direction=validated.direction,
-                limit=validated.limit,
-            )
-            payload = {
-                "query": validated.search,
-                "region": validated.region,
-                "measure": validated.measure,
-                "groupBy": validated.groupBy,
-                "direction": validated.direction,
-                "rows": ranked_groups,
-                "coverage": data.coverage.model_dump(mode="json"),
-                "guidance": " ".join(
-                    part
-                    for part in [
-                        "Rows are grouped totals, not individual variant rankings. Use product grouping for user wording "
-                        "such as type, family, line, or all inventory unless the user explicitly asks for SKU/variant grain.",
-                        self.inventory_service.variant_cap_guidance(data.coverage.variantCaps),
-                    ]
-                    if part
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_availability",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> inventory_snapshot.evidence[*] -> grouped regional stock totals",
-                result_count=len(ranked_groups),
-                normalization_notes=notes + data.coverage.limitations,
-            )
-            return ToolResult(
-                tool="stock_availability",
-                data=payload,
-                llm_content=payload,
-                normalization_notes=notes + data.coverage.limitations,
-                trace=trace,
-            )
-
-        async def stock_rank(
-            validated: StockRankArgs, _: str | None, thought: str
-        ) -> ToolResult:
-            snapshot_args = StockInventorySnapshotArgs(
-                page=validated.page,
-                search=validated.search,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
-            )
-            data, cache_status, notes = await self.inventory_service.inventory_snapshot(snapshot_args)
-            filtered_evidence, ranked_rows, filter_notes = rank_evidence_with_filters(
-                data.evidence,
-                metric=validated.metric,
-                region=validated.region,
-                group_by=validated.groupBy,
-                direction=validated.direction,
-                limit=validated.limit,
-                attribute_filters=validated.attributeFilters,
-            )
-            limitations = list(data.coverage.limitations) + filter_notes
-            if not ranked_rows:
-                limitations.append(
-                    "No ranked stock rows were produced. Try a narrower product/category phrase, "
-                    "or call stock_scope first to pass a departmentId/categoryId filter."
-                )
-            payload = {
-                "query": validated.search,
-                "region": validated.region,
-                "metric": validated.metric,
-                "groupBy": validated.groupBy,
-                "direction": validated.direction,
-                "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
-                "rows": ranked_rows,
-                "coverage": {
-                    **data.coverage.model_dump(mode="json"),
-                    "filteredVariants": len(filtered_evidence),
-                    "limitations": limitations,
-                    "isPartial": data.coverage.isPartial or bool(limitations),
-                },
-                "guidance": (
-                    "Rows are ranked from Harmonise normalized evidence. Stock and hirable metrics are summed across "
-                    "the requested hierarchy; physical and financial metrics rank by the best contributing variant for "
-                    "the requested direction."
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_rank",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> inventory_snapshot.evidence[*] -> stock ranking",
-                result_count=len(ranked_rows),
-                normalization_notes=notes + limitations,
-            )
-            return ToolResult(
-                tool="stock_rank",
-                data=payload,
-                llm_content=payload,
-                normalization_notes=notes + limitations,
-                trace=trace,
-            )
-
-        async def stock_image(validated: StockImageArgs, _: str | None, thought: str) -> ToolResult:
-            image_file_name = validated.imageFileName
-            resolved_source = "imageFileName" if image_file_name else None
-            resolved_product: ProductListItemDto | None = None
-            resolved_variant = None
-            harmonise_image_resolution: str | None = None
-            image_url: str | None = None
-            cache_statuses: list[str] = []
-            notes: list[str] = []
-            coverage_limitations: list[str] = []
-
-            # Motivation vs Logic: image retrieval now lives in its own MCP tool so
-            # specs ranking stays focused on ranking evidence while image-specific
-            # resolution and binary rendering happen in one explicit place.
-            if validated.sku and not image_file_name:
-                product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
-                    StockGetProductArgs(sku=validated.sku, page=1)
-                )
-                cache_statuses.append(product_cache_status)
-                notes.extend(product_notes)
-                if product_response.items:
-                    resolved_product = product_response.items[0]
-                    for variant in resolved_product.variants:
-                        if variant.sku == validated.sku:
-                            resolved_variant = variant
-                            break
-                    if resolved_variant is None and resolved_product.variants:
-                        resolved_variant = resolved_product.variants[0]
-                    if resolved_variant:
-                        resolved_source = "sku"
-                        image_url, image_file_name, tag = resolve_variant_harmonise_image(
-                            self.inventory_service.settings.cloud_harmonise_image,
-                            resolved_variant,
-                        )
-                        harmonise_image_resolution = tag if tag != "none" else None
-                else:
-                    coverage_limitations.append(f"No product detail payload was returned for sku {validated.sku}.")
-
-            if validated.search and not image_file_name:
-                catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
-                    StockSearchCatalogueArgs(
-                        page=validated.page,
-                        search=validated.search,
-                        departmentId=validated.departmentId,
-                        categoryId=validated.categoryId,
-                    )
-                )
-                cache_statuses.extend(catalogue_scan.cache_statuses)
-                notes.extend(catalogue_scan.notes)
-                matched_products = self._filter_products_for_query(catalogue_scan.items, validated.search)
-                if not matched_products:
-                    matched_products = list(catalogue_scan.items)
-
-                for product in matched_products:
-                    for variant in product.variants:
-                        if not variant.sku:
-                            continue
-                        product_response, product_cache_status, product_notes = await self.inventory_service.get_product(
-                            StockGetProductArgs(sku=variant.sku, page=1)
-                        )
-                        cache_statuses.append(product_cache_status)
-                        notes.extend(product_notes)
-                        if not product_response.items:
-                            continue
-                        detail_product = product_response.items[0]
-                        detail_variant = next(
-                            (candidate for candidate in detail_product.variants if candidate.sku == variant.sku),
-                            detail_product.variants[0] if detail_product.variants else None,
-                        )
-                        if detail_variant:
-                            cand_url, cand_raw, tag = resolve_variant_harmonise_image(
-                                self.inventory_service.settings.cloud_harmonise_image,
-                                detail_variant,
-                            )
-                            if cand_url or cand_raw:
-                                resolved_product = detail_product
-                                resolved_variant = detail_variant
-                                image_url = cand_url
-                                image_file_name = cand_raw
-                                harmonise_image_resolution = tag if tag != "none" else None
-                                resolved_source = "search"
-                                break
-                    if image_file_name or image_url:
-                        break
-
-                if not image_file_name and not image_url:
-                    coverage_limitations.append(
-                        "No Harmonise image reference was resolved from matched product variants for the supplied search "
-                        "(checked variant URIs, details URIs, and details.imageFileName)."
-                    )
-
-            if not image_url and image_file_name:
-                image_url = build_harmonise_image_url(
-                    self.inventory_service.settings.cloud_harmonise_image,
-                    image_file_name,
-                )
-            if validated.imageFileName and not harmonise_image_resolution:
-                harmonise_image_resolution = "input_imageFileName"
-            if image_file_name and not image_url:
-                coverage_limitations.append(
-                    "An imageFileName was resolved, but a renderable Harmonise HTTP image URL could not be built."
-                )
-
-            harmonise_snapshot_for_llm: dict[str, Any] | None = None
-            if not image_url and resolved_product is not None:
-                dump = resolved_product.model_dump(mode="json")
-                text = json.dumps(dump, default=str)
-                max_chars = 12000
-                if len(text) <= max_chars:
-                    harmonise_snapshot_for_llm = dump
-                else:
-                    harmonise_snapshot_for_llm = {
-                        "_truncated": True,
-                        "_maxChars": max_chars,
-                        "snippet": text[:max_chars],
-                    }
-                coverage_limitations.append(
-                    "No image URL was resolved; harmoniseSnapshotForLlm contains Harmonise product JSON so the "
-                    "assistant can look for imageThumbnailUri, imageUri, imgUri, or similar fields."
-                )
-
-            image_content: list[McpImageContent] = []
-            default_thumbnail_url = image_url
-            if image_url:
-                selected_url, content, note = await self._fetch_preferred_mcp_image_content(image_url)
-                if content is not None:
-                    if selected_url != image_url:
-                        notes.append(
-                            f"Resolved higher-resolution Harmonise image URL from thumbnail: {selected_url}"
-                        )
-                        image_url = selected_url
-                    image_content.append(content)
-                elif note:
-                    coverage_limitations.append(note)
-
-            cache_status = self.inventory_service._combine_cache_statuses(cache_statuses) if cache_statuses else "not_applicable"
-            payload = {
-                "source": resolved_source or "unresolved",
-                "harmoniseImageResolution": harmonise_image_resolution,
-                "query": validated.search,
-                "sku": getattr(resolved_variant, "sku", None) or validated.sku,
-                "product": resolved_product.name if resolved_product else None,
-                "variant": resolved_variant.name if resolved_variant else None,
-                "imageFileName": image_file_name,
-                "imageUrl": image_url,
-                **(
-                    {
-                        "rendering": build_stock_image_rendering_payload(
-                            image_url,
-                            default_thumbnail_url=default_thumbnail_url,
-                        )
-                    }
-                    if image_url
-                    else {}
-                ),
-                **({"harmoniseSnapshotForLlm": harmonise_snapshot_for_llm} if harmonise_snapshot_for_llm else {}),
-                "resolutionNotes": notes,
-                "coverage": {
-                    "requestedPage": validated.page,
-                    "requestedPageSize": self.inventory_service._catalogue_page_size_cap(),
-                    "isPartial": bool(coverage_limitations),
-                    "limitations": coverage_limitations,
-                },
-                "guidance": (
-                    "Use this tool when the user explicitly needs a Harmonise product image. It can resolve from an "
-                    "exact image path, exact SKU, or a product-family search, and it returns both the HTTP image URL "
-                    "and MCP-native encoded image content when binary fetch succeeds. Follow rendering.fallbackOrder: "
-                    "try encoded MCP image content in the UI first; if not visible, automatically download the "
-                    "resolved URI locally and render that file; if a script environment is needed, run "
-                    "rendering.desktop.automaticRenderCommand because it creates and activates one without user "
-                    "prompting; if all rendering fails, show rendering.uriOnly.bestUriToShow and explain the AI "
-                    "client has a technical rendering issue."
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_image",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise image path resolution -> optional MCP image fetch",
-                result_count=len(image_content),
-                normalization_notes=notes + coverage_limitations,
-            )
-            return ToolResult(
-                tool="stock_image",
-                data=payload,
-                llm_content=payload,
-                mcp_content=image_content,
-                normalization_notes=notes + coverage_limitations,
-                trace=trace,
-            )
-
-        async def get_supported_scope(
-            validated: StockGetSupportedScopeArgs, _: str | None, thought: str
-        ) -> ToolResult:
-            summary = furniture_capability_summary()
-            data = {
-                **summary,
-                "guidance": {
-                    "purpose": (
-                        "Use this tool for supported stock scope, department/category counts, and categoryId "
-                        "routing. It is the MCP-visible source of truth for supported inventory capability."
-                    ),
-                    "live_inventory": (
-                        "For products, variants, or availability inside a category, use stock_snapshot or "
-                        "stock_availability with the returned department/category ids."
-                    ),
-                },
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_scope",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status="policy",
-                source_data="prompt_policy -> furniture_capability_summary",
-                result_count=int(summary.get("mapped_furniture_category_count", 0)),
-            )
-            return ToolResult(tool="stock_scope", data=data, llm_content=data, trace=trace)
-
-        async def list_category(validated: StockListCategoryArgs, _: str | None, thought: str) -> ToolResult:
-            matches = list_furniture_category_matches(
-                validated.query,
-                department_id=validated.departmentId,
-                limit=validated.limit,
-            )
-            status = "no_match"
-            if matches:
-                status = "matched"
-                if len(matches) > 1 and matches[1].confidence >= matches[0].confidence - 0.12:
-                    status = "ambiguous"
-            payload = {
-                "query": validated.query,
-                "status": status,
-                "matches": [
-                    {
-                        "categoryId": match.category_id,
-                        "name": match.name,
-                        "departmentId": match.department_id,
-                        "description": match.description,
-                        "confidence": match.confidence,
-                        "matchedOn": list(match.matched_on),
-                    }
-                    for match in matches
-                ],
-                "guidance": (
-                    "Use the returned categoryId with stock_snapshot, stock_search, stock_availability, or ranking "
-                    "tools for broad item-type requests. If status is ambiguous, use the top likely category IDs "
-                    "for broad discovery or ask the user to choose when the meanings differ."
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_list_category",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status="policy",
-                source_data="prompt_policy -> furniture_category_routes[*]",
-                result_count=len(matches),
-            )
-            return ToolResult(tool="stock_list_category", data=payload, llm_content=payload, trace=trace)
-
-        async def collect_family_evidence(
-            validated: StockProductFamilyInventoryArgs,
-        ) -> tuple[list[NormalizedEvidence], str, list[str], dict[str, Any]]:
-            catalogue_scan = await self.inventory_service.scan_catalogue_with_recovery(
-                StockSearchCatalogueArgs(
-                    page=validated.page,
-                    search=validated.search,
-                    departmentId=validated.departmentId,
-                    categoryId=validated.categoryId,
-                )
-            )
-            matched_products = self._filter_products_for_query(catalogue_scan.items, validated.search)
-            if not matched_products and catalogue_scan.items:
-                matched_products = list(catalogue_scan.items)
-
-            recovery_limitations = [
-                note
-                for note in catalogue_scan.notes
-                if "recovery" in note.casefold() or "pagesize" in note.casefold()
-            ]
-
-            evidence_items: list[NormalizedEvidence] = []
-            cache_statuses = list(catalogue_scan.cache_statuses)
-            notes = list(catalogue_scan.notes)
-            skipped_variants = 0
-            variant_caps = []
-            for product in matched_products:
-                capped_product, cap_metadata = self.inventory_service.cap_product_variants(product)
-                if cap_metadata is not None:
-                    variant_caps.append(cap_metadata)
-                for variant in capped_product.variants:
-                    if not variant.sku:
-                        skipped_variants += 1
-                        continue
-                    evidence, cache_status, extract_notes = await self.inventory_service.extract_variant_evidence(
-                        StockExtractVariantEvidenceArgs(sku=variant.sku),
-                        matched_on=["catalogue_family", "sku"],
-                        confidence=0.98,
-                        tool_name="stock_get_product_family_inventory",
-                    )
-                    evidence_items.append(evidence)
-                    cache_statuses.append(cache_status)
-                    notes.extend(extract_notes)
-
-            limitations: list[str] = list(recovery_limitations)
-            limitations.extend(self.inventory_service.variant_cap_limitations(variant_caps))
-            if skipped_variants:
-                limitations.append(f"Skipped {skipped_variants} catalogue variant(s) without SKU identifiers.")
-            if not evidence_items:
-                limitations.append("No variant-level stock evidence was returned for the requested family.")
-            coverage = {
-                "requestedPage": validated.page,
-                "requestedPageSize": self.inventory_service._catalogue_page_size_cap(),
-                "matchedProducts": len(matched_products),
-                "matchedPages": catalogue_scan.matched_pages,
-                "enrichedProducts": len({item.product_id for item in evidence_items if item.product_id}),
-                "enrichedVariants": len(evidence_items),
-                "isPartial": catalogue_scan.is_partial or bool(limitations),
-                "limitations": limitations,
-                "variantCaps": [item.model_dump(mode="json") for item in variant_caps],
-            }
-            return evidence_items, self.inventory_service._combine_cache_statuses(cache_statuses), notes, coverage
-
-        async def product_family_inventory(
-            validated: StockProductFamilyInventoryArgs, _: str | None, thought: str
-        ) -> ToolResult:
-            evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
-            payload = {
-                "query": validated.search,
-                "rows": [self.inventory_service._build_inventory_row(item).model_dump(mode="json") for item in evidence_items],
-                "evidence": [self._compact_snapshot_evidence(item) for item in evidence_items],
-                "coverage": coverage,
-                "guidance": " ".join(
-                    part
-                    for part in [
-                        "Treat this as product-family inventory: answer availability across every returned variant/SKU, "
-                        "not only the first row.",
-                        self.inventory_service.variant_cap_guidance(
-                            [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
-                        ),
-                    ]
-                    if part
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_get_product_family_inventory",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> catalogue variants -> variant evidence[*]",
-                result_count=len(evidence_items),
-                normalization_notes=notes + coverage["limitations"],
-            )
-            return ToolResult(
-                tool="stock_get_product_family_inventory",
-                data=payload,
-                llm_content=payload,
-                normalization_notes=notes + coverage["limitations"],
-                trace=trace,
-            )
-
-        # async def stock_variant_rank(
-        #     validated: StockVariantRankArgs, _: str | None, thought: str
-        # ) -> ToolResult:
-        #     evidence_items, cache_status, notes, coverage = await collect_family_evidence(validated)
-        #     filtered_evidence, ranked, filter_notes = rank_evidence_with_filters(
-        #         evidence_items,
-        #         metric=validated.metric,
-        #         region=validated.region,
-        #         group_by="variant",
-        #         direction=validated.direction,
-        #         limit=validated.limit,
-        #         attribute_filters=validated.attributeFilters,
-        #     )
-        #     limitations = list(coverage["limitations"]) + filter_notes
-        #     if not ranked:
-        #         limitations.append(
-        #             "No variant ranking rows were produced. Try a narrower family phrase or resolve the family with stock_search first."
-        #         )
-        #     payload = {
-        #         "query": validated.search,
-        #         "region": validated.region,
-        #         "metric": validated.metric,
-        #         "direction": validated.direction,
-        #         "attributeFilters": [item.model_dump(mode="json") for item in validated.attributeFilters],
-        #         "rows": ranked,
-        #         "coverage": {
-        #             **coverage,
-        #             "filteredVariants": len(filtered_evidence),
-        #             "limitations": limitations,
-        #             "isPartial": coverage["isPartial"] or bool(limitations),
-        #         },
-        #         "guidance": " ".join(
-        #             part
-        #             for part in [
-        #                 "Rows are ranked only at variant grain within the resolved product family/families. Use this tool "
-        #                 "to resolve which variant best matches the requested stock/spec metric after the family is known.",
-        #                 self.inventory_service.variant_cap_guidance(
-        #                     [VariantCapMetadata.model_validate(item) for item in coverage.get("variantCaps", [])]
-        #                 ),
-        #             ]
-        #             if part
-        #         ),
-        #     }
-        #     trace = ToolTrace(
-        #         thought=thought,
-        #         tool="stock_variant_rank",
-        #         args=validated.model_dump(exclude_none=True),
-        #         status="ok",
-        #         cache_status=cache_status,
-        #         source_data="harmonise -> family variant evidence[*] -> variant-only ranking",
-        #         result_count=len(ranked),
-        #         normalization_notes=notes + limitations,
-        #     )
-        #     return ToolResult(
-        #         tool="stock_variant_rank",
-        #         data=payload,
-        #         llm_content=payload,
-        #         normalization_notes=notes + limitations,
-        #         trace=trace,
-        #     )
-
-        async def count_items(validated: StockCountItemsArgs, _: str | None, thought: str) -> ToolResult:
-            cat_args = StockSearchCatalogueArgs(
-                page=1,
-                search=validated.search,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
-            )
-            data, cache_status, notes = await self.inventory_service.search_catalogue(cat_args)
-            result: dict[str, Any] = {
-                "product_count": data.totalCount,
-                "filters": {
-                    "search": validated.search,
-                    "departmentId": validated.departmentId,
-                    "categoryId": validated.categoryId,
-                },
-            }
-            if validated.countVariants and validated.search:
-                full_args = StockSearchCatalogueArgs(
-                    page=1,
-                    search=validated.search,
-                    departmentId=validated.departmentId,
-                    categoryId=validated.categoryId,
-                )
-                full_data, full_cache_status, full_notes = await self.inventory_service.search_catalogue(full_args)
-                cache_status = self.inventory_service._combine_cache_statuses([cache_status, full_cache_status])
-                notes = notes + full_notes
-                matched = self._filter_products_for_query(full_data.items, validated.search)
-                if matched:
-                    result["variant_count"] = sum(len(p.variants) for p in matched)
-                    result["matched_product_names"] = [p.name for p in matched]
-                else:
-                    result["variant_count"] = None
-                    result["matched_product_names"] = []
-            result["guidance"] = (
-                "product_count is the total catalogue products matching the applied filters. "
-                "variant_count (present when countVariants=True and search is provided) is the "
-                "total SKU variants across matched product families."
-            )
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_count_items",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> products.totalCount",
-                result_count=data.totalCount,
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_count_items",
-                data=result,
-                llm_content=result,
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def hirable_by_state(validated: StockHirableByStateArgs, _: str | None, thought: str) -> ToolResult:
-            family_args = StockProductFamilyInventoryArgs(
-                search=validated.search,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
-            )
-            evidence_items, cache_status, notes, coverage = await collect_family_evidence(family_args)
-            target_states = validated.states or ["VIC", "NSW", "QLD"]
-            state_fields: dict[str, tuple[str, str]] = {
-                "VIC": ("vicStock", "vicHirable"),
-                "NSW": ("nswStock", "nswHirable"),
-                "QLD": ("qldStock", "qldHirable"),
-            }
-            state_summary: dict[str, Any] = {}
-            for state in target_states:
-                sf, hf = state_fields[state]
-                state_summary[state] = {
-                    "total_stock": sum((getattr(e.stock, sf) or 0) for e in evidence_items),
-                    "total_hirable": sum((getattr(e.stock, hf) or 0) for e in evidence_items),
-                    "variants_with_stock": sum(1 for e in evidence_items if (getattr(e.stock, sf) or 0) > 0),
-                }
-            variant_breakdown: list[dict[str, Any]] = []
-            for ev in evidence_items:
-                row: dict[str, Any] = {
-                    "product": ev.product_name,
-                    "variant": ev.variant_name,
-                    "sku": ev.sku,
-                    "variationOptions": ev.variation_options,
-                    "isActive": ev.isActive,
-                    "overall": {"stock": ev.stock.totalStock, "hirable": ev.stock.totalHirable},
-                }
-                for state in target_states:
-                    sf, hf = state_fields[state]
-                    row[state] = {"stock": getattr(ev.stock, sf), "hirable": getattr(ev.stock, hf)}
-                variant_breakdown.append(row)
-            payload: dict[str, Any] = {
-                "query": validated.search,
-                "states_queried": target_states,
-                "state_summary": state_summary,
-                "overall": {
-                    "total_stock": sum((e.stock.totalStock or 0) for e in evidence_items),
-                    "total_hirable": sum((e.stock.totalHirable or 0) for e in evidence_items),
-                },
-                "variant_breakdown": variant_breakdown,
-                "coverage": coverage,
-                "guidance": (
-                    "state_summary aggregates stock and hirable across every resolved variant per state. "
-                    "variant_breakdown shows per-SKU numbers for each state. "
-                    "Use this to answer state-level availability questions for a named product or family."
-                ),
-            }
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_hirable_by_state",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="harmonise -> catalogue variants -> variant evidence[*] -> state stock fields",
-                result_count=len(evidence_items),
-                normalization_notes=notes + coverage["limitations"],
-            )
-            return ToolResult(
-                tool="stock_hirable_by_state",
-                data=payload,
-                llm_content=payload,
-                normalization_notes=notes + coverage["limitations"],
-                trace=trace,
-            )
-
-        if self.inventory_service.settings.local_harmonise:
-            # Motivation vs Logic: the cloud Harmonise contract currently exposes
-            # product endpoints only, so metadata tools are local-dev only.
-            self._register(
-                "stock_get_departments",
-                (
-                    "Retrieve raw department metadata and optional sub-departments for inventory "
-                    "narrowing. Do not use for supported-scope counts; stock prompt policy defines the assistant's "
-                    "canonical supported departments."
-                ),
-                StockGetDepartmentsArgs,
-                get_departments,
-                visible=False,
-            )
-            self._register(
-                "stock_get_categories",
-                (
-                    "Retrieve raw local Harmonise category metadata pages. Do not use for supported-scope counts; "
-                    "stock prompt policy defines the assistant's canonical supported furniture category routes."
-                ),
-                StockGetCategoriesArgs,
-                get_categories,
-                visible=False,
-            )
-        self._register(
-            "stock_scope",
-            (
-                "Supported stock scope and filter IDs. Use for questions about how many departments or categories are "
-                "supported, which categoryId maps to a given category, or before filtering inventory by department or "
-                "category. Returns the canonical supported departments and mapped category routes with their IDs."
-            ),
-            StockGetSupportedScopeArgs,
-            get_supported_scope,
-        )
-        # Motivation vs Logic: broad furniture words need category intent resolved
-        # before product search, so this visible resolver exposes the same mapped
-        # category IDs that stock_scope documents while keeping product searches parametric.
-        self._register(
-            "stock_list_category",
-            (
-                "Resolve a broad furniture item type or category phrase to supported categoryId filters before "
-                "catalogue/product search. Use first for category-like queries such as coffee tables, stools, "
-                "ottomans, dining furniture, or broad plural item types."
-            ),
-            StockListCategoryArgs,
-            list_category,
-        )
-        self._register(
-            "stock_get_supported_scope",
-            "Deprecated alias for stock_scope. Hidden from normal MCP discovery.",
-            StockGetSupportedScopeArgs,
-            get_supported_scope,
-            visible=False,
-        )
-        self._register(
-            "stock_search",
-            (
-                "Harmonise catalogue discovery by product/family text plus supported filters: page, "
-                "search, departmentId, categoryId. Use to find product ids/SKUs and variants; for availability of a "
-                "named family, follow with stock_snapshot so capped variants are covered."
-            ),
-            StockSearchCatalogueArgs,
-            search_catalogue,
-        )
-        self._register(
-            "stock_search_catalogue",
-            "Deprecated alias for stock_search. Hidden from normal MCP discovery.",
-            StockSearchCatalogueArgs,
-            search_catalogue,
-            visible=False,
-        )
-        self._register(
-            "stock_detail",
-            (
-                "Exact product-family or SKU detail. Use when a product id or SKU is already known. Detail includes "
-                "variants, dimensions, pricing, image metadata, and VIC/NSW/QLD stock fields; generic family "
-                "availability still needs returned capped variants summarized."
-            ),
-            StockGetProductArgs,
-            get_product,
-        )
-        self._register(
-            "stock_get_product",
-            "Deprecated alias for stock_detail. Hidden from normal MCP discovery.",
-            StockGetProductArgs,
-            get_product,
-            visible=False,
-        )
-        self._register(
-            "stock_extract_variant_evidence",
-            (
-                "Deprecated exact-variant evidence alias. Hidden from normal MCP discovery; use stock_detail for exact SKU "
-                "detail or stock_snapshot for product-family stock questions."
-            ),
-            StockExtractVariantEvidenceArgs,
-            extract_variant,
-            visible=False,
-        )
-        self._register(
-            "stock_get_variant_evidence",
-            (
-                "Deprecated alias for stock_extract_variant_evidence. Direct calls still work, but MCP clients should "
-                "prefer stock_extract_variant_evidence."
-            ),
-            StockExtractVariantEvidenceArgs,
-            extract_variant,
-            visible=False,
-        )
-        self._register(
-            "stock_compare",
-            (
-                "Side-by-side comparison of 2-20 already-resolved variant SKUs/identifiers. Use for explicit compare "
-                "requests, not broad family availability; for many variants or stock tables use stock_snapshot."
-            ),
-            StockCompareVariantsArgs,
-            compare_variants,
-        )
-        self._register(
-            "stock_compare_variants",
-            "Deprecated alias for stock_compare. Hidden from normal MCP discovery.",
-            StockCompareVariantsArgs,
-            compare_variants,
-            visible=False,
-        )
-        self._register(
-            "stock_snapshot",
-            (
-                "Answer-ready inventory snapshot: enriches catalogue matches into variant rows with size, known specs, "
-                "overall stock, and VIC/NSW/QLD availability text. Best default for broad/multi-variant stock, category "
-                "inventory, and named-family availability with capped variant coverage. Requires at least one of "
-                "search, departmentId, or categoryId (same policy as stock_search) so Harmonise is never queried as an "
-                "unfiltered full-catalogue list. Catalogue list pagination is capped per server config; if coverage is "
-                "partial, ask the user to narrow search or category scope."
-            ),
-            StockInventorySnapshotArgs,
-            inventory_snapshot,
-        )
-        self._register(
-            "stock_inventory_snapshot",
-            "Deprecated alias for stock_snapshot. Hidden from normal MCP discovery.",
-            StockInventorySnapshotArgs,
-            inventory_snapshot,
-            visible=False,
-        )
-        self._register(
-            "stock_availability",
-            (
-                "Grouped stock and hirable totals from a full inventory snapshot. Use for most/least questions by "
-                "type, product family, category, or region; product grouping answers broad wording like all inventory "
-                "or chair type. This returns summed groups, not single-variant rankings. Requires at least one of "
-                "search, departmentId, or categoryId so the underlying snapshot stays scoped. Use stock_rank "
-                "when the question also needs dimensions, pricing, attribute/style filters, or department grouping."
-            ),
-            StockAvailabilityArgs,
-            stock_availability,
-        )
-        self._register(
-            "stock_rank",
-            (
-                "Rank and filter Harmonise products or variants by stock, hirable availability, physical dimensions, "
-                "derived area/volume, replacement cost, hire rates, hierarchy, state, and LLM-supplied aesthetic "
-                "attributes. Use for complex stock/spec ranking questions; use groupBy=variant for variant ranking "
-                "inside a resolved family and stock_image for Harmonise image retrieval/rendering."
-            ),
-            StockRankArgs,
-            stock_rank,
-        )
-        self._register(
-            "stock_image",
-            (
-                "Resolve a Harmonise product image from an exact image path, exact SKU, or product-family search, "
-                "then return the HTTP image URL plus MCP-native encoded image content when it can be fetched. "
-                "Rendering fallback order: render encoded MCP image content first, then automatically download the "
-                "resolved URI locally and render it, then run the provided automatic preview command that creates "
-                "and activates its script environment, then show only the best URI and explain any inline-rendering "
-                "failure as an AI client technical issue."
-            ),
-            StockImageArgs,
-            stock_image,
-        )
-        self._register(
-            "stock_get_product_family_inventory",
-            (
-                "Deprecated alias for stock_snapshot with a required search phrase. Hidden from normal MCP discovery."
-            ),
-            StockProductFamilyInventoryArgs,
-            product_family_inventory,
-            visible=False,
-        )
-        # self._register(
-        #     "stock_variant_rank",
-        #     (
-        #         "Rank variants within a named product/family by stock, hirable, dimensions, derived area/volume, or "
-        #         "pricing metrics. Use only for intra-family variant or SKU resolution once the question is about which "
-        #         "specific variant best matches the requested metric."
-        #     ),
-        #     StockVariantRankArgs,
-        #     stock_variant_rank,
-        # )
-        self._register(
-            "stock_count_items",
-            (
-                "Deprecated count helper. Hidden from normal MCP discovery; use stock_scope for supported counts and "
-                "stock_availability for grouped inventory totals."
-            ),
-            StockCountItemsArgs,
-            count_items,
-            visible=False,
-        )
-        self._register(
-            "stock_hirable_by_state",
-            (
-                "Deprecated per-state family helper. Hidden from normal MCP discovery; use stock_availability for grouped "
-                "stock or hirable totals by state."
-            ),
-            StockHirableByStateArgs,
-            hirable_by_state,
-            visible=False,
-        )
-
-    def _catalogue_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
-        payload = {
-            "page": data.page,
-            "pageSize": data.pageSize,
-            "totalCount": data.totalCount,
-            "totalPages": data.totalPages,
-            "variantCaps": [item.model_dump(mode="json") for item in data.variantCaps],
-            "items": [self._product_catalogue_model_view(item) for item in data.items],
-        }
-        if data.guidance:
-            payload["guidance"] = data.guidance
-        return payload
-
-    def _product_catalogue_model_view(self, item: ProductListItemDto) -> dict[str, Any]:
-        return {
-            "id": item.id,
-            "name": item.name,
-            "departmentId": item.departmentId,
-            "subDepartmentId": item.subDepartmentId,
-            "categoryId": item.categoryId,
-            "isActive": item.isActive,
-            "variationNames": [
-                variation.name for variation in item.variations if (variation.name or "").strip()
-            ],
-            "variantCap": item.variantCap.model_dump(mode="json") if item.variantCap else None,
-            "variants": [
-                {
-                    "id": variant.id,
-                    "name": variant.name,
-                    "sku": variant.sku,
-                    "totalHirable": variant.totalHirable,
-                }
-                for variant in item.variants
-            ],
-        }
-
-    def _product_model_view(self, data: ProductListItemDtoPagedResponse) -> dict[str, Any]:
-        variant_caps = [item.variantCap for item in data.items if item.variantCap is not None]
-        payload = {
-            "page": data.page,
-            "pageSize": data.pageSize,
-            "totalCount": data.totalCount,
-            "totalPages": data.totalPages,
-            "items": [
-                {
-                    **self._product_catalogue_model_view(item),
-                    "variants": [self._product_variant_model_view(variant) for variant in item.variants],
-                }
-                for item in data.items
-            ],
-        }
-        guidance = self.inventory_service.variant_cap_guidance(variant_caps) if self.inventory_service else None
-        if guidance:
-            payload["guidance"] = guidance
-        return payload
-
-    def _product_variant_model_view(self, variant) -> dict[str, Any]:
-        details = variant.details
-        image_file_name = details.imageFileName if details else None
-        resolved_url, _, tag = resolve_variant_harmonise_image(
-            self.inventory_service.settings.cloud_harmonise_image,
-            variant,
-        )
-        detail_only_url = build_harmonise_image_url(
-            self.inventory_service.settings.cloud_harmonise_image,
-            image_file_name,
-        )
-        display_url = resolved_url or detail_only_url
-        return {
-            "id": variant.id,
-            "name": variant.name,
-            "sku": variant.sku,
-            "totalHirable": variant.totalHirable,
-            "harmoniseImageResolution": tag if tag != "none" else None,
-            "imageUrl": display_url,
-            "details": {
-                "isActive": details.isActive if details else None,
-                "length": details.length if details else None,
-                "width": details.width if details else None,
-                "height": details.height if details else None,
-                "totalStock": details.totalStock if details else None,
-                "vicStock": details.vicStock if details else None,
-                "nswStock": details.nswStock if details else None,
-                "qldStock": details.qldStock if details else None,
-                "salesNote": details.salesNote if details else None,
-                "generalRate": details.generalRate if details else None,
-                "expoRate": details.expoRate if details else None,
-                "cost": details.cost if details else None,
-                "dimensional": details.dimensional if details else None,
-                "canBeSoldInPortions": details.canBeSoldInPortions if details else None,
-                "imageFileName": image_file_name,
-                "imageUrl": display_url,
-            },
-        }
-
-    def _filter_products_for_query(self, products: list[ProductListItemDto], query: str) -> list[ProductListItemDto]:
-        # Motivation vs Logic: MCP family helpers must not degrade into broad page
-        # scans when a backend ignores text search; local filtering keeps the
-        # helper focused on the named family before variant-level fan-out.
-        matched: list[ProductListItemDto] = []
-        for product in products:
-            candidate = " ".join(
-                value
-                for value in [
-                    product.name,
-                    " ".join(variant.name or "" for variant in product.variants),
-                    " ".join(variant.sku or "" for variant in product.variants),
-                ]
-                if value
-            )
-            if lexical_overlap(query, candidate) >= 0.6:
-                matched.append(product)
-        return matched
-
-    def _evidence_model_view(self, evidence: NormalizedEvidence) -> dict[str, Any]:
-        return {
-            "product": evidence.product_name,
-            "variant": evidence.variant_name,
-            "sku": evidence.sku,
-            "variationOptions": evidence.variation_options,
-            "salesNote": evidence.salesNote,
-            "dimensions": evidence.dimensions.model_dump(mode="json"),
-            "stock": evidence.stock.model_dump(mode="json"),
-            "pricing": evidence.pricing.model_dump(mode="json"),
-            "media": evidence.media.model_dump(mode="json"),
-            "isActive": evidence.isActive,
-            "provenance": evidence.provenance.model_dump(mode="json"),
-        }
-
-    def _inventory_snapshot_model_view(self, data: InventorySnapshotResponse) -> dict[str, Any]:
-        payload = {
-            "rows": [
-                self._compact_snapshot_row(
-                    row.model_dump(mode="json"),
-                    evidence=data.evidence[index] if index < len(data.evidence) else None,
-                )
-                for index, row in enumerate(data.rows)
-            ],
-            "coverage": data.coverage.model_dump(mode="json"),
-            "evidence": [self._compact_snapshot_evidence(item) for item in data.evidence],
-        }
-        if data.guidance:
-            payload["guidance"] = data.guidance
-        return payload
-
-    def _compact_snapshot_row(
-        self,
-        row: dict[str, Any],
-        *,
-        evidence: NormalizedEvidence | None,
-    ) -> dict[str, Any]:
-        compact_row = {
-            "product": row.get("product"),
-            "variant": row.get("variant"),
-            "sku": row.get("sku"),
-            "attributeEvidence": self._compact_attribute_evidence(row),
-            "size": row.get("size"),
-            "stock": row.get("stock"),
-            "knownSpecs": self._compact_known_specs(row.get("knownSpecs", [])),
-        }
-        if evidence is None:
-            return compact_row
-        compact_row["variationOptions"] = evidence.variation_options
-        compact_row["pricing"] = evidence.pricing.model_dump(mode="json")
-        compact_row["stockNumbers"] = evidence.stock.model_dump(mode="json")
-        return compact_row
-
-    def _compact_snapshot_evidence(self, evidence: NormalizedEvidence) -> dict[str, Any]:
-        return {
-            "product": evidence.product_name,
-            "variant": evidence.variant_name,
-            "sku": evidence.sku,
-            "variationOptions": evidence.variation_options,
-            "dimensions": evidence.dimensions.model_dump(mode="json"),
-            "stock": evidence.stock.model_dump(mode="json"),
-            "pricing": evidence.pricing.model_dump(mode="json"),
-            "salesNote": evidence.salesNote,
-            "media": evidence.media.model_dump(mode="json"),
-        }
-
-    async def _fetch_mcp_image_content(self, image_url: str) -> tuple[McpImageContent | None, str | None]:
-        # Motivation vs Logic: MCP clients can render protocol-native image blocks,
-        # while structured JSON still carries imageUrl as a fallback for hosts that
-        # do not fetch binary assets from tool responses.
-        try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                response = await client.get(image_url)
-        except httpx.HTTPError as exc:
-            return None, f"Image could not be fetched for MCP rendering ({image_url}): {exc.__class__.__name__}."
-
-        if response.status_code >= 400:
-            return None, f"Image could not be fetched for MCP rendering ({image_url}): HTTP {response.status_code}."
-
-        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        mime_type = content_type if content_type.startswith("image/") else self._guess_image_mime_type(image_url)
-        if not mime_type:
-            return None, f"Image response did not include a supported image content type ({image_url})."
-
-        max_bytes = 5 * 1024 * 1024
-        if len(response.content) > max_bytes:
-            return None, f"Image was too large for inline MCP rendering ({image_url})."
-
-        encoded = base64.b64encode(response.content).decode("ascii")
-        return McpImageContent(data=encoded, mimeType=mime_type), None
-
-    async def _fetch_preferred_mcp_image_content(
-        self,
-        image_url: str,
-    ) -> tuple[str, McpImageContent | None, str | None]:
-        # Motivation vs Logic: product detail often supplies thumbnail URLs, but
-        # Harmonise stores higher-resolution siblings under predictable blob names.
-        # Fetch candidates in preference order and expose the first successful URL.
-        candidates = build_harmonise_image_fetch_candidates(image_url)
-        fallback_note: str | None = None
-        for candidate in candidates:
-            content, note = await self._fetch_mcp_image_content(candidate)
-            if content is not None:
-                return candidate, content, None
-            if candidate == image_url:
-                fallback_note = note
-        return image_url, None, fallback_note or f"Image could not be fetched for MCP rendering ({image_url})."
-
-    def _guess_image_mime_type(self, image_url: str) -> str | None:
-        lowered = image_url.split("?", 1)[0].lower()
-        if lowered.endswith((".jpg", ".jpeg")):
-            return "image/jpeg"
-        if lowered.endswith(".png"):
-            return "image/png"
-        if lowered.endswith(".gif"):
-            return "image/gif"
-        if lowered.endswith(".webp"):
-            return "image/webp"
-        return None
-
-    def _aggregate_snapshot_evidence(
-        self,
-        evidence_items: list[NormalizedEvidence],
-        *,
-        region: str,
-        measure: str,
-        group_by: str,
-        direction: str,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        stock_fields = {
-            "VIC": ("vicStock", "vicHirable"),
-            "NSW": ("nswStock", "nswHirable"),
-            "QLD": ("qldStock", "qldHirable"),
-            "overall": ("totalStock", "totalHirable"),
-        }
-        stock_field, hirable_field = stock_fields[region]
-
-        groups: dict[str, dict[str, Any]] = {}
-        for evidence in evidence_items:
-            key, label = self._aggregate_group_key(evidence, group_by)
-            if key not in groups:
-                groups[key] = {
-                    "group": label,
-                    "groupBy": group_by,
-                    "productIds": set(),
-                    "categoryIds": set(),
-                    "variantCount": 0,
-                    "stock": {"overall": 0, "VIC": 0, "NSW": 0, "QLD": 0},
-                    "hirable": {"overall": 0, "VIC": 0, "NSW": 0, "QLD": 0},
-                    "missingStockFields": [],
-                    "variants": [],
-                }
-            group = groups[key]
-            if evidence.product_id:
-                group["productIds"].add(evidence.product_id)
-            if evidence.categoryId:
-                group["categoryIds"].add(evidence.categoryId)
-            group["variantCount"] += 1
-            self._add_aggregate_quantity(group["stock"], evidence, "overall", "totalStock", group["missingStockFields"])
-            self._add_aggregate_quantity(group["stock"], evidence, "VIC", "vicStock", group["missingStockFields"])
-            self._add_aggregate_quantity(group["stock"], evidence, "NSW", "nswStock", group["missingStockFields"])
-            self._add_aggregate_quantity(group["stock"], evidence, "QLD", "qldStock", group["missingStockFields"])
-            self._add_aggregate_quantity(group["hirable"], evidence, "overall", "totalHirable", group["missingStockFields"])
-            self._add_aggregate_quantity(group["hirable"], evidence, "VIC", "vicHirable", group["missingStockFields"])
-            self._add_aggregate_quantity(group["hirable"], evidence, "NSW", "nswHirable", group["missingStockFields"])
-            self._add_aggregate_quantity(group["hirable"], evidence, "QLD", "qldHirable", group["missingStockFields"])
-            group["variants"].append(
-                {
-                    "product": evidence.product_name,
-                    "variant": evidence.variant_name,
-                    "sku": evidence.sku,
-                    "stock": getattr(evidence.stock, stock_field),
-                    "hirable": getattr(evidence.stock, hirable_field),
-                }
-            )
-
-        reverse = direction == "most"
-        ranked_groups = sorted(
-            groups.values(),
-            key=lambda group: group[measure][region],
-            reverse=reverse,
-        )
-        rows: list[dict[str, Any]] = []
-        for rank, group in enumerate(ranked_groups[:limit], start=1):
-            rows.append(
-                {
-                    "rank": rank,
-                    "group": group["group"],
-                    "groupBy": group["groupBy"],
-                    "region": region,
-                    "measure": measure,
-                    "rankValue": group[measure][region],
-                    "stock": group["stock"],
-                    "hirable": group["hirable"],
-                    "variantCount": group["variantCount"],
-                    "productIds": sorted(group["productIds"]),
-                    "categoryIds": sorted(group["categoryIds"]),
-                    "variants": group["variants"],
-                    "missingStockFields": sorted(set(group["missingStockFields"])),
-                }
-            )
-        return rows
-
-    def _aggregate_group_key(self, evidence: NormalizedEvidence, group_by: str) -> tuple[str, str]:
-        if group_by == "category":
-            label = evidence.categoryId or "Uncategorised"
-            return f"category:{label}", label
-        if group_by == "variant":
-            label = evidence.variant_name or evidence.sku or "Unnamed variant"
-            return f"variant:{evidence.variant_id or evidence.sku or label}", label
-        label = evidence.product_name or "Unnamed product"
-        return f"product:{evidence.product_id or label}", label
-
-    def _add_aggregate_quantity(
-        self,
-        totals: dict[str, int],
-        evidence: NormalizedEvidence,
-        label: str,
-        stock_field: str,
-        missing_fields: list[str],
-    ) -> None:
-        value = getattr(evidence.stock, stock_field)
-        if value is None:
-            missing_fields.append(f"{evidence.sku or evidence.variant_name or 'unknown'}:{stock_field}")
-            return
-        totals[label] += value
-
-    def _compact_attribute_evidence(self, row: dict[str, Any]) -> list[str]:
-        product = (row.get("product") or "").strip()
-        variant = (row.get("variant") or "").strip()
-        compact: list[str] = []
-        for value in row.get("attributeEvidence", []):
-            normalized = (value or "").strip()
-            if not normalized:
-                continue
-            # Root Cause vs Logic: previously we skipped *both* product and variant
-            # when compact was non-empty, so a short label (e.g. option) could cause
-            # the full variant name to be dropped; colour then looked "missing".
-            if normalized == product and compact:
-                continue
-            if normalized not in compact:
-                compact.append(normalized)
-        if not compact and (variant or product):
-            for fallback in (variant, product):
-                if fallback and fallback not in compact:
-                    compact.append(fallback)
-        return compact[:2]
-
-    def _compact_known_specs(self, specs: list[str]) -> list[str]:
-        compact: list[str] = []
-        for spec in specs:
-            if spec.startswith("salesNote="):
-                compact.append(self._truncate_spec(spec, 96))
-                continue
-            if spec.startswith("components="):
-                component_count = spec.count(",") + 1
-                compact.append(f"components={component_count} items")
-                continue
-            compact.append(spec)
-        return compact[:6]
-
-    def _truncate_spec(self, spec: str, limit: int) -> str:
-        if len(spec) <= limit:
-            return spec
-        return spec[: limit - 3].rstrip() + "..."
-
-    def _register_resolver(self) -> None:
-        async def disambiguate(validated: ResolverDisambiguateCandidatesArgs, _: str | None, thought: str) -> ToolResult:
-            search_args = StockSearchCatalogueArgs(
-                page=1,
-                search=validated.query,
-                departmentId=validated.departmentId,
-                categoryId=validated.categoryId,
-            )
-            search_result, _, notes = await self.inventory_service.search_catalogue(search_args)
-            ranked = self.resolver_service.rank_candidates(validated.query, search_result.items, limit=validated.limit)
-            ranked_product_ids = {candidate.option.product_id for candidate in ranked if candidate.option.product_id}
-            if len(ranked_product_ids) <= 1 and ranked:
-                top = ranked[0]
-                payload = {
-                    "status": "resolved_product_family",
-                    "query": validated.query,
-                    "product_id": top.option.product_id or top.product.id,
-                    "product_name": top.product.name,
-                    "variant_count": len(top.product.variants),
-                    "candidate_count": len(ranked),
-                }
-                trace = ToolTrace(
-                    thought=thought,
-                    tool="stock_disambiguate",
-                    args=validated.model_dump(exclude_none=True),
-                    status="ok",
-                    cache_status="resolver",
-                    source_data="harmonise -> ranked_candidates[*]",
-                    result_count=len(ranked),
-                    normalization_notes=notes,
-                )
-                return ToolResult(
-                    tool="stock_disambiguate",
-                    data=payload,
-                    llm_content=payload,
-                    normalization_notes=notes,
-                    trace=trace,
-                )
-
-            clarification = self.resolver_service.build_clarification(
-                validated.query,
-                ranked,
-                option_limit=validated.limit,
-                total_matches=search_result.totalCount,
-                selection_threshold=validated.limit,
-            )
-            trace = ToolTrace(
-                thought=thought,
-                tool="stock_disambiguate",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status="resolver",
-                source_data="harmonise -> ranked_candidates[*]",
-                result_count=len(clarification.options),
-                normalization_notes=notes,
-            )
-            return ToolResult(
-                tool="stock_disambiguate",
-                data=clarification.model_dump(mode="json"),
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        self._register(
-            "stock_disambiguate",
-            (
-                "Rank ambiguous catalogue candidates for a user phrase and return either a resolved product family or "
-                "clarification options. Use only when search results could mean several products; if the family is "
-                "already known, use stock_snapshot or stock_detail."
-            ),
-            ResolverDisambiguateCandidatesArgs,
-            disambiguate,
-        )
-        self._register(
-            "resolver_disambiguate_candidates",
-            "Deprecated alias for stock_disambiguate. Hidden from normal MCP discovery.",
-            ResolverDisambiguateCandidatesArgs,
-            disambiguate,
-            visible=False,
-        )
-
-    def _register_session(self) -> None:
-        async def get_state(validated: SessionToolArgs, session_id: str | None, thought: str) -> ToolResult:
-            state, cache_status = await self.session_store.get_state(session_id or validated.sessionId)
-            trace = ToolTrace(
-                thought=thought,
-                tool="session_state",
-                args={"sessionId": session_id or validated.sessionId},
-                status="ok",
-                cache_status=cache_status,
-                source_data="session -> state",
-                result_count=1,
-            )
-            summary = summarize_session_state(state, f"session_state {session_id or validated.sessionId}", mode="compact")
-            rendered_summary = render_session_context(
-                state,
-                f"session_state {session_id or validated.sessionId}",
-                mode="compact",
-            )
-            # Motivation vs Logic: the API response can keep the full structured
-            # session state for callers, while the LLM only needs a compact
-            # digest here so we do not re-expand the entire memory graph into
-            # the next chat-completion prompt.
-            summary_payload = {
-                "session_id": state.session_id,
-                "session_name": state.session_name,
-                "session_name_source": state.session_name_source,
-                "name_assigned": state.name_assigned,
-                "summary": rendered_summary,
-            }
-            data = {
-                "session_id": state.session_id,
-                "session_name": state.session_name,
-                "session_name_source": state.session_name_source,
-                "name_assigned": state.name_assigned,
-                "recent_product_names": list(state.recent_product_names),
-                "recent_resolved_identifiers": list(state.recent_resolved_identifiers),
-                "last_candidate_list": [candidate.model_dump(mode="json") for candidate in state.last_candidate_list[:4]],
-                "last_filters": state.last_filters,
-                "preferences": state.preferences,
-                "plan": summary.get("plan"),
-                "memo": summary.get("memo"),
-                "conversation": summary.get("conversation"),
-                "summary": rendered_summary,
-            }
-            return ToolResult(tool="session_state", data=data, llm_content=summary_payload, trace=trace)
-
-        async def clear_state(validated: SessionToolArgs, session_id: str | None, thought: str) -> ToolResult:
-            state, cache_status = await self.session_store.clear_state(session_id or validated.sessionId)
-            trace = ToolTrace(
-                thought=thought,
-                tool="session_clear_state",
-                args={"sessionId": session_id or validated.sessionId},
-                status="ok",
-                cache_status=cache_status,
-                source_data="session -> state",
-                result_count=1,
-            )
-            return ToolResult(tool="session_clear_state", data=state.model_dump(mode="json"), trace=trace)
-
-        self._register(
-            "session_state",
-            (
-                "Inspect MCP session working memory: recent products, identifiers, compact plan, and memo digest. "
-                "Use only when the user explicitly asks about prior context/history; do not use for fresh stock availability."
-            ),
-            SessionToolArgs,
-            get_state,
-        )
-        self._register(
-            "session_get_state",
-            "Deprecated alias for session_state. Hidden from normal MCP discovery.",
-            SessionToolArgs,
-            get_state,
-            visible=False,
-        )
-        self._register(
-            "session_clear_state",
-            "Administrative/debug tool to clear MCP session working memory. Hidden from normal MCP tool discovery.",
-            SessionToolArgs,
-            clear_state,
-            visible=False,
-        )
-
-    def _register_news(self) -> None:
-        async def search(validated: NewsSearchArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.news_service.search(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="news_search",
-                args=validated.model_dump(by_alias=True, exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="newsapi -> articles[*]",
-                result_count=len(data.get("articles", [])),
-                normalization_notes=notes,
-            )
-            # Motivation vs Logic: surface concise article summaries so the agent can cite trends directly.
-            formatted = format_news_articles(
-                data,
-                validated.model_dump(by_alias=True, exclude_none=True),
-                request_type="search",
-            )
-            return ToolResult(
-                tool="news_search",
-                data=data,
-                llm_content=formatted,
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def headlines(validated: NewsHeadlinesArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.news_service.headlines(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="news_headlines",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="newsapi -> headlines[*]",
-                result_count=len(data.get("articles", [])),
-                normalization_notes=notes,
-            )
-            formatted = format_news_articles(
-                data,
-                validated.model_dump(exclude_none=True),
-                request_type="headlines",
-            )
-            return ToolResult(
-                tool="news_headlines",
-                data=data,
-                llm_content=formatted,
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        async def sources(validated: NewsSourcesArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.news_service.sources(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="news_sources",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="newsapi -> sources[*]",
-                result_count=len(data.get("sources", [])),
-                normalization_notes=notes,
-            )
-            formatted = format_news_sources(data, validated.model_dump(exclude_none=True))
-            return ToolResult(
-                tool="news_sources",
-                data=data,
-                llm_content=formatted,
-                normalization_notes=notes,
-                trace=trace,
-            )
-
-        self._register(
-            "news_search",
-            (
-                "News API article search for external news questions. Supports keywords, source IDs, domains, ISO date "
-                "bounds, language, sort, and pagination. Do not use for inventory or stock questions."
-            ),
-            NewsSearchArgs,
-            search,
-        )
-        self._register(
-            "news_headlines",
-            (
-                "Top headlines from News API by country, category, source, or keyword. Use for current news/headline "
-                "questions, not Harmonise inventory."
-            ),
-            NewsHeadlinesArgs,
-            headlines,
-        )
-        self._register(
-            "news_sources",
-            "List News API source IDs by category, language, or country so later news_search/headlines calls can use exact sources.",
-            NewsSourcesArgs,
-            sources,
-        )
-
-    def _register_weather(self) -> None:
-        async def resolve(validated: WeatherResolveArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.weather_service.resolve(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="weather_resolve",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openweather -> locations[*]",
-                result_count=data.get("count"),
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="weather_resolve", data=data, normalization_notes=notes, trace=trace)
-
-        async def current(validated: WeatherCurrentArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.weather_service.current(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="weather_current",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openweather -> current",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="weather_current", data=data, normalization_notes=notes, trace=trace)
-
-        async def forecast(validated: WeatherForecastArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.weather_service.forecast(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="weather_forecast",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openweather -> forecast.list[*]",
-                result_count=data.get("returned"),
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="weather_forecast", data=data, normalization_notes=notes, trace=trace)
-
-        async def history(validated: WeatherHistoryArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.weather_service.history(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="weather_history",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openweather -> history.points[*]",
-                result_count=data.get("count"),
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="weather_history", data=data, normalization_notes=notes, trace=trace)
-
-        self._register(
-            "weather_resolve",
-            "OpenWeather geocoding for weather questions: resolve a place name or lat/lon into candidate locations.",
-            WeatherResolveArgs,
-            resolve,
-            visible=False,
-        )
-        self._register(
-            "weather_current",
-            "OpenWeather current conditions for a place name or coordinates. Use for weather, not inventory availability.",
-            WeatherCurrentArgs,
-            current,
-        )
-        self._register(
-            "weather_forecast",
-            "OpenWeather 5-day / 3-hour forecast for a place name or coordinates, with bounded forecast point count.",
-            WeatherForecastArgs,
-            forecast,
-        )
-        self._register(
-            "weather_history",
-            "OpenWeather historical conditions when the configured endpoint supports the requested date/window.",
-            WeatherHistoryArgs,
-            history,
-        )
-
     def _register_currency(self) -> None:
-        async def symbols(validated: CurrencySymbolsArgs, _: str | None, thought: str) -> ToolResult:
+        async def symbols(validated: CurrencySymbolsArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.symbols(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2109,7 +188,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="fx_symbols", data=data, normalization_notes=notes, trace=trace)
 
-        async def latest(validated: CurrencyLatestArgs, _: str | None, thought: str) -> ToolResult:
+        async def latest(validated: CurrencyLatestArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.latest(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2123,7 +202,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="fx_latest", data=data, normalization_notes=notes, trace=trace)
 
-        async def history(validated: CurrencyHistoryArgs, _: str | None, thought: str) -> ToolResult:
+        async def history(validated: CurrencyHistoryArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.history(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2137,7 +216,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="fx_history", data=data, normalization_notes=notes, trace=trace)
 
-        async def timeseries(validated: CurrencyTimeseriesArgs, _: str | None, thought: str) -> ToolResult:
+        async def timeseries(validated: CurrencyTimeseriesArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.timeseries(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2151,7 +230,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="fx_series", data=data, normalization_notes=notes, trace=trace)
 
-        async def convert(validated: CurrencyConvertArgs, _: str | None, thought: str) -> ToolResult:
+        async def convert(validated: CurrencyConvertArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.convert(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2165,7 +244,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="fx_convert", data=data, normalization_notes=notes, trace=trace)
 
-        async def fluctuation(validated: CurrencyFluctuationArgs, _: str | None, thought: str) -> ToolResult:
+        async def fluctuation(validated: CurrencyFluctuationArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.fluctuation(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2186,24 +265,10 @@ class ToolRegistry:
             symbols,
         )
         self._register(
-            "currency_symbols",
-            "Deprecated alias for fx_symbols. Hidden from normal MCP discovery.",
-            CurrencySymbolsArgs,
-            symbols,
-            visible=False,
-        )
-        self._register(
             "fx_latest",
             "Latest FX rates for an optional base and comma-separated target symbols.",
             CurrencyLatestArgs,
             latest,
-        )
-        self._register(
-            "currency_latest",
-            "Deprecated alias for fx_latest. Hidden from normal MCP discovery.",
-            CurrencyLatestArgs,
-            latest,
-            visible=False,
         )
         self._register(
             "fx_history",
@@ -2212,24 +277,10 @@ class ToolRegistry:
             history,
         )
         self._register(
-            "currency_history",
-            "Deprecated alias for fx_history. Hidden from normal MCP discovery.",
-            CurrencyHistoryArgs,
-            history,
-            visible=False,
-        )
-        self._register(
             "fx_series",
             "Daily FX rate series between start_date and end_date for optional base/target symbols.",
             CurrencyTimeseriesArgs,
             timeseries,
-        )
-        self._register(
-            "currency_timeseries",
-            "Deprecated alias for fx_series. Hidden from normal MCP discovery.",
-            CurrencyTimeseriesArgs,
-            timeseries,
-            visible=False,
         )
         self._register(
             "fx_convert",
@@ -2238,91 +289,14 @@ class ToolRegistry:
             convert,
         )
         self._register(
-            "currency_convert",
-            "Deprecated alias for fx_convert. Hidden from normal MCP discovery.",
-            CurrencyConvertArgs,
-            convert,
-            visible=False,
-        )
-        self._register(
             "fx_fluctuation",
             "FX rate fluctuation over a YYYY-MM-DD date range, comparing start and end rates.",
             CurrencyFluctuationArgs,
             fluctuation,
         )
-        self._register(
-            "currency_fluctuation",
-            "Deprecated alias for fx_fluctuation. Hidden from normal MCP discovery.",
-            CurrencyFluctuationArgs,
-            fluctuation,
-            visible=False,
-        )
-
-    def _register_ecommerce(self) -> None:
-        async def item_search(validated: EbayItemSearchArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.ecommerce_service.item_search(validated)
-            items = data.get("items", []) if isinstance(data, dict) else []
-            trace = ToolTrace(
-                thought=thought,
-                tool="ebay_item_search",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="ebay -> item_summary/search.itemSummaries[*]",
-                result_count=len(items) if isinstance(items, list) else None,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="ebay_item_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        async def item_detail(validated: EbayItemDetailArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.ecommerce_service.item_detail(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="ebay_item_detail",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="ebay -> item/{item_id}",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="ebay_item_detail", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        async def category_tree(validated: EbayCategoryTreeArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.ecommerce_service.category_tree(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="ebay_category_tree",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="ebay -> commerce/taxonomy/category_tree",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="ebay_category_tree", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        self._register(
-            "ebay_item_search",
-            "eBay Browse API item search for live product discovery, pricing, availability, and listing summaries.",
-            EbayItemSearchArgs,
-            item_search,
-        )
-        self._register(
-            "ebay_item_detail",
-            "eBay Browse API item lookup for listing metadata, seller details, images, and availability signals.",
-            EbayItemDetailArgs,
-            item_detail,
-        )
-        self._register(
-            "ebay_category_tree",
-            "eBay Taxonomy API category tree lookup for marketplace hierarchy and category navigation.",
-            EbayCategoryTreeArgs,
-            category_tree,
-        )
 
     def _register_accounting(self) -> None:
-        async def expense_list(validated: OpenCollectiveExpenseListArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_list(validated: OpenCollectiveExpenseListArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.expense_list(validated)
             account = data.get("account", {}) if isinstance(data, dict) else {}
             expense_count = None
@@ -2342,7 +316,7 @@ class ToolRegistry:
             )
             return ToolResult(tool="accounting_expense_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def transaction_all(validated: OpenCollectiveTransactionAllArgs, _: str | None, thought: str) -> ToolResult:
+        async def transaction_all(validated: OpenCollectiveTransactionAllArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.transaction_all(validated)
             account = data.get("account", {}) if isinstance(data, dict) else {}
             transaction_count = None
@@ -2360,16 +334,9 @@ class ToolRegistry:
                 result_count=transaction_count if isinstance(transaction_count, int) else None,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_transaction_all",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_transaction_all", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        # Motivation vs Logic: expose account search explicitly so the agent can resolve labels before spending a budget lookup on a guessed slug.
-        async def account_search(validated: OpenCollectiveAccountSearchArgs, _: str | None, thought: str) -> ToolResult:
+        async def account_search(validated: OpenCollectiveAccountSearchArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.account_search(validated)
             accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
             result_count = None
@@ -2385,23 +352,13 @@ class ToolRegistry:
                 result_count=result_count if isinstance(result_count, int) else None,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_account_search",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_account_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def financial_snapshot(validated: OpenCollectiveFinancialSnapshotArgs, _: str | None, thought: str) -> ToolResult:
+        async def financial_snapshot(validated: OpenCollectiveFinancialSnapshotArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.financial_snapshot(validated)
-            account = data.get("account", {}) if isinstance(data, dict) else {}
             summary = data.get("summary", {}) if isinstance(data, dict) else {}
-            expense_count = None
-            transaction_count = None
-            if isinstance(summary, dict):
-                expense_count = summary.get("expense_count")
-                transaction_count = summary.get("transaction_count")
+            expense_count = summary.get("expense_count") if isinstance(summary, dict) else None
+            transaction_count = summary.get("transaction_count") if isinstance(summary, dict) else None
             result_count = expense_count if isinstance(expense_count, int) else None
             if result_count is None and isinstance(transaction_count, int):
                 result_count = transaction_count
@@ -2411,19 +368,13 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL account snapshot query (account + stats + expenses + transactions)",
+                source_data="opencollective -> GraphQL account snapshot query",
                 result_count=result_count,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_financial_snapshot",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_financial_snapshot", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def expense_workflow(validated: OpenCollectiveExpenseWorkflowArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_workflow(validated: OpenCollectiveExpenseWorkflowArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.expense_workflow(validated)
             operation = data.get("expense", {}) if isinstance(data, dict) else {}
             trace = ToolTrace(
@@ -2436,15 +387,9 @@ class ToolRegistry:
                 result_count=1 if isinstance(operation, dict) else None,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_expense_workflow",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_expense_workflow", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def budget_lookup(validated: OpenCollectiveBudgetLookupArgs, _: str | None, thought: str) -> ToolResult:
+        async def budget_lookup(validated: OpenCollectiveBudgetLookupArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.budget_lookup(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2452,13 +397,13 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL account stats query (balance, yearlyBudget, monthlySpending)",
+                source_data="opencollective -> GraphQL account stats query",
                 result_count=1,
                 normalization_notes=notes,
             )
             return ToolResult(tool="accounting_budget_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def expense_create(validated: OpenCollectiveExpenseCreateArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_create(validated: OpenCollectiveExpenseCreateArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.create_expense(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2470,15 +415,9 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_expense_create",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_expense_create", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def expense_update(validated: OpenCollectiveExpenseUpdateArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_update(validated: OpenCollectiveExpenseUpdateArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.edit_expense(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2490,15 +429,9 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_expense_update",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_expense_update", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def expense_delete(validated: OpenCollectiveExpenseDeleteArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_delete(validated: OpenCollectiveExpenseDeleteArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.delete_expense(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2510,15 +443,9 @@ class ToolRegistry:
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_expense_delete",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_expense_delete", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def expense_process(validated: OpenCollectiveExpenseProcessArgs, _: str | None, thought: str) -> ToolResult:
+        async def expense_process(validated: OpenCollectiveExpenseProcessArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.process_expense(validated)
             trace = ToolTrace(
                 thought=thought,
@@ -2526,20 +453,12 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL createExpense mutation/bulk",
+                source_data="opencollective -> GraphQL processExpense mutation",
                 result_count=1,
                 normalization_notes=notes,
             )
-            return ToolResult(
-                tool="accounting_expense_process",
-                data=data,
-                llm_content=data,
-                normalization_notes=notes,
-                trace=trace,
-            )
+            return ToolResult(tool="accounting_expense_process", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        # Motivation vs Logic: expose high-level accountant-style tools publicly, while keeping the granular
-        # expense/ledger mutations available as hidden implementation primitives for fallback and compatibility.
         self._register(
             "accounting_account_search",
             "Open Collective client search for resolving human labels, ambiguous client names, closest-match suggestions, and create-confirmation decisions before ledger actions.",
@@ -2606,68 +525,4 @@ class ToolRegistry:
             OpenCollectiveBudgetLookupArgs,
             budget_lookup,
             visible=False,
-        )
-
-    def _register_retail(self) -> None:
-        async def book_search(validated: OpenLibraryBookSearchArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.retail_service.book_search(validated)
-            search = data.get("search", {}) if isinstance(data, dict) else {}
-            result_count = search.get("numFound") if isinstance(search, dict) else None
-            trace = ToolTrace(
-                thought=thought,
-                tool="openlibrary_book_search",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openlibrary -> search.json.docs[*]",
-                result_count=result_count if isinstance(result_count, int) else None,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="openlibrary_book_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        async def isbn_lookup(validated: OpenLibraryIsbnLookupArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.retail_service.isbn_lookup(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="openlibrary_isbn_lookup",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openlibrary -> isbn/{id}.json",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="openlibrary_isbn_lookup", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        async def subject_list(validated: OpenLibrarySubjectListArgs, _: str | None, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.retail_service.subject_list(validated)
-            trace = ToolTrace(
-                thought=thought,
-                tool="openlibrary_subject_list",
-                args=validated.model_dump(exclude_none=True),
-                status="ok",
-                cache_status=cache_status,
-                source_data="openlibrary -> subjects/{subject}.json",
-                result_count=1,
-                normalization_notes=notes,
-            )
-            return ToolResult(tool="openlibrary_subject_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
-
-        self._register(
-            "openlibrary_book_search",
-            "Open Library search for public book discovery by title, author, subject, or free-text query.",
-            OpenLibraryBookSearchArgs,
-            book_search,
-        )
-        self._register(
-            "openlibrary_isbn_lookup",
-            "Open Library ISBN lookup for book metadata and catalog details.",
-            OpenLibraryIsbnLookupArgs,
-            isbn_lookup,
-        )
-        self._register(
-            "openlibrary_subject_list",
-            "Open Library subject browse for catalog browsing by book subject or classification.",
-            OpenLibrarySubjectListArgs,
-            subject_list,
         )

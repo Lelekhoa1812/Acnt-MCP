@@ -2,11 +2,11 @@
 
 set -euo pipefail
 
-# Single-image Docker build and push script for Horse app.
-# Target image: <registry>/hth-mcp:<tag>
+# Single-image Docker build and push script for Accounting Agent.
+# Target image: <registry>/acnt-mcp:<tag>
 
 REGISTRY="${REGISTRY:-crairagapidevase.azurecr.io}"
-IMAGE_NAME="hth-mcp/hth-harmonise-mcp"
+IMAGE_NAME="acnt-mcp/acnt-inventory-mcp"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKERFILE_PATH="${PROJECT_ROOT}/Dockerfile"
 BUILD_DIR="${PROJECT_ROOT}"
@@ -18,7 +18,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo "=========================================="
-echo "Horse App Docker Build and Push"
+echo "Accounting Agent Docker Build and Push"
 echo "=========================================="
 echo ""
 

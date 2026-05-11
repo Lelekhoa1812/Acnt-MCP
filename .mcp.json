@@ -1,17 +1,14 @@
 {
   "mcpServers": {
-    "hth-stock-intelligence": {
+    "acnt-mcp": {
       "command": "python3",
       "args": [
         "-m",
         "app.mcp.server"
       ],
       "env": {
-        "LOCAL_HARMONISE": "true",
-        "LOCAL_HARMONISE_ENDPOINT": "http://localhost:9000",
-        "HTH_REDIS_FALLBACK_ENABLED": "false",
-        "HTH_LOCAL_CHAT_MEMORY_ENABLED": "false",
-        "HTH_LOG_LEVEL": "INFO"
+        "ACNT_REDIS_FALLBACK_ENABLED": "true",
+        "ACNT_LOG_LEVEL": "INFO"
       }
     }
   }

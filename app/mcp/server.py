@@ -8,7 +8,6 @@ from typing import Any
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.stdio import stdio_server
-from mcp.types import Icon
 
 from app.config import AppContainer, Settings, build_container, get_settings
 from app.config.logging import configure_logging
@@ -16,55 +15,27 @@ from app.mcp.adapter import McpToolAdapter
 
 
 MCP_SERVER_INSTRUCTIONS = (
-    "Harmonise and public-data MCP server. Choose tools by requested operation, not by hard-coded product keywords. "
-    "Use stock_scope for supported departments/categories and categoryId routing. Use stock_list_category before "
-    "item search for broad item types, plural nouns, or category-like phrases, then pass returned categoryId filters "
-    "to inventory tools. Use stock_snapshot for named family availability or broad variant tables. "
-    "Use stock_availability for most/least totals by type, product family, category, region, or all inventory; "
-    "it returns summed groups and should be scoped with product-family terms or categoryId where possible because "
-    "it uses snapshot pagination and SKU enrichment. Use stock_rank for complex hierarchy, dimension, pricing, "
-    "attribute/style, state, and variant ranking; use groupBy='variant' when the user asks which variant or SKU "
-    "ranks highest/lowest within a resolved family. Use stock_image "
-    "for Harmonise image retrieval/rendering; use ebay_item_search, ebay_item_detail, and ebay_category_tree for "
-    "live marketplace discovery; use accounting_account_search, accounting_financial_snapshot, and "
-    "accounting_expense_workflow for public finance transparency and accounting workflow automation. "
-    "When a collective label looks like a budget code, project code, or natural-language name, use "
-    "accounting_account_search first and prefer exact slug matches from the returned candidates before ledger actions; "
-    "if search only finds a close match, ask the user to confirm it or create a new account/expense draft instead of forcing the wrong slug; "
-    "when the user supplies concrete line items (amounts, vendors, dates) to record into a collective, call "
-    "accounting_expense_workflow with action=CREATE once per line item after the search/snapshot - a zero-row snapshot is the cue to create, not to stop; "
-    "if accounting_expense_workflow returns 'Personal Access Token is missing required scope', report to the user that the OPENCOLLECTIVE_PAT_TOKEN needs to be regenerated with the 'expenses' scope; "
-    "use openlibrary_book_search, openlibrary_isbn_lookup, and "
-    "openlibrary_subject_list for public book and subject browsing. "
-    "Follow stock_image rendering fallback order: encoded MCP image content, "
-    "automatic local download of the resolved URI, automatic preview command that creates and activates its script "
-    "environment, then best URI only with an AI client technical rendering issue explanation. Use stock_detail for exact product/SKU detail and stock_compare "
-    "only for explicit 2-20 variant comparisons. For fallback, try the user's phrase first; if no rows, partial "
-    "coverage, or timeouts occur, preserve obvious category intent when trimming product search tokens: use "
-    "stock_list_category when categoryId is not known, then retry the distinctive model token with categoryId. "
-    "If category confidence is unclear, keep the fallback name-driven. Weather, news, and FX tools are "
-    "auxiliary and must not answer inventory questions. If stock tools are unavailable, use only weather, news, and FX "
-    "tools instead of trying to infer inventory facts. Answer directly without preambles, tool names, or internal "
-    "keys; use answer_ready or structured totals for grounding."
+    "acnt-mcp exposes two tool families: FX (exchange rates) and accounting (Open Collective). "
+    "Use fx_symbols before FX lookups when currency labels are unclear; fx_latest/fx_history/fx_series/"
+    "fx_convert/fx_fluctuation for rates and conversions. Use accounting_account_search to resolve a "
+    "collective slug from a human label before any ledger action; accounting_financial_snapshot for a "
+    "reconciled balance/expenses/transactions view; accounting_expense_workflow with action=CREATE/EDIT/"
+    "DELETE/PROCESS to record or update expenses against a collective. If accounting_expense_workflow "
+    "returns 'Personal Access Token is missing required scope', advise the user to regenerate "
+    "OPENCOLLECTIVE_PAT_TOKEN with the 'expenses' scope."
 )
 
 
 class StdioMcpApplication:
-    # Motivation vs Logic: this runtime wraps the existing app container in a
-    # real stdio MCP server so coding tools can speak the standard protocol
-    # without duplicating any inventory, session, or external API business logic.
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         configure_logging(self.settings.log_level)
-        self.logger = logging.getLogger("hth.mcp")
+        self.logger = logging.getLogger("acnt.mcp")
         self._container: AppContainer | None = None
-        server_icons = [Icon(src=self.settings.resolved_server_logo_url, mimeType="image/jpeg", sizes=["225x225"])]
         self.server: Server[dict[str, Any], Any] = Server(
             name=self.settings.server_name,
             version=self.settings.server_version,
             instructions=MCP_SERVER_INSTRUCTIONS,
-            website_url=self.settings.resolved_server_website_url,
-            icons=server_icons,
             lifespan=self._lifespan,
         )
         self._register_handlers()
@@ -90,20 +61,11 @@ class StdioMcpApplication:
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any] | None):
             adapter = self._adapter()
-            return await adapter.call_tool(
-                name=name,
-                arguments=arguments,
-                request_context=self.server.request_context,
-            )
+            return await adapter.call_tool(name=name, arguments=arguments)
 
     def _adapter(self) -> McpToolAdapter:
         container = self._require_container()
-        return McpToolAdapter(
-            orchestrator_service=container.orchestrator_service,
-            default_session_id=container.settings.default_session_id,
-            logger=self.logger,
-            compact_envelope=container.settings.mcp_compact_envelope,
-        )
+        return McpToolAdapter(tool_registry=container.tool_registry, logger=self.logger)
 
     def _require_container(self) -> AppContainer:
         if self._container is None:  # pragma: no cover - guarded by MCP lifespan
@@ -126,17 +88,7 @@ async def run_stdio_server(settings: Settings | None = None) -> None:
             InitializationOptions(
                 server_name=resolved_settings.server_name,
                 server_version=resolved_settings.server_version,
-                instructions=(
-                    MCP_SERVER_INSTRUCTIONS
-                ),
-                website_url=resolved_settings.resolved_server_website_url,
-                icons=[
-                    Icon(
-                        src=resolved_settings.resolved_server_logo_url,
-                        mimeType="image/jpeg",
-                        sizes=["225x225"],
-                    )
-                ],
+                instructions=MCP_SERVER_INSTRUCTIONS,
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},

@@ -1,24 +1,20 @@
 from __future__ import annotations
 
 
-class InventoryError(Exception):
-    """Base exception for inventory orchestration failures."""
+class AppError(Exception):
+    """Base exception for tool orchestration failures."""
 
 
-class ParameterMappingError(InventoryError):
+class ParameterMappingError(AppError):
     """Raised when a request cannot be safely mapped to tool arguments."""
 
 
-class UnsupportedToolError(InventoryError):
+class UnsupportedToolError(AppError):
     """Raised when a requested tool is not registered."""
 
 
-class InventoryNotFoundError(InventoryError):
-    """Raised when an exact lookup returns no record."""
-
-
-class UpstreamServiceError(InventoryError):
-    """Raised when the Harmonise upstream returns an operational failure."""
+class UpstreamServiceError(AppError):
+    """Raised when an upstream service returns an operational failure."""
 
     def __init__(self, status_code: int, detail: str, request: str | None = None) -> None:
         super().__init__(detail)

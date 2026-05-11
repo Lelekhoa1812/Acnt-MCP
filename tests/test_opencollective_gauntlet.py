@@ -26,9 +26,9 @@ from app.tool.accounting import (
 
 def _settings() -> Settings:
     return Settings(
-        HTH_LOG_LEVEL="warning",
-        HTH_REDIS_FALLBACK_ENABLED=True,
-        HTH_REDIS_URL="redis://127.0.0.1:65535",
+        ACNT_LOG_LEVEL="warning",
+        ACNT_REDIS_FALLBACK_ENABLED=True,
+        ACNT_REDIS_URL="redis://127.0.0.1:65535",
         OPENCOLLECTIVE_CLIENT_ID="oc-client-id",
         OPENCOLLECTIVE_CLIENT_SECRET="oc-client-secret",
         OPENCOLLECTIVE_PAT_TOKEN="oc-personal-token",
