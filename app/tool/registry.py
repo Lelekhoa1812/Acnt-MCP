@@ -2313,7 +2313,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> account.expenses",
+                source_data="opencollective -> GraphQL expenses query",
                 result_count=expense_count if isinstance(expense_count, int) else None,
                 normalization_notes=notes,
             )
@@ -2333,7 +2333,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> account.transactions",
+                source_data="opencollective -> GraphQL transactions query",
                 result_count=transaction_count if isinstance(transaction_count, int) else None,
                 normalization_notes=notes,
             )
@@ -2358,7 +2358,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> accounts.searchTerm",
+                source_data="opencollective -> GraphQL accounts search query",
                 result_count=result_count if isinstance(result_count, int) else None,
                 normalization_notes=notes,
             )
@@ -2388,7 +2388,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> account.stats, account.expenses, account.transactions",
+                source_data="opencollective -> GraphQL account snapshot query (account + stats + expenses + transactions)",
                 result_count=result_count,
                 normalization_notes=notes,
             )
@@ -2409,7 +2409,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> createExpense/editExpense/deleteExpense/processExpense",
+                source_data="opencollective -> GraphQL createExpense/editExpense/deleteExpense/processExpense mutations",
                 result_count=1 if isinstance(operation, dict) else None,
                 normalization_notes=notes,
             )
@@ -2429,7 +2429,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> account.stats",
+                source_data="opencollective -> GraphQL account stats query (balance, yearlyBudget, monthlySpending)",
                 result_count=1,
                 normalization_notes=notes,
             )
@@ -2443,7 +2443,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> createExpense",
+                source_data="opencollective -> GraphQL createExpense mutation",
                 result_count=1,
                 normalization_notes=notes,
             )
@@ -2463,7 +2463,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> editExpense",
+                source_data="opencollective -> GraphQL editExpense mutation",
                 result_count=1,
                 normalization_notes=notes,
             )
@@ -2483,7 +2483,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> deleteExpense",
+                source_data="opencollective -> GraphQL deleteExpense mutation",
                 result_count=1,
                 normalization_notes=notes,
             )
@@ -2503,7 +2503,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> processExpense",
+                source_data="opencollective -> GraphQL createExpense mutation/bulk",
                 result_count=1,
                 normalization_notes=notes,
             )
@@ -2519,67 +2519,67 @@ class ToolRegistry:
         # expense/ledger mutations available as hidden implementation primitives for fallback and compatibility.
         self._register(
             "accounting_account_search",
-            "Open Collective account search for resolving human labels, ambiguous collective names, closest-match suggestions, and create-confirmation decisions before ledger actions.",
+            "Open Collective client search for resolving human labels, ambiguous client names, closest-match suggestions, and create-confirmation decisions before ledger actions.",
             OpenCollectiveAccountSearchArgs,
             account_search,
         )
         self._register(
             "accounting_financial_snapshot",
-            "Open Collective financial snapshot for a reconciled view of budget, recent expenses, transactions, and open liabilities in one call.",
+            "Open Collective financial snapshot for a reconciled view of client balance, paid-to-date, recent expenses, bank transactions, and open liabilities in one call.",
             OpenCollectiveFinancialSnapshotArgs,
             financial_snapshot,
         )
         self._register(
             "accounting_expense_workflow",
-            "Open Collective expense workflow for creating, editing, deleting, and processing expenses from one structured action tool.",
+            "Open Collective expense workflow for creating, editing, deleting, and processing expenses (archive/restore/mark-as-paid/invoice) from one structured action tool.",
             OpenCollectiveExpenseWorkflowArgs,
             expense_workflow,
         )
         self._register(
             "accounting_expense_list",
-            "Open Collective expense list for public, read-only collective expense reports and ledger entries.",
+            "Open Collective expense list for read-only expense reports and ledger entries scoped to a client.",
             OpenCollectiveExpenseListArgs,
             expense_list,
             visible=False,
         )
         self._register(
             "accounting_transaction_all",
-            "Open Collective transaction ledger lookup for public transaction histories and audit-style browsing.",
+            "Open Collective bank-transaction (or payments fallback) lookup for transaction histories and audit-style browsing.",
             OpenCollectiveTransactionAllArgs,
             transaction_all,
             visible=False,
         )
         self._register(
             "accounting_expense_create",
-            "Open Collective expense creation for submitting public invoices or receipts (requires expenses scope).",
+            "Open Collective expense creation for logging new invoices or receipts against a client.",
             OpenCollectiveExpenseCreateArgs,
             expense_create,
             visible=False,
         )
         self._register(
             "accounting_expense_update",
-            "Open Collective expense editing for correcting or annotating existing public ledger entries.",
+            "Open Collective expense editing for correcting or annotating existing ledger entries.",
             OpenCollectiveExpenseUpdateArgs,
             expense_update,
             visible=False,
         )
         self._register(
             "accounting_expense_delete",
-            "Open Collective expense delete for removing rejected/public expenses where allowed.",
+            "Open Collective expense delete (soft-delete) for removing rejected expenses where allowed.",
             OpenCollectiveExpenseDeleteArgs,
             expense_delete,
             visible=False,
         )
         self._register(
             "accounting_expense_process",
-            "Open Collective expense processing for approving, scheduling, paying, or rejecting expenses.",
+            "Open Collective expense processing (bulk action) for archiving, restoring, marking-as-paid, or invoicing expenses.",
             OpenCollectiveExpenseProcessArgs,
             expense_process,
             visible=False,
         )
         self._register(
             "accounting_budget_lookup",
-            "Open Collective budget lookup for public balance and financial-health snapshots.",
+            "Open Collective client budget snapshot synthesised from balance, paid-to-date, and credit-balance fields.",
             OpenCollectiveBudgetLookupArgs,
             budget_lookup,
             visible=False,

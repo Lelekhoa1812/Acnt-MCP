@@ -1,4 +1,12 @@
 from app.tool.accounting.model import (
+    AccountReferenceInput,
+    AmountInput,
+    ExpenseCreateInput,
+    ExpenseItemCreateInput,
+    ExpenseProcessAction,
+    ExpenseReferenceInput,
+    ExpenseUpdateInput,
+    ExpenseWorkflowAction,
     OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
     OpenCollectiveExpenseCreateArgs,
@@ -9,11 +17,21 @@ from app.tool.accounting.model import (
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
     OpenCollectiveTransactionAllArgs,
+    PayoutMethodInput,
+    ProcessExpensePaymentParams,
 )
 from app.tool.accounting.service import AccountingService
 
 __all__ = [
     "AccountingService",
+    "AccountReferenceInput",
+    "AmountInput",
+    "ExpenseCreateInput",
+    "ExpenseItemCreateInput",
+    "ExpenseProcessAction",
+    "ExpenseReferenceInput",
+    "ExpenseUpdateInput",
+    "ExpenseWorkflowAction",
     "OpenCollectiveAccountSearchArgs",
     "OpenCollectiveBudgetLookupArgs",
     "OpenCollectiveExpenseCreateArgs",
@@ -24,4 +42,6 @@ __all__ = [
     "OpenCollectiveExpenseWorkflowArgs",
     "OpenCollectiveFinancialSnapshotArgs",
     "OpenCollectiveTransactionAllArgs",
+    "PayoutMethodInput",
+    "ProcessExpensePaymentParams",
 ]
