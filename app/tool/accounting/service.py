@@ -35,8 +35,11 @@ mutation CreateExpense($account: AccountReferenceInput!, $expense: ExpenseCreate
     status
     type
     description
-    amount
-    currency
+    amount {
+      value
+      currency
+      valueInCents
+    }
     privateMessage
     reference
     payoutMethod {
@@ -75,8 +78,11 @@ mutation EditExpense($expense: ExpenseUpdateInput!) {
     slug
     status
     description
-    amount
-    currency
+    amount {
+      value
+      currency
+      valueInCents
+    }
     reference
     privateMessage
   }
@@ -105,8 +111,11 @@ mutation ProcessExpense(
     slug
     status
     type
-    amount
-    currency
+    amount {
+      value
+      currency
+      valueInCents
+    }
     privateMessage
   }
 }
@@ -160,8 +169,7 @@ query FinancialSnapshot(
         id
         type
         status
-        amount
-        currency
+        amount { ...OCAmountFields }
         description
         createdAt
         account {
@@ -177,8 +185,7 @@ query FinancialSnapshot(
         id
         type
         kind
-        amount
-        currency
+        amount { ...OCAmountFields }
         description
         createdAt
         account {
@@ -260,8 +267,11 @@ query ExpenseList($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: Stri
         id
         type
         status
-        amount
-        currency
+        amount {
+          value
+          currency
+          valueInCents
+        }
         description
         createdAt
         account {
@@ -299,8 +309,11 @@ query TransactionAll($slug: String!, $limit: Int!, $offset: Int!, $searchTerm: S
         id
         type
         kind
-        amount
-        currency
+        amount {
+          value
+          currency
+          valueInCents
+        }
         description
         createdAt
         account {
