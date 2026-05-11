@@ -134,10 +134,13 @@ class Settings(BaseSettings):
     ebay_client_secret: str | None = Field(None, alias="EBAY_CLIENT_SECRET")
     ebay_marketplace_id: str = Field("EBAY_US", alias="EBAY_MARKETPLACE_ID")
     ebay_environment: str = Field("production", alias="EBAY_ENVIRONMENT")
+    # Open Collective powers the accounting tools. API-only, no self-hosting required.
+    # Completely free (MIT licensed, open-source). Get PAT token from:
+    # https://opencollective.com/dashboard/settings/applications
+    opencollective_graphql_url: str = Field("https://api.opencollective.com/graphql/v2", alias="OPENCOLLECTIVE_GRAPHQL_URL")
+    opencollective_pat_token: str | None = Field(None, alias="OPENCOLLECTIVE_PAT_TOKEN")
     opencollective_client_id: str | None = Field(None, alias="OPENCOLLECTIVE_CLIENT_ID")
     opencollective_client_secret: str | None = Field(None, alias="OPENCOLLECTIVE_CLIENT_SECRET")
-    opencollective_pat_token: str | None = Field(None, alias="OPENCOLLECTIVE_PAT_TOKEN")
-    opencollective_graphql_url: str = Field("https://api.opencollective.com/graphql/v2", alias="OPENCOLLECTIVE_GRAPHQL_URL")
     public_base_url: str | None = Field(None, alias="HTH_PUBLIC_BASE_URL")
     mcp_path: str = Field("/mcp", alias="HTH_MCP_PATH")
     mcp_stateless: bool = Field(False, alias="HTH_MCP_STATELESS")

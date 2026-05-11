@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from difflib import SequenceMatcher
@@ -490,22 +491,133 @@ query BudgetLookup($slug: String!) {
             [],
         )
 
+    def _categorize_graphql_error(self, errors: list[dict[str, Any]] | Any) -> str:
+        """Categorize GraphQL error for retry decision-making."""
+        if not isinstance(errors, list):
+            return "UNKNOWN"
+
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            msg = error.get("message", "").lower()
+            extensions = error.get("extensions", {})
+            code = extensions.get("code", "").upper() if isinstance(extensions, dict) else ""
+
+            # Check for specific error patterns
+            if "authentication" in msg or "unauthorized" in msg or code == "UNAUTHENTICATED":
+                return "AUTH"
+            if "timeout" in msg or code == "TIMEOUT":
+                return "TIMEOUT"
+            if "rate" in msg or code == "RATE_LIMITED":
+                return "RATE_LIMIT"
+            if "validation" in msg or code == "GRAPHQL_VALIDATION_FAILED":
+                return "VALIDATION"
+            if "not found" in msg:
+                return "NOT_FOUND"
+            if "permission" in msg or "forbidden" in msg:
+                return "PERMISSION"
+
+        # Default to server error if we can't categorize
+        return "SERVER_ERROR"
+
     async def _post_graphql(self, query: str, variables: dict[str, object]) -> dict[str, Any]:
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.settings.opencollective_pat_token:
             headers["Personal-Token"] = self.settings.opencollective_pat_token
-        response = await self._client.post("", json={"query": query, "variables": variables}, headers=headers)
-        if response.status_code >= 400:
-            raise UpstreamServiceError(response.status_code, response.text, request="POST /graphql/v2")
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise UpstreamServiceError(502, "Open Collective returned an unexpected non-object payload.", request="POST /graphql/v2")
-        if payload.get("errors"):
-            raise UpstreamServiceError(502, json.dumps(payload["errors"], ensure_ascii=False), request="POST /graphql/v2")
-        data = payload.get("data")
-        if not isinstance(data, dict):
-            raise UpstreamServiceError(502, "Open Collective returned a payload without data.", request="POST /graphql/v2")
-        return data
+
+        # Aggressive retry strategy: 5 attempts with exponential backoff
+        backoff_times = [1, 2, 4, 8, 16]
+        last_error: Exception | None = None
+
+        for attempt in range(5):
+            try:
+                response = await self._client.post("", json={"query": query, "variables": variables}, headers=headers)
+
+                # Handle HTTP errors
+                if response.status_code >= 400:
+                    # Check if this is an auth error (don't retry)
+                    if response.status_code in (401, 403):
+                        raise UpstreamServiceError(
+                            response.status_code,
+                            "Invalid or missing OPENCOLLECTIVE_PAT_TOKEN. Please set OPENCOLLECTIVE_PAT_TOKEN environment variable.",
+                            request="POST /graphql/v2"
+                        )
+                    # For server errors and rate limits, retry with backoff
+                    if response.status_code >= 500 or response.status_code == 429:
+                        if attempt < 4:
+                            wait_time = backoff_times[attempt]
+                            self.logger.warning(f"GraphQL request returned {response.status_code}, retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                            await asyncio.sleep(wait_time)
+                            continue
+                    raise UpstreamServiceError(response.status_code, response.text, request="POST /graphql/v2")
+
+                # Parse response
+                try:
+                    payload = response.json()
+                except ValueError as e:
+                    raise UpstreamServiceError(502, f"Open Collective returned non-JSON payload: {str(e)}", request="POST /graphql/v2") from e
+
+                if not isinstance(payload, dict):
+                    raise UpstreamServiceError(502, "Open Collective returned an unexpected non-object payload.", request="POST /graphql/v2")
+
+                # Handle GraphQL errors
+                if payload.get("errors"):
+                    errors = payload["errors"]
+                    error_type = self._categorize_graphql_error(errors)
+                    error_msg = json.dumps(errors, ensure_ascii=False)
+
+                    # Try to return partial data if available
+                    data = payload.get("data")
+                    if isinstance(data, dict) and data:
+                        self.logger.warning(f"GraphQL {error_type} but returning partial data: {error_msg}")
+                        return data
+
+                    # Auth errors: don't retry
+                    if error_type == "AUTH":
+                        raise UpstreamServiceError(
+                            401,
+                            "Open Collective authentication failed. Please set a valid OPENCOLLECTIVE_PAT_TOKEN.",
+                            request="POST /graphql/v2"
+                        )
+
+                    # For transient errors, retry with backoff
+                    if error_type in ("TIMEOUT", "RATE_LIMIT", "SERVER_ERROR"):
+                        if attempt < 4:
+                            wait_time = backoff_times[attempt]
+                            self.logger.warning(f"GraphQL {error_type}, retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                            await asyncio.sleep(wait_time)
+                            continue
+
+                    # Final error: raise
+                    raise UpstreamServiceError(502, error_msg, request="POST /graphql/v2")
+
+                # Success: return data
+                data = payload.get("data")
+                if not isinstance(data, dict):
+                    raise UpstreamServiceError(502, "Open Collective returned a payload without data.", request="POST /graphql/v2")
+                return data
+
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < 4:
+                    wait_time = backoff_times[attempt]
+                    self.logger.warning(f"GraphQL timeout, retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise UpstreamServiceError(504, f"Open Collective API timeout after 5 attempts: {str(e)}", request="POST /graphql/v2") from e
+            except UpstreamServiceError:
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt < 4:
+                    wait_time = backoff_times[attempt]
+                    self.logger.warning(f"GraphQL request error: {str(e)}, retrying in {wait_time}s (attempt {attempt + 1}/5)...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                raise UpstreamServiceError(502, f"Open Collective API error: {str(e)}", request="POST /graphql/v2") from e
+
+        # Should not reach here, but just in case
+        raise UpstreamServiceError(502, f"GraphQL request failed after 5 attempts", request="POST /graphql/v2")
 
     async def _account_scoped_payload(
         self,
