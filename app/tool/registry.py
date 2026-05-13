@@ -465,6 +465,13 @@ class ToolRegistry:
             return ToolResult(tool="accounting_expense_process", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
         self._register(
+            "accounting_account_search",
+            "Open Collective client search for resolving human labels, ambiguous client names, closest-match candidates, and create-or-confirm decisions before ledger actions.",
+            OpenCollectiveAccountSearchArgs,
+            account_search,
+            visible=False,
+        )
+        self._register(
             "accounting_collective_search",
             "Open Collective collective search for resolving human labels, ambiguous collective names, closest-match suggestions, and create-confirmation decisions before ledger actions. If not found, follow with accounting_collective_list to browse or accounting_collective_create to create.",
             OpenCollectiveCollectiveSearchArgs,
@@ -484,16 +491,15 @@ class ToolRegistry:
         )
         async def collective_list(validated: OpenCollectiveCollectiveListArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.collective_list(validated)
-            logged_in = data.get("loggedInAccount", {}) if isinstance(data, dict) else {}
-            member_of = logged_in.get("memberOf", {}) if isinstance(logged_in, dict) else {}
-            result_count = member_of.get("totalCount") if isinstance(member_of, dict) else None
+            accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
+            result_count = accounts.get("totalCount") if isinstance(accounts, dict) else None
             trace = ToolTrace(
                 thought=thought,
                 tool="accounting_collective_list",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL loggedInAccount.memberOf query",
+                source_data="opencollective -> GraphQL collective list query",
                 result_count=result_count if isinstance(result_count, int) else None,
                 normalization_notes=notes,
             )
@@ -551,8 +557,8 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL createVendor mutation",
-                result_count=1 if isinstance(data.get("vendor"), dict) else None,
+                source_data="opencollective -> GraphQL createOrganization mutation",
+                result_count=1 if isinstance(data.get("organization"), dict) else None,
                 normalization_notes=notes,
             )
             return ToolResult(tool="accounting_payee_create", data=data, llm_content=data, normalization_notes=notes, trace=trace)

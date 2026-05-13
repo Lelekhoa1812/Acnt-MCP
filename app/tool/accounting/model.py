@@ -73,39 +73,38 @@ OpenCollectiveAccountSearchArgs = OpenCollectiveCollectiveSearchArgs
 class OpenCollectiveCollectiveListArgs(BaseModel):
     limit: int = Field(20, ge=1, le=100, description="Maximum collectives to return.")
     offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    search_term: str | None = Field(None, description="Optional keyword filter for collectives.")
+    include_archived: bool = Field(False, description="Include archived collectives.")
+    type: list[str] | None = Field(
+        None,
+        description="Account types to include (e.g. COLLECTIVE, FUND, ORGANIZATION). Omit for all types.",
+    )
     roles: list[str] | None = Field(
         None,
         description="Filter by member role (e.g. ADMIN, MEMBER, ACCOUNTANT). Defaults to [ADMIN, MEMBER, ACCOUNTANT].",
     )
 
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class CollectiveCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the collective.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    tags: list[str] | None = Field(None, description="Categorisation tags.")
+    website: str | None = Field(None, description="Website URL.")
+    githubHandle: str | None = Field(None, description="GitHub organisation handle.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+
 
 class OpenCollectiveCollectiveCreateArgs(BaseModel):
-    name: str = Field(..., description="Display name of the new collective.")
-    slug: str = Field(..., description="Unique URL slug (lowercase, hyphens only).")
-    description: str | None = Field(None, description="Short description of the collective.")
-    tags: list[str] | None = Field(None, description="Optional tags.")
-    website: str | None = Field(None, description="Collective website URL.")
-    host_slug: str | None = Field(
-        None,
-        description="Slug of the fiscal host to apply to. Omit for an unhosted collective.",
-    )
-
-    @field_validator("name")
-    @classmethod
-    def _strip_name(cls, value: str) -> str:
-        cleaned = _strip_text(value)
-        if not cleaned:
-            raise ValueError("name must not be empty.")
-        return cleaned
-
-    @field_validator("slug")
-    @classmethod
-    def _strip_slug(cls, value: str) -> str:
-        cleaned = _strip_text(value)
-        if not cleaned:
-            raise ValueError("slug must not be empty.")
-        return cleaned
-
+    collective: CollectiveCreateInput = Field(..., description="Collective payload to create.")
+    host: AccountReferenceInput = Field(..., description="Host collective that will approve this application.")
+    message: str | None = Field(None, description="Application message sent to the host admins.")
 
 class OpenCollectivePayeeListArgs(BaseModel):
     limit: int = Field(20, ge=1, le=100, description="Maximum payees to return.")
@@ -123,36 +122,29 @@ class OpenCollectivePayeeListArgs(BaseModel):
 
 
 class OpenCollectivePayeeViewArgs(BaseModel):
-    slug: str = Field(..., description="Slug of the payee account to view.")
+    slug: str | None = Field(None, description="Open Collective slug of the payee account.")
+    id: str | None = Field(None, description="Public Open Collective account id (e.g. acc_xxx).")
 
-    @field_validator("slug")
-    @classmethod
-    def _strip_slug(cls, value: str) -> str:
-        cleaned = _strip_text(value)
-        if not cleaned:
-            raise ValueError("slug must not be empty.")
-        return cleaned
+    @model_validator(mode="after")
+    def _require_identifier(cls, values: "OpenCollectivePayeeViewArgs") -> "OpenCollectivePayeeViewArgs":
+        if not values.slug and not values.id:
+            raise ValueError("provide at least one of 'slug' or 'id'.")
+        return values
+
+
+class OrganizationCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the organisation.")
+    legalName: str | None = Field(None, description="Legal registered name.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    website: str | None = Field(None, description="Website URL.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+    githubHandle: str | None = Field(None, description="GitHub handle.")
 
 
 class OpenCollectivePayeeCreateArgs(BaseModel):
-    host_slug: str = Field(..., description="Slug of the fiscal host under which to create the vendor.")
-    name: str = Field(..., description="Vendor display name.")
-    legal_name: str | None = Field(None, description="Legal name of the vendor.")
-    slug: str | None = Field(None, description="Desired slug (auto-generated if omitted).")
-    description: str | None = Field(None, description="Short description.")
-    website: str | None = Field(None, description="Vendor website URL.")
-    contact: str | None = Field(None, description="Contact name or email for the vendor.")
-    payout_method: PayoutMethodInput | None = Field(None, description="Default payout method for the vendor.")
-    tags: list[str] | None = Field(None, description="Optional tags.")
-
-    @field_validator("host_slug", "name")
-    @classmethod
-    def _strip_required(cls, value: str) -> str:
-        cleaned = _strip_text(value)
-        if not cleaned:
-            raise ValueError("field must not be empty.")
-        return cleaned
-
+    organization: OrganizationCreateInput = Field(..., description="Organisation details to create as a payee.")
 
 class OpenCollectiveFinancialSnapshotArgs(_OpenCollectiveBaseArgs):
     expense_limit: int = Field(20, ge=1, le=100, description="Maximum expense rows to include.")
@@ -295,6 +287,84 @@ class OpenCollectiveExpenseProcessArgs(BaseModel):
     action: ExpenseProcessAction = Field(..., description="Action that should be invoked.")
     message: str | None = Field(None, description="Log message attached to the action.")
     paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
+
+
+# ---------------------------------------------------------------------------
+# Collective list / create
+# ---------------------------------------------------------------------------
+
+class OpenCollectiveCollectiveListArgs(BaseModel):
+    search_term: str | None = Field(None, description="Optional keyword filter for collectives.")
+    type: list[str] | None = Field(
+        None,
+        description="Account types to include (e.g. COLLECTIVE, FUND, ORGANIZATION). Omit for all types.",
+    )
+    limit: int = Field(20, ge=1, le=100, description="Maximum rows to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    include_archived: bool = Field(False, description="Include archived collectives.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class CollectiveCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the collective.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    tags: list[str] | None = Field(None, description="Categorisation tags.")
+    website: str | None = Field(None, description="Website URL.")
+    githubHandle: str | None = Field(None, description="GitHub organisation handle.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+
+
+class OpenCollectiveCollectiveCreateArgs(BaseModel):
+    collective: CollectiveCreateInput = Field(..., description="Collective details to create.")
+    host: AccountReferenceInput = Field(..., description="Host collective that will approve and manage this collective.")
+    message: str | None = Field(None, description="Application message sent to host admins.")
+
+
+# ---------------------------------------------------------------------------
+# Payee list / view / create
+# ---------------------------------------------------------------------------
+
+class OpenCollectivePayeeListArgs(BaseModel):
+    search_term: str | None = Field(None, description="Optional keyword filter for payee accounts.")
+    limit: int = Field(20, ge=1, le=100, description="Maximum rows to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class OpenCollectivePayeeViewArgs(BaseModel):
+    slug: str | None = Field(None, description="Open Collective slug of the payee account.")
+    id: str | None = Field(None, description="Public Open Collective account id (e.g. acc_xxx).")
+
+    @model_validator(mode="after")
+    def _require_identifier(cls, values: "OpenCollectivePayeeViewArgs") -> "OpenCollectivePayeeViewArgs":
+        if not values.slug and not values.id:
+            raise ValueError("provide at least one of 'slug' or 'id'.")
+        return values
+
+
+class OrganizationCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the organisation.")
+    legalName: str | None = Field(None, description="Legal registered name.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    website: str | None = Field(None, description="Website URL.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+    githubHandle: str | None = Field(None, description="GitHub handle.")
+
+
+class OpenCollectivePayeeCreateArgs(BaseModel):
+    organization: OrganizationCreateInput = Field(..., description="Organisation details to create as a payee.")
 
 
 _EXPENSE_FIELD_DESCRIPTION = (

@@ -1,6 +1,7 @@
 from app.tool.accounting.model import (
     AccountReferenceInput,
     AmountInput,
+    CollectiveCreateInput,
     ExpenseCreateInput,
     ExpenseItemCreateInput,
     ExpenseProcessAction,
@@ -23,6 +24,7 @@ from app.tool.accounting.model import (
     OpenCollectivePayeeListArgs,
     OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
+    OrganizationCreateInput,
     PayoutMethodInput,
     ProcessExpensePaymentParams,
 )
@@ -43,6 +45,7 @@ __all__ = [
     "OpenCollectiveCollectiveCreateArgs",
     "OpenCollectiveCollectiveListArgs",
     "OpenCollectiveCollectiveSearchArgs",
+    "CollectiveCreateInput",
     "OpenCollectiveExpenseCreateArgs",
     "OpenCollectiveExpenseDeleteArgs",
     "OpenCollectiveExpenseListArgs",
@@ -54,6 +57,7 @@ __all__ = [
     "OpenCollectivePayeeListArgs",
     "OpenCollectivePayeeViewArgs",
     "OpenCollectiveTransactionAllArgs",
+    "OrganizationCreateInput",
     "PayoutMethodInput",
     "ProcessExpensePaymentParams",
 ]

@@ -10,25 +10,34 @@ from typing import Any
 import httpx
 
 from app.tool.accounting.model import (
+    AccountReferenceInput,
+    AmountInput,
+    ExpenseCreateInput,
+    ExpenseItemCreateInput,
+    ExpenseProcessAction,
+    ExpenseReferenceInput,
+    ExpenseUpdateInput,
+    ExpenseWorkflowAction,
+    OpenCollectiveAccountSearchArgs,
+    OpenCollectiveBudgetLookupArgs,
     OpenCollectiveCollectiveCreateArgs,
     OpenCollectiveCollectiveListArgs,
     OpenCollectiveCollectiveSearchArgs,
-    OpenCollectiveBudgetLookupArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
     OpenCollectiveExpenseProcessArgs,
     OpenCollectiveExpenseUpdateArgs,
-    ExpenseWorkflowAction,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
     OpenCollectivePayeeCreateArgs,
     OpenCollectivePayeeListArgs,
     OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
+    OrganizationCreateInput,
+    PayoutMethodInput,
+    ProcessExpensePaymentParams,
 )
-# backward-compat alias (tests still import the old name)
-OpenCollectiveAccountSearchArgs = OpenCollectiveCollectiveSearchArgs
 from app.config import Settings, UpstreamServiceError
 from app.store import AppKeyValueStore
 
@@ -212,7 +221,7 @@ query FinancialSnapshot(
 """.strip()
 
 
-_COLLECTIVE_LIST_QUERY = """
+_COLLECTIVE_LIST_MEMBEROF_QUERY = """
 query CollectiveList($limit: Int!, $offset: Int!, $roles: [MemberRole]) {
   loggedInAccount {
     id
@@ -236,39 +245,50 @@ query CollectiveList($limit: Int!, $offset: Int!, $roles: [MemberRole]) {
 }
 """.strip()
 
-_CREATE_COLLECTIVE_MUTATION = """
-mutation CreateCollective(
-  $name: String!
-  $slug: String!
-  $description: String
-  $tags: [String]
-  $website: String
-  $host: AccountReferenceInput
-) {
-  createCollective(
-    collective: { name: $name, slug: $slug, description: $description, tags: $tags, website: $website }
-    host: $host
-  ) {
-    id
-    slug
-    name
-    type
-    description
-  }
-}
-""".strip()
-
-_PAYEE_LIST_QUERY = """
-query PayeeList($limit: Int!, $offset: Int!, $searchTerm: String, $types: [AccountType]) {
-  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm, type: $types) {
+_COLLECTIVE_LIST_ACCOUNTS_QUERY = """
+query CollectiveList($limit: Int!, $offset: Int!, $searchTerm: String, $includeArchived: Boolean, $type: [AccountType]) {
+  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm, includeArchived: $includeArchived, type: $type, tagSearchOperator: AND) {
     totalCount
     nodes {
       id
       slug
       name
       type
-      legalName
       description
+    }
+  }
+}
+""".strip()
+
+_CREATE_COLLECTIVE_MUTATION = """
+mutation CreateCollective($collective: CollectiveCreateInput!, $host: AccountReferenceInput!, $message: String) {
+  createCollective(collective: $collective, host: $host, message: $message) {
+    id
+    slug
+    name
+    type
+    description
+    createdAt
+    host {
+      id
+      slug
+      name
+    }
+  }
+}
+""".strip()
+
+_PAYEE_LIST_QUERY = """
+query PayeeList($limit: Int!, $offset: Int!, $searchTerm: String, $types: [AccountType]) {
+  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm, type: $types, tagSearchOperator: AND) {
+    totalCount
+    nodes {
+      id
+      slug
+      name
+      type
+      description
+      legalName
       website
     }
   }
@@ -276,33 +296,39 @@ query PayeeList($limit: Int!, $offset: Int!, $searchTerm: String, $types: [Accou
 """.strip()
 
 _PAYEE_VIEW_QUERY = """
-query PayeeView($slug: String!) {
-  account(slug: $slug, throwIfMissing: false) {
+query PayeeView($slug: String, $id: String) {
+  account(slug: $slug, id: $id, throwIfMissing: false) {
     id
     slug
     name
     type
-    legalName
     description
     website
-    payoutMethods {
-      id
-      type
-      name
-      data
+    ... on Organization {
+      legalName
+      email
+    }
+    ... on Individual {
+      legalName
+      email
     }
   }
 }
 """.strip()
 
-_CREATE_VENDOR_MUTATION = """
-mutation CreateVendor($host: AccountReferenceInput!, $vendor: VendorCreateInput!) {
-  createVendor(host: $host, vendor: $vendor) {
+_CREATE_ORGANIZATION_MUTATION = """
+mutation CreateOrganization($organization: OrganizationCreateInput!) {
+  createOrganization(organization: $organization) {
     id
     slug
     name
     type
-    legalName
+    description
+    website
+    ... on Organization {
+      legalName
+      email
+    }
   }
 }
 """.strip()
@@ -397,27 +423,59 @@ class AccountingService:
         return raw, cache_status, notes
 
     async def _collective_list_payload(self, args: OpenCollectiveCollectiveListArgs) -> tuple[dict[str, object], list[str]]:
-        roles = args.roles or ["ADMIN", "MEMBER", "ACCOUNTANT"]
-        payload = await self._post_graphql(
-            _COLLECTIVE_LIST_QUERY,
-            {"limit": args.limit, "offset": args.offset, "roles": roles},
-        )
-        logged_in = payload.get("loggedInAccount")
+        use_member_of = bool(args.roles)
+        if use_member_of:
+            roles = args.roles or ["ADMIN", "MEMBER", "ACCOUNTANT"]
+            payload = await self._post_graphql(
+                _COLLECTIVE_LIST_MEMBEROF_QUERY,
+                {"limit": args.limit, "offset": args.offset, "roles": roles},
+            )
+            logged_in = payload.get("loggedInAccount")
+            accounts: dict[str, object] | None = None
+            member_of = logged_in.get("memberOf") if isinstance(logged_in, dict) else None
+            if isinstance(member_of, dict):
+                nodes: list[dict[str, object]] = []
+                for entry in member_of.get("nodes", []):
+                    if not isinstance(entry, dict):
+                        continue
+                    account = entry.get("account")
+                    if not isinstance(account, dict):
+                        continue
+                    node = dict(account)
+                    role = entry.get("role")
+                    since = entry.get("since")
+                    if isinstance(role, str):
+                        node["role"] = role
+                    if isinstance(since, str):
+                        node["since"] = since
+                    nodes.append(node)
+                accounts = {"totalCount": member_of.get("totalCount"), "nodes": nodes}
+        else:
+            payload = await self._post_graphql(
+                _COLLECTIVE_LIST_ACCOUNTS_QUERY,
+                {
+                    "limit": args.limit,
+                    "offset": args.offset,
+                    "searchTerm": args.search_term,
+                    "includeArchived": args.include_archived,
+                    "type": args.type,
+                },
+            )
+            accounts = payload.get("accounts") if isinstance(payload.get("accounts"), dict) else None
+            logged_in = None
         return {
             "tool": "accounting_collective_list",
             "query": args.model_dump(mode="json", exclude_none=True),
+            "accounts": accounts,
             "loggedInAccount": logged_in if isinstance(logged_in, dict) else None,
             "raw": payload,
         }, []
 
     async def _collective_create_payload(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], list[str]]:
         variables: dict[str, Any] = {
-            "name": args.name,
-            "slug": args.slug,
-            "description": args.description,
-            "tags": args.tags,
-            "website": args.website,
-            "host": {"slug": args.host_slug} if args.host_slug else None,
+            "collective": args.collective.model_dump(mode="json", exclude_none=True),
+            "host": args.host.model_dump(mode="json", exclude_none=True),
+            "message": args.message,
         }
         payload = await self._post_graphql(_CREATE_COLLECTIVE_MUTATION, variables)
         collective = payload.get("createCollective")
@@ -452,8 +510,8 @@ class AccountingService:
             if total == 0:
                 search_hint = f" matching '{args.search_term}'" if args.search_term else ""
                 notes.append(
-                    f"No payee accounts found{search_hint}. "
-                    "Use accounting_payee_create to add a new vendor payee."
+                f"No payee accounts found{search_hint}. "
+                "Use accounting_payee_create to add a new payee."
                 )
         return {
             "tool": "accounting_payee_list",
@@ -463,7 +521,12 @@ class AccountingService:
         }, notes
 
     async def _payee_view_payload(self, args: OpenCollectivePayeeViewArgs) -> tuple[dict[str, object], list[str]]:
-        payload = await self._post_graphql(_PAYEE_VIEW_QUERY, {"slug": args.slug})
+        variables: dict[str, object] = {}
+        if args.slug:
+            variables["slug"] = args.slug
+        if args.id:
+            variables["id"] = args.id
+        payload = await self._post_graphql(_PAYEE_VIEW_QUERY, variables or {"slug": ""})
         account = payload.get("account")
         notes: list[str] = []
         if not isinstance(account, dict) or not account:
@@ -479,43 +542,21 @@ class AccountingService:
         }, notes
 
     async def _payee_create_payload(self, args: OpenCollectivePayeeCreateArgs) -> tuple[dict[str, object], list[str]]:
-        vendor_input: dict[str, Any] = {"name": args.name}
-        if args.legal_name:
-            vendor_input["legalName"] = args.legal_name
-        if args.slug:
-            vendor_input["slug"] = args.slug
-        if args.tags:
-            vendor_input["tags"] = args.tags
-        if args.website:
-            vendor_input["website"] = args.website
-        if args.contact or args.description:
-            vendor_info: dict[str, Any] = {}
-            if args.contact:
-                vendor_info["contact"] = args.contact
-            if args.description:
-                vendor_info["notes"] = args.description
-            vendor_input["vendorInfo"] = vendor_info
-        if args.payout_method:
-            vendor_input["payoutMethod"] = args.payout_method.model_dump(mode="json", exclude_none=True)
-
         payload = await self._post_graphql(
-            _CREATE_VENDOR_MUTATION,
-            {
-                "host": {"slug": args.host_slug},
-                "vendor": vendor_input,
-            },
+            _CREATE_ORGANIZATION_MUTATION,
+            {"organization": args.organization.model_dump(mode="json", exclude_none=True)},
         )
-        vendor = payload.get("createVendor")
+        organization = payload.get("createOrganization")
         notes: list[str] = []
-        if isinstance(vendor, dict):
+        if isinstance(organization, dict):
             notes.append(
-                f"Vendor payee '{vendor.get('slug')}' created successfully under host '{args.host_slug}'. "
+                f"Organization payee '{organization.get('slug')}' created successfully. "
                 "You can now reference it as a payee in accounting_expense_workflow."
             )
         return {
             "tool": "accounting_payee_create",
             "query": args.model_dump(mode="json", exclude_none=True),
-            "vendor": vendor if isinstance(vendor, dict) else None,
+            "organization": organization if isinstance(organization, dict) else None,
             "raw": payload,
         }, notes
 
