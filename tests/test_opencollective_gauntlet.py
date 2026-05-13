@@ -11,8 +11,12 @@ from app.config import Settings
 from app.store import AppKeyValueStore
 from app.tool.accounting import (
     AccountingService,
+    AccountReferenceInput,
+    CollectiveCreateInput,
     OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveCollectiveCreateArgs,
+    OpenCollectiveCollectiveListArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
@@ -20,7 +24,11 @@ from app.tool.accounting import (
     OpenCollectiveExpenseUpdateArgs,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectivePayeeCreateArgs,
+    OpenCollectivePayeeListArgs,
+    OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
+    OrganizationCreateInput,
 )
 
 
@@ -116,12 +124,83 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
                 return httpx.Response(200, json=mutations["direct_process"])
             return httpx.Response(200, json=mutations["workflow_process"])
 
+        if "query CollectiveList" in query:
+            return httpx.Response(200, json={"data": {"accounts": {
+                "totalCount": 2,
+                "nodes": [
+                    {"id": "coll-1", "slug": "aurora-oss", "name": "Aurora OSS", "type": "COLLECTIVE", "description": "Open source collective"},
+                    {"id": "coll-2", "slug": "north-star-fund", "name": "North Star Fund", "type": "FUND", "description": "A fund"},
+                ],
+            }}})
+
+        if "query PayeeList" in query:
+            return httpx.Response(200, json={"data": {"accounts": {
+                "totalCount": 2,
+                "nodes": [
+                    {"id": "org-1", "slug": "river-labs", "name": "River Labs", "type": "ORGANIZATION", "description": "Software consultancy"},
+                    {"id": "usr-1", "slug": "jane-doe", "name": "Jane Doe", "type": "INDIVIDUAL", "description": None},
+                ],
+            }}})
+
+        if "query PayeeView" in query:
+            return httpx.Response(200, json={"data": {"account": {
+                "id": "org-1",
+                "slug": "river-labs",
+                "name": "River Labs",
+                "type": "ORGANIZATION",
+                "description": "Software consultancy",
+                "website": "https://riverlabs.example.com",
+                "legalName": "River Labs Pty Ltd",
+                "email": "billing@riverlabs.example.com",
+            }}})
+
+        if "mutation CreateCollective" in query:
+            return httpx.Response(200, json={"data": {"createCollective": {
+                "id": "coll-new-1",
+                "slug": "pixel-commons",
+                "name": "Pixel Commons",
+                "type": "COLLECTIVE",
+                "description": "Community for pixel artists",
+                "createdAt": "2026-05-14T00:00:00.000Z",
+                "host": {"id": "host-1", "slug": "open-source-collective", "name": "Open Source Collective"},
+            }}})
+
+        if "mutation CreateOrganization" in query:
+            return httpx.Response(200, json={"data": {"createOrganization": {
+                "id": "org-new-1",
+                "slug": "comet-studio",
+                "name": "Comet Studio",
+                "type": "ORGANIZATION",
+                "description": "Creative studio",
+                "website": "https://cometstudio.example.com",
+                "legalName": "Comet Studio LLC",
+                "email": None,
+            }}})
+
         return httpx.Response(400, json={"error": "unexpected query"})
 
     settings = _settings()
     store = AppKeyValueStore(settings=settings, logger=logging.getLogger("test"))
     service = AccountingService(settings=settings, key_value_store=store, logger=logging.getLogger("test"))
     service._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url=settings.opencollective_graphql_url)
+
+    # --- new collective / payee tools ---
+    collective_list_data, _, _ = await service.collective_list(OpenCollectiveCollectiveListArgs())
+    collective_create_data, _, _ = await service.collective_create(
+        OpenCollectiveCollectiveCreateArgs(
+            collective=CollectiveCreateInput(name="Pixel Commons", slug="pixel-commons", description="Community for pixel artists"),
+            host=AccountReferenceInput(slug="open-source-collective"),
+            message="Applying to host this collective.",
+        )
+    )
+    payee_list_data, _, _ = await service.payee_list(OpenCollectivePayeeListArgs())
+    payee_view_data, _, _ = await service.payee_view(OpenCollectivePayeeViewArgs(slug="river-labs"))
+    payee_create_data, _, _ = await service.payee_create(
+        OpenCollectivePayeeCreateArgs(
+            organization=OrganizationCreateInput(name="Comet Studio", legalName="Comet Studio LLC", website="https://cometstudio.example.com"),
+        )
+    )
+    collective_search_data, _, _ = await service.collective_search(OpenCollectiveAccountSearchArgs(search_term="Aurora OSS"))
 
     recommended_search, _, notes = await service.account_search(OpenCollectiveAccountSearchArgs(search_term="Aurora OSS"))
     ambiguous_search, _, _ = await service.account_search(OpenCollectiveAccountSearchArgs(search_term="North Star"))
@@ -188,6 +267,18 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
         )
     )
 
+    # --- new collective / payee tool assertions ---
+    assert collective_list_data["accounts"]["totalCount"] == 2
+    assert collective_list_data["accounts"]["nodes"][0]["slug"] == "aurora-oss"
+    assert collective_create_data["collective"]["slug"] == "pixel-commons"
+    assert collective_create_data["collective"]["host"]["slug"] == "open-source-collective"
+    assert payee_list_data["accounts"]["totalCount"] == 2
+    assert payee_list_data["accounts"]["nodes"][0]["slug"] == "river-labs"
+    assert payee_view_data["account"]["slug"] == "river-labs"
+    assert payee_view_data["account"]["legalName"] == "River Labs Pty Ltd"
+    assert payee_create_data["organization"]["slug"] == "comet-studio"
+    assert collective_search_data["resolution"]["status"] == "recommended"
+
     assert recommended_search["resolution"]["status"] == "recommended"
     assert recommended_search["resolution"]["recommended"]["slug"] == "aurora-oss"
     assert ambiguous_search["resolution"]["status"] == "ambiguous"
@@ -228,5 +319,10 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
     assert "editExpense" in observed_queries
     assert "deleteExpense" in observed_queries
     assert "processExpense" in observed_queries
+    assert "query CollectiveList" in observed_queries
+    assert "query PayeeList" in observed_queries
+    assert "query PayeeView" in observed_queries
+    assert "mutation CreateCollective" in observed_queries
+    assert "mutation CreateOrganization" in observed_queries
 
     await service.close()

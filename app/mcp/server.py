@@ -17,12 +17,21 @@ from app.mcp.adapter import McpToolAdapter
 MCP_SERVER_INSTRUCTIONS = (
     "acnt-mcp exposes two tool families: FX (exchange rates) and accounting (Open Collective). "
     "Use fx_symbols before FX lookups when currency labels are unclear; fx_latest/fx_history/fx_series/"
-    "fx_convert/fx_fluctuation for rates and conversions. Use accounting_account_search to resolve a "
-    "collective slug from a human label before any ledger action; accounting_financial_snapshot for a "
-    "reconciled balance/expenses/transactions view; accounting_expense_workflow with action=CREATE/EDIT/"
-    "DELETE/PROCESS to record or update expenses against a collective. If accounting_expense_workflow "
-    "returns 'Personal Access Token is missing required scope', advise the user to regenerate "
-    "OPENCOLLECTIVE_PAT_TOKEN with the 'expenses' scope."
+    "fx_convert/fx_fluctuation for rates and conversions. "
+    "ACCOUNTING WORKFLOW — follow this sequence: "
+    "(1) COLLECTIVE RESOLUTION: call accounting_collective_search to find the collective by name/slug. "
+    "If resolution.status == 'not_found', call accounting_collective_list to show available collectives "
+    "for the user to pick, or offer accounting_collective_create to create a new one (requires a host slug). "
+    "(2) PAYEE RESOLUTION: call accounting_payee_list to find or confirm the payee account; "
+    "use accounting_payee_view for full payee details; call accounting_payee_create to create a new "
+    "organisation payee when not found. "
+    "(3) FINANCIAL REVIEW: optionally call accounting_financial_snapshot for a reconciled "
+    "balance/expenses/transactions view before creating expenses. "
+    "(4) EXPENSE MANAGEMENT: call accounting_expense_workflow with action=CREATE/EDIT/DELETE/PROCESS "
+    "to record or update expenses against the resolved collective. "
+    "If accounting_expense_workflow or accounting_collective_create returns "
+    "'Personal Access Token is missing required scope', advise the user to regenerate "
+    "OPENCOLLECTIVE_PAT_TOKEN with the required scope."
 )
 
 
