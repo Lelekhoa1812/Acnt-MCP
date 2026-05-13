@@ -1,0 +1,11 @@
+tests
+*.test.py
+test_*.py
+minimal_app.py
+debug_app.py
+working_app.py
+step_by_step.py
+test_mcp.py
+test_create_app.py
+.git
+.gitignore

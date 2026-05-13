@@ -29,9 +29,8 @@ async def build_container(settings: Settings) -> AppContainer:
     key_value_store = AppKeyValueStore(settings=settings, logger=logger)
     await key_value_store.connect()
     logger.info(
-        "key_value_store backend=%s redis_client_connected=%s",
+        "key_value_store backend=%s",
         key_value_store.persistence_backend,
-        key_value_store.redis_client_connected,
     )
 
     currency_service = CurrencyService(settings=settings, key_value_store=key_value_store, logger=logger)

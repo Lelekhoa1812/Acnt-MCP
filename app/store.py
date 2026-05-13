@@ -6,9 +6,6 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from redis.asyncio import Redis
-from redis.exceptions import RedisError
-
 from app.config import Settings
 
 
@@ -47,78 +44,33 @@ class AppKeyValueStore:
         self.settings = settings
         self.logger = logger
         self._memory = InMemoryTtlStore()
-        self._redis: Redis | None = None
-        self._using_memory_fallback = False
-
-    @property
-    def redis_client_connected(self) -> bool:
-        """True when a Redis client was successfully established (ping OK)."""
-        return self._redis is not None
-
-    @property
-    def using_memory_fallback(self) -> bool:
-        """True when reads/writes use in-process TTL storage instead of Redis."""
-        return self._using_memory_fallback
 
     @property
     def persistence_backend(self) -> str:
-        """Human-readable backend label for logs and health checks."""
-        return "memory" if self._using_memory_fallback else "redis"
+        """Always uses in-memory storage (no Redis)."""
+        return "memory"
 
     async def connect(self) -> None:
-        if not self.settings.redis_url:
-            if not self.settings.redis_fallback_enabled:
-                raise ValueError("Redis URL is not configured and fallback is disabled")
-            self._using_memory_fallback = True
-            self.logger.warning("Redis URL not configured; using in-memory TTL storage.")
-            return
-        try:
-            redis_client = Redis.from_url(self.settings.redis_url, encoding="utf-8", decode_responses=True)
-            await redis_client.ping()
-            self._redis = redis_client
-            self.logger.debug("Connected to Redis for cache/session storage.")
-        except RedisError as exc:
-            if not self.settings.redis_fallback_enabled:
-                raise
-            self._redis = None
-            self._using_memory_fallback = True
-            self.logger.warning(
-                "Redis connection unavailable; falling back to in-memory TTL storage. reason=%s",
-                exc,
-            )
+        self.logger.debug("Using in-memory TTL storage.")
 
     async def close(self) -> None:
-        if self._redis is not None:
-            await self._redis.aclose()
+        pass
 
     async def get_json(self, namespace: str, key: str) -> tuple[Any | None, str]:
         namespaced_key = f"{namespace}:{key}"
-        raw = await self._get_raw(namespaced_key)
+        raw = await self._memory.get(namespaced_key)
         if raw is None:
-            backend = "memory" if self._using_memory_fallback else "redis"
-            return None, f"{backend}_miss"
-        backend = "memory" if self._using_memory_fallback else "redis"
-        return json.loads(raw), f"{backend}_hit"
+            return None, "memory_miss"
+        return json.loads(raw), "memory_hit"
 
     async def set_json(self, namespace: str, key: str, value: Any, ttl_seconds: int | None = None) -> str:
         namespaced_key = f"{namespace}:{key}"
         raw = json.dumps(value, sort_keys=True, default=str)
-        backend = await self._set_raw(namespaced_key, raw, ttl_seconds)
-        return backend
+        await self._memory.set(namespaced_key, raw, ttl_seconds)
+        return "memory_set"
 
     async def delete(self, namespace: str, key: str) -> str:
         namespaced_key = f"{namespace}:{key}"
-        if self._redis is not None:
-            try:
-                await self._redis.delete(namespaced_key)
-                return "redis_delete"
-            except RedisError as exc:
-                # Root Cause vs Logic: when fallback is disabled, avoid silent loss of
-                # persistent session state; surface the error instead of memory switch.
-                if not self.settings.redis_fallback_enabled:
-                    raise
-                self._using_memory_fallback = True
-                self.logger.warning("Redis delete failed; switching to memory fallback. reason=%s", exc)
         await self._memory.delete(namespaced_key)
         return "memory_delete"
 
@@ -135,30 +87,3 @@ class AppKeyValueStore:
         loaded, notes = await loader()
         await self.set_json(namespace=namespace, key=key, value=loaded, ttl_seconds=ttl_seconds)
         return loaded, cache_status, notes
-
-    async def _get_raw(self, key: str) -> str | None:
-        if self._redis is not None:
-            try:
-                return await self._redis.get(key)
-            except RedisError as exc:
-                if not self.settings.redis_fallback_enabled:
-                    raise
-                self._using_memory_fallback = True
-                self.logger.warning("Redis get failed; switching to memory fallback. reason=%s", exc)
-        return await self._memory.get(key)
-
-    async def _set_raw(self, key: str, value: str, ttl_seconds: int | None) -> str:
-        if self._redis is not None:
-            try:
-                if ttl_seconds is None:
-                    await self._redis.set(key, value)
-                else:
-                    await self._redis.set(key, value, ex=ttl_seconds)
-                return "redis_set"
-            except RedisError as exc:
-                if not self.settings.redis_fallback_enabled:
-                    raise
-                self._using_memory_fallback = True
-                self.logger.warning("Redis set failed; switching to memory fallback. reason=%s", exc)
-        await self._memory.set(key, value, ttl_seconds)
-        return "memory_set"

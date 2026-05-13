@@ -23,9 +23,7 @@ class Settings(BaseSettings):
     log_level: str = Field("info", alias="ACNT_LOG_LEVEL")
     public_base_url: str | None = Field(None, alias="ACNT_PUBLIC_BASE_URL")
 
-    redis_url: str | None = Field(None, alias="ACNT_REDIS_URL")
     cache_ttl_seconds: int = Field(300, alias="ACNT_CACHE_TTL_SECONDS")
-    redis_fallback_enabled: bool = Field(True, alias="ACNT_REDIS_FALLBACK_ENABLED")
 
     exchange_rate_api_key: str | None = Field(None, alias="EXCHANGE_RATE_API")
 

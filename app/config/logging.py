@@ -86,7 +86,6 @@ def configure_logging(level: str) -> None:
     # Motivation vs Logic: Uvicorn's access/error loggers repeat requests and overshadow our API-level context.
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
-    logging.getLogger("redis").setLevel(logging.WARNING)
     # Motivation vs Logic: application DEBUG remains useful, but the MCP SDK's
     # low-level server DEBUG path logs complete protocol messages, including
     # large native image payloads. Keep SDK request lifecycle logs without
