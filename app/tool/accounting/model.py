@@ -209,6 +209,84 @@ class OpenCollectiveExpenseProcessArgs(BaseModel):
     paymentParams: ProcessExpensePaymentParams | None = Field(None, description="Optional payment metadata.")
 
 
+# ---------------------------------------------------------------------------
+# Collective list / create
+# ---------------------------------------------------------------------------
+
+class OpenCollectiveCollectiveListArgs(BaseModel):
+    search_term: str | None = Field(None, description="Optional keyword filter for collectives.")
+    type: list[str] | None = Field(
+        None,
+        description="Account types to include (e.g. COLLECTIVE, FUND, ORGANIZATION). Omit for all types.",
+    )
+    limit: int = Field(20, ge=1, le=100, description="Maximum rows to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    include_archived: bool = Field(False, description="Include archived collectives.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class CollectiveCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the collective.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    tags: list[str] | None = Field(None, description="Categorisation tags.")
+    website: str | None = Field(None, description="Website URL.")
+    githubHandle: str | None = Field(None, description="GitHub organisation handle.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+
+
+class OpenCollectiveCollectiveCreateArgs(BaseModel):
+    collective: CollectiveCreateInput = Field(..., description="Collective details to create.")
+    host: AccountReferenceInput = Field(..., description="Host collective that will approve and manage this collective.")
+    message: str | None = Field(None, description="Application message sent to host admins.")
+
+
+# ---------------------------------------------------------------------------
+# Payee list / view / create
+# ---------------------------------------------------------------------------
+
+class OpenCollectivePayeeListArgs(BaseModel):
+    search_term: str | None = Field(None, description="Optional keyword filter for payee accounts.")
+    limit: int = Field(20, ge=1, le=100, description="Maximum rows to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class OpenCollectivePayeeViewArgs(BaseModel):
+    slug: str | None = Field(None, description="Open Collective slug of the payee account.")
+    id: str | None = Field(None, description="Public Open Collective account id (e.g. acc_xxx).")
+
+    @model_validator(mode="after")
+    def _require_identifier(cls, values: "OpenCollectivePayeeViewArgs") -> "OpenCollectivePayeeViewArgs":
+        if not values.slug and not values.id:
+            raise ValueError("provide at least one of 'slug' or 'id'.")
+        return values
+
+
+class OrganizationCreateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    name: str = Field(..., description="Display name of the organisation.")
+    legalName: str | None = Field(None, description="Legal registered name.")
+    slug: str | None = Field(None, description="Desired URL slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    website: str | None = Field(None, description="Website URL.")
+    twitterHandle: str | None = Field(None, description="Twitter handle.")
+    githubHandle: str | None = Field(None, description="GitHub handle.")
+
+
+class OpenCollectivePayeeCreateArgs(BaseModel):
+    organization: OrganizationCreateInput = Field(..., description="Organisation details to create as a payee.")
+
+
 _EXPENSE_FIELD_DESCRIPTION = (
     "Expense payload. Shape depends on `action`: "
     "CREATE -> {description, type (INVOICE|RECEIPT), payee:{id|slug}, payoutMethod:{type,...}, "

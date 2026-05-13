@@ -12,6 +12,8 @@ import httpx
 from app.tool.accounting.model import (
     OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveCollectiveCreateArgs,
+    OpenCollectiveCollectiveListArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
@@ -20,6 +22,9 @@ from app.tool.accounting.model import (
     ExpenseWorkflowAction,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectivePayeeCreateArgs,
+    OpenCollectivePayeeListArgs,
+    OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
 )
 from app.config import Settings, UpstreamServiceError
@@ -205,6 +210,95 @@ query FinancialSnapshot(
 """.strip()
 
 
+_COLLECTIVE_LIST_QUERY = """
+query CollectiveList($limit: Int!, $offset: Int!, $searchTerm: String, $includeArchived: Boolean, $type: [AccountType]) {
+  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm,
+           includeArchived: $includeArchived, type: $type, tagSearchOperator: AND) {
+    totalCount
+    nodes {
+      id
+      slug
+      name
+      type
+      description
+    }
+  }
+}
+""".strip()
+
+_PAYEE_LIST_QUERY = """
+query PayeeList($limit: Int!, $offset: Int!, $searchTerm: String) {
+  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm,
+           type: [INDIVIDUAL, ORGANIZATION], tagSearchOperator: AND) {
+    totalCount
+    nodes {
+      id
+      slug
+      name
+      type
+      description
+    }
+  }
+}
+""".strip()
+
+_PAYEE_VIEW_QUERY = """
+query PayeeView($slug: String!) {
+  account(slug: $slug, throwIfMissing: false) {
+    id
+    slug
+    name
+    type
+    description
+    website
+    ... on Organization {
+      legalName
+      email
+    }
+    ... on Individual {
+      legalName
+      email
+    }
+  }
+}
+""".strip()
+
+_CREATE_COLLECTIVE_MUTATION = """
+mutation CreateCollective($collective: CollectiveCreateInput!, $host: AccountReferenceInput!, $message: String) {
+  createCollective(collective: $collective, host: $host, message: $message) {
+    id
+    slug
+    name
+    type
+    description
+    createdAt
+    host {
+      id
+      slug
+      name
+    }
+  }
+}
+""".strip()
+
+_CREATE_ORGANIZATION_MUTATION = """
+mutation CreateOrganization($organization: OrganizationCreateInput!) {
+  createOrganization(organization: $organization) {
+    id
+    slug
+    name
+    type
+    description
+    website
+    ... on Organization {
+      legalName
+      email
+    }
+  }
+}
+""".strip()
+
+
 class AccountingService:
     def __init__(self, settings: Settings, key_value_store: AppKeyValueStore, logger: logging.Logger) -> None:
         self.settings = settings
@@ -245,6 +339,70 @@ class AccountingService:
         # issues until TTL expiry.
         data, notes = await self._expense_workflow_payload(args)
         return data, "live", notes
+
+    # ------------------------------------------------------------------
+    # Collective tools
+    # ------------------------------------------------------------------
+
+    async def collective_search(self, args: OpenCollectiveAccountSearchArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self.account_search(args)
+
+    async def collective_list(self, args: OpenCollectiveCollectiveListArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_collective_list",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._collective_list_payload(args),
+        )
+
+    async def collective_create(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _CREATE_COLLECTIVE_MUTATION,
+            {
+                "collective": args.collective.model_dump(mode="json", exclude_none=True),
+                "host": args.host.model_dump(mode="json", exclude_none=True),
+                "message": args.message,
+            },
+        )
+        collective = payload.get("createCollective")
+        data: dict[str, object] = {
+            "tool": "accounting_collective_create",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "collective": collective if isinstance(collective, dict) else None,
+            "raw": payload,
+        }
+        return data, "live", []
+
+    # ------------------------------------------------------------------
+    # Payee tools
+    # ------------------------------------------------------------------
+
+    async def payee_list(self, args: OpenCollectivePayeeListArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_payee_list",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._payee_list_payload(args),
+        )
+
+    async def payee_view(self, args: OpenCollectivePayeeViewArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_payee_view",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._payee_view_payload(args),
+        )
+
+    async def payee_create(self, args: OpenCollectivePayeeCreateArgs) -> tuple[dict[str, object], str, list[str]]:
+        payload = await self._post_graphql(
+            _CREATE_ORGANIZATION_MUTATION,
+            {"organization": args.organization.model_dump(mode="json", exclude_none=True)},
+        )
+        organization = payload.get("createOrganization")
+        data: dict[str, object] = {
+            "tool": "accounting_payee_create",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "organization": organization if isinstance(organization, dict) else None,
+            "raw": payload,
+        }
+        return data, "live", []
 
     async def _cached(
         self,
@@ -509,6 +667,53 @@ query BudgetLookup($slug: String!) {
             "live",
             [],
         )
+
+    async def _collective_list_payload(self, args: OpenCollectiveCollectiveListArgs) -> tuple[dict[str, object], list[str]]:
+        payload = await self._post_graphql(
+            _COLLECTIVE_LIST_QUERY,
+            {
+                "searchTerm": args.search_term,
+                "limit": args.limit,
+                "offset": args.offset,
+                "includeArchived": args.include_archived,
+                "type": args.type,
+            },
+        )
+        accounts = payload.get("accounts")
+        return {
+            "tool": "accounting_collective_list",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "accounts": accounts if isinstance(accounts, dict) else None,
+            "raw": payload,
+        }, []
+
+    async def _payee_list_payload(self, args: OpenCollectivePayeeListArgs) -> tuple[dict[str, object], list[str]]:
+        payload = await self._post_graphql(
+            _PAYEE_LIST_QUERY,
+            {
+                "searchTerm": args.search_term,
+                "limit": args.limit,
+                "offset": args.offset,
+            },
+        )
+        accounts = payload.get("accounts")
+        return {
+            "tool": "accounting_payee_list",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "accounts": accounts if isinstance(accounts, dict) else None,
+            "raw": payload,
+        }, []
+
+    async def _payee_view_payload(self, args: OpenCollectivePayeeViewArgs) -> tuple[dict[str, object], list[str]]:
+        slug = args.slug or args.id
+        payload = await self._post_graphql(_PAYEE_VIEW_QUERY, {"slug": slug})
+        account = payload.get("account")
+        return {
+            "tool": "accounting_payee_view",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "account": account if isinstance(account, dict) else None,
+            "raw": payload,
+        }, []
 
     def _categorize_graphql_error(self, errors: list[dict[str, Any]] | Any) -> str:
         """Categorize GraphQL error for retry decision-making."""
