@@ -66,6 +66,12 @@ class AppKeyValueStore:
         return "memory" if self._using_memory_fallback else "redis"
 
     async def connect(self) -> None:
+        if not self.settings.redis_url:
+            if not self.settings.redis_fallback_enabled:
+                raise ValueError("Redis URL is not configured and fallback is disabled")
+            self._using_memory_fallback = True
+            self.logger.warning("Redis URL not configured; using in-memory TTL storage.")
+            return
         try:
             redis_client = Redis.from_url(self.settings.redis_url, encoding="utf-8", decode_responses=True)
             await redis_client.ping()
