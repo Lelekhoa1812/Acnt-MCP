@@ -33,13 +33,16 @@ def build_streamable_mcp_manager(settings: Settings) -> StreamableHTTPSessionMan
             allowed_hosts=allowed_hosts,
             allowed_origins=allowed_origins,
         )
+    # session_idle_timeout is not supported in stateless mode
+    session_timeout = None if settings.mcp_stateless else settings.mcp_session_idle_timeout_seconds
+
     return StreamableHTTPSessionManager(
         app=build_mcp_server(settings),
         json_response=settings.mcp_json_response,
         stateless=settings.mcp_stateless,
         security_settings=security_settings,
         retry_interval=settings.mcp_retry_interval_ms,
-        session_idle_timeout=settings.mcp_session_idle_timeout_seconds,
+        session_idle_timeout=session_timeout,
     )
 
 
