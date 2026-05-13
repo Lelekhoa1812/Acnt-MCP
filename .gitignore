@@ -1,12 +1,16 @@
 node_modules
 dist
 .env
+.env.production
+.env.prod*
+.env.final*
 
 .github
 .vscode
 .venv
 .claude
 .cursor
+.vercel
 .rtk
 
 .pytest_cache/*
