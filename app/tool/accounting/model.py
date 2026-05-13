@@ -51,8 +51,8 @@ class OpenCollectiveBudgetLookupArgs(_OpenCollectiveBaseArgs):
         return self
 
 
-class OpenCollectiveAccountSearchArgs(BaseModel):
-    search_term: str = Field(description="Open Collective account search term.")
+class OpenCollectiveCollectiveSearchArgs(BaseModel):
+    search_term: str = Field(description="Open Collective collective search term.")
     limit: int = Field(10, ge=1, le=25, description="Maximum search matches to return.")
     offset: int = Field(0, ge=0, le=10_000, description="Offset into the search result set.")
     include_archived: bool = Field(False, description="Include archived accounts in the search.")
@@ -63,6 +63,94 @@ class OpenCollectiveAccountSearchArgs(BaseModel):
         cleaned = _strip_text(value)
         if not cleaned:
             raise ValueError("search_term must not be empty.")
+        return cleaned
+
+
+# Keep backward-compatible alias so existing test fixtures and callers don't break immediately.
+OpenCollectiveAccountSearchArgs = OpenCollectiveCollectiveSearchArgs
+
+
+class OpenCollectiveCollectiveListArgs(BaseModel):
+    limit: int = Field(20, ge=1, le=100, description="Maximum collectives to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    roles: list[str] | None = Field(
+        None,
+        description="Filter by member role (e.g. ADMIN, MEMBER, ACCOUNTANT). Defaults to [ADMIN, MEMBER, ACCOUNTANT].",
+    )
+
+
+class OpenCollectiveCollectiveCreateArgs(BaseModel):
+    name: str = Field(..., description="Display name of the new collective.")
+    slug: str = Field(..., description="Unique URL slug (lowercase, hyphens only).")
+    description: str | None = Field(None, description="Short description of the collective.")
+    tags: list[str] | None = Field(None, description="Optional tags.")
+    website: str | None = Field(None, description="Collective website URL.")
+    host_slug: str | None = Field(
+        None,
+        description="Slug of the fiscal host to apply to. Omit for an unhosted collective.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        cleaned = _strip_text(value)
+        if not cleaned:
+            raise ValueError("name must not be empty.")
+        return cleaned
+
+    @field_validator("slug")
+    @classmethod
+    def _strip_slug(cls, value: str) -> str:
+        cleaned = _strip_text(value)
+        if not cleaned:
+            raise ValueError("slug must not be empty.")
+        return cleaned
+
+
+class OpenCollectivePayeeListArgs(BaseModel):
+    limit: int = Field(20, ge=1, le=100, description="Maximum payees to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    search_term: str | None = Field(None, description="Optional search filter (name, slug).")
+    types: list[str] | None = Field(
+        None,
+        description="Account types to include. Defaults to [INDIVIDUAL, ORGANIZATION, VENDOR].",
+    )
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
+
+
+class OpenCollectivePayeeViewArgs(BaseModel):
+    slug: str = Field(..., description="Slug of the payee account to view.")
+
+    @field_validator("slug")
+    @classmethod
+    def _strip_slug(cls, value: str) -> str:
+        cleaned = _strip_text(value)
+        if not cleaned:
+            raise ValueError("slug must not be empty.")
+        return cleaned
+
+
+class OpenCollectivePayeeCreateArgs(BaseModel):
+    host_slug: str = Field(..., description="Slug of the fiscal host under which to create the vendor.")
+    name: str = Field(..., description="Vendor display name.")
+    legal_name: str | None = Field(None, description="Legal name of the vendor.")
+    slug: str | None = Field(None, description="Desired slug (auto-generated if omitted).")
+    description: str | None = Field(None, description="Short description.")
+    website: str | None = Field(None, description="Vendor website URL.")
+    contact: str | None = Field(None, description="Contact name or email for the vendor.")
+    payout_method: PayoutMethodInput | None = Field(None, description="Default payout method for the vendor.")
+    tags: list[str] | None = Field(None, description="Optional tags.")
+
+    @field_validator("host_slug", "name")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        cleaned = _strip_text(value)
+        if not cleaned:
+            raise ValueError("field must not be empty.")
         return cleaned
 
 

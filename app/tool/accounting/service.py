@@ -10,7 +10,9 @@ from typing import Any
 import httpx
 
 from app.tool.accounting.model import (
-    OpenCollectiveAccountSearchArgs,
+    OpenCollectiveCollectiveCreateArgs,
+    OpenCollectiveCollectiveListArgs,
+    OpenCollectiveCollectiveSearchArgs,
     OpenCollectiveBudgetLookupArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
@@ -20,8 +22,13 @@ from app.tool.accounting.model import (
     ExpenseWorkflowAction,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectivePayeeCreateArgs,
+    OpenCollectivePayeeListArgs,
+    OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
 )
+# backward-compat alias (tests still import the old name)
+OpenCollectiveAccountSearchArgs = OpenCollectiveCollectiveSearchArgs
 from app.config import Settings, UpstreamServiceError
 from app.store import AppKeyValueStore
 
@@ -205,6 +212,102 @@ query FinancialSnapshot(
 """.strip()
 
 
+_COLLECTIVE_LIST_QUERY = """
+query CollectiveList($limit: Int!, $offset: Int!, $roles: [MemberRole]) {
+  loggedInAccount {
+    id
+    slug
+    name
+    memberOf(limit: $limit, offset: $offset, role: $roles, accountType: [COLLECTIVE, FUND, PROJECT, EVENT]) {
+      totalCount
+      nodes {
+        account {
+          id
+          slug
+          name
+          type
+          description
+        }
+        role
+        since
+      }
+    }
+  }
+}
+""".strip()
+
+_CREATE_COLLECTIVE_MUTATION = """
+mutation CreateCollective(
+  $name: String!
+  $slug: String!
+  $description: String
+  $tags: [String]
+  $website: String
+  $host: AccountReferenceInput
+) {
+  createCollective(
+    collective: { name: $name, slug: $slug, description: $description, tags: $tags, website: $website }
+    host: $host
+  ) {
+    id
+    slug
+    name
+    type
+    description
+  }
+}
+""".strip()
+
+_PAYEE_LIST_QUERY = """
+query PayeeList($limit: Int!, $offset: Int!, $searchTerm: String, $types: [AccountType]) {
+  accounts(limit: $limit, offset: $offset, searchTerm: $searchTerm, type: $types) {
+    totalCount
+    nodes {
+      id
+      slug
+      name
+      type
+      legalName
+      description
+      website
+    }
+  }
+}
+""".strip()
+
+_PAYEE_VIEW_QUERY = """
+query PayeeView($slug: String!) {
+  account(slug: $slug, throwIfMissing: false) {
+    id
+    slug
+    name
+    type
+    legalName
+    description
+    website
+    payoutMethods {
+      id
+      type
+      name
+      data
+    }
+  }
+}
+""".strip()
+
+_CREATE_VENDOR_MUTATION = """
+mutation CreateVendor($host: AccountReferenceInput!, $vendor: VendorCreateInput!) {
+  createVendor(host: $host, vendor: $vendor) {
+    id
+    slug
+    name
+    type
+    legalName
+  }
+}
+""".strip()
+
+
 class AccountingService:
     def __init__(self, settings: Settings, key_value_store: AppKeyValueStore, logger: logging.Logger) -> None:
         self.settings = settings
@@ -224,12 +327,16 @@ class AccountingService:
     async def budget_lookup(self, args: OpenCollectiveBudgetLookupArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached("accounting_budget_lookup", args.model_dump(mode="json", exclude_none=True), lambda: self._budget_lookup_payload(args))
 
-    async def account_search(self, args: OpenCollectiveAccountSearchArgs) -> tuple[dict[str, object], str, list[str]]:
+    async def collective_search(self, args: OpenCollectiveCollectiveSearchArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
-            "accounting_account_search",
+            "accounting_collective_search",
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._account_search_payload(args),
         )
+
+    # backward-compat alias
+    async def account_search(self, args: OpenCollectiveCollectiveSearchArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self.collective_search(args)
 
     async def financial_snapshot(self, args: OpenCollectiveFinancialSnapshotArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
@@ -237,6 +344,35 @@ class AccountingService:
             args.model_dump(mode="json", exclude_none=True),
             lambda: self._financial_snapshot_payload(args),
         )
+
+    async def collective_list(self, args: OpenCollectiveCollectiveListArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_collective_list",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._collective_list_payload(args),
+        )
+
+    async def collective_create(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], str, list[str]]:
+        data, notes = await self._collective_create_payload(args)
+        return data, "live", notes
+
+    async def payee_list(self, args: OpenCollectivePayeeListArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_payee_list",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._payee_list_payload(args),
+        )
+
+    async def payee_view(self, args: OpenCollectivePayeeViewArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_payee_view",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._payee_view_payload(args),
+        )
+
+    async def payee_create(self, args: OpenCollectivePayeeCreateArgs) -> tuple[dict[str, object], str, list[str]]:
+        data, notes = await self._payee_create_payload(args)
+        return data, "live", notes
 
     async def expense_workflow(self, args: OpenCollectiveExpenseWorkflowArgs) -> tuple[dict[str, object], str, list[str]]:
         # Root Cause vs Logic: expense_workflow dispatches createExpense/editExpense/deleteExpense/processExpense
@@ -259,6 +395,129 @@ class AccountingService:
             loader=loader,
         )
         return raw, cache_status, notes
+
+    async def _collective_list_payload(self, args: OpenCollectiveCollectiveListArgs) -> tuple[dict[str, object], list[str]]:
+        roles = args.roles or ["ADMIN", "MEMBER", "ACCOUNTANT"]
+        payload = await self._post_graphql(
+            _COLLECTIVE_LIST_QUERY,
+            {"limit": args.limit, "offset": args.offset, "roles": roles},
+        )
+        logged_in = payload.get("loggedInAccount")
+        return {
+            "tool": "accounting_collective_list",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "loggedInAccount": logged_in if isinstance(logged_in, dict) else None,
+            "raw": payload,
+        }, []
+
+    async def _collective_create_payload(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], list[str]]:
+        variables: dict[str, Any] = {
+            "name": args.name,
+            "slug": args.slug,
+            "description": args.description,
+            "tags": args.tags,
+            "website": args.website,
+            "host": {"slug": args.host_slug} if args.host_slug else None,
+        }
+        payload = await self._post_graphql(_CREATE_COLLECTIVE_MUTATION, variables)
+        collective = payload.get("createCollective")
+        notes: list[str] = []
+        if isinstance(collective, dict):
+            notes.append(
+                f"Collective '{collective.get('slug')}' created successfully. "
+                "You can now file expenses against it using accounting_expense_workflow."
+            )
+        return {
+            "tool": "accounting_collective_create",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "collective": collective if isinstance(collective, dict) else None,
+            "raw": payload,
+        }, notes
+
+    async def _payee_list_payload(self, args: OpenCollectivePayeeListArgs) -> tuple[dict[str, object], list[str]]:
+        types = args.types or ["INDIVIDUAL", "ORGANIZATION", "VENDOR"]
+        payload = await self._post_graphql(
+            _PAYEE_LIST_QUERY,
+            {
+                "limit": args.limit,
+                "offset": args.offset,
+                "searchTerm": args.search_term,
+                "types": types,
+            },
+        )
+        accounts = payload.get("accounts")
+        notes: list[str] = []
+        if isinstance(accounts, dict):
+            total = accounts.get("totalCount", 0)
+            if total == 0:
+                search_hint = f" matching '{args.search_term}'" if args.search_term else ""
+                notes.append(
+                    f"No payee accounts found{search_hint}. "
+                    "Use accounting_payee_create to add a new vendor payee."
+                )
+        return {
+            "tool": "accounting_payee_list",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "accounts": accounts if isinstance(accounts, dict) else None,
+            "raw": payload,
+        }, notes
+
+    async def _payee_view_payload(self, args: OpenCollectivePayeeViewArgs) -> tuple[dict[str, object], list[str]]:
+        payload = await self._post_graphql(_PAYEE_VIEW_QUERY, {"slug": args.slug})
+        account = payload.get("account")
+        notes: list[str] = []
+        if not isinstance(account, dict) or not account:
+            notes.append(
+                f"No payee account found for slug '{args.slug}'. "
+                "Use accounting_payee_list to browse available payees or accounting_payee_create to add one."
+            )
+        return {
+            "tool": "accounting_payee_view",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "account": account if isinstance(account, dict) else None,
+            "raw": payload,
+        }, notes
+
+    async def _payee_create_payload(self, args: OpenCollectivePayeeCreateArgs) -> tuple[dict[str, object], list[str]]:
+        vendor_input: dict[str, Any] = {"name": args.name}
+        if args.legal_name:
+            vendor_input["legalName"] = args.legal_name
+        if args.slug:
+            vendor_input["slug"] = args.slug
+        if args.tags:
+            vendor_input["tags"] = args.tags
+        if args.website:
+            vendor_input["website"] = args.website
+        if args.contact or args.description:
+            vendor_info: dict[str, Any] = {}
+            if args.contact:
+                vendor_info["contact"] = args.contact
+            if args.description:
+                vendor_info["notes"] = args.description
+            vendor_input["vendorInfo"] = vendor_info
+        if args.payout_method:
+            vendor_input["payoutMethod"] = args.payout_method.model_dump(mode="json", exclude_none=True)
+
+        payload = await self._post_graphql(
+            _CREATE_VENDOR_MUTATION,
+            {
+                "host": {"slug": args.host_slug},
+                "vendor": vendor_input,
+            },
+        )
+        vendor = payload.get("createVendor")
+        notes: list[str] = []
+        if isinstance(vendor, dict):
+            notes.append(
+                f"Vendor payee '{vendor.get('slug')}' created successfully under host '{args.host_slug}'. "
+                "You can now reference it as a payee in accounting_expense_workflow."
+            )
+        return {
+            "tool": "accounting_payee_create",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "vendor": vendor if isinstance(vendor, dict) else None,
+            "raw": payload,
+        }, notes
 
     async def _expense_list_payload(self, args: OpenCollectiveExpenseListArgs) -> tuple[dict[str, object], list[str]]:
         query = """
@@ -841,7 +1100,7 @@ query BudgetLookup($slug: String!) {
     def _shape_account_search_payload(self, args: Any, data: dict[str, Any]) -> dict[str, object]:
         accounts = data.get("accounts")
         return {
-            "tool": "accounting_account_search",
+            "tool": "accounting_collective_search",
             "query": args.model_dump(mode="json", exclude_none=True),
             "accounts": accounts if isinstance(accounts, dict) else None,
             "resolution": data.get("resolution"),

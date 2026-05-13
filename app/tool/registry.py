@@ -14,8 +14,10 @@ from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name
 from app.schemas import ToolDefinition, ToolResult, ToolTrace
 from app.tool.accounting import (
     AccountingService,
-    OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
+    OpenCollectiveCollectiveCreateArgs,
+    OpenCollectiveCollectiveListArgs,
+    OpenCollectiveCollectiveSearchArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
@@ -23,6 +25,9 @@ from app.tool.accounting import (
     OpenCollectiveExpenseUpdateArgs,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectivePayeeCreateArgs,
+    OpenCollectivePayeeListArgs,
+    OpenCollectivePayeeViewArgs,
     OpenCollectiveTransactionAllArgs,
 )
 from app.tool.currency import (
@@ -336,15 +341,15 @@ class ToolRegistry:
             )
             return ToolResult(tool="accounting_transaction_all", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
-        async def account_search(validated: OpenCollectiveAccountSearchArgs, thought: str) -> ToolResult:
-            data, cache_status, notes = await self.accounting_service.account_search(validated)
+        async def collective_search(validated: OpenCollectiveCollectiveSearchArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.collective_search(validated)
             accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
             result_count = None
             if isinstance(accounts, dict):
                 result_count = accounts.get("totalCount")
             trace = ToolTrace(
                 thought=thought,
-                tool="accounting_account_search",
+                tool="accounting_collective_search",
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
@@ -352,7 +357,7 @@ class ToolRegistry:
                 result_count=result_count if isinstance(result_count, int) else None,
                 normalization_notes=notes,
             )
-            return ToolResult(tool="accounting_account_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+            return ToolResult(tool="accounting_collective_search", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
         async def financial_snapshot(validated: OpenCollectiveFinancialSnapshotArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.financial_snapshot(validated)
@@ -460,10 +465,10 @@ class ToolRegistry:
             return ToolResult(tool="accounting_expense_process", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
         self._register(
-            "accounting_account_search",
-            "Open Collective client search for resolving human labels, ambiguous client names, closest-match suggestions, and create-confirmation decisions before ledger actions.",
-            OpenCollectiveAccountSearchArgs,
-            account_search,
+            "accounting_collective_search",
+            "Open Collective collective search for resolving human labels, ambiguous collective names, closest-match suggestions, and create-confirmation decisions before ledger actions. If not found, follow with accounting_collective_list to browse or accounting_collective_create to create.",
+            OpenCollectiveCollectiveSearchArgs,
+            collective_search,
         )
         self._register(
             "accounting_financial_snapshot",
@@ -473,9 +478,114 @@ class ToolRegistry:
         )
         self._register(
             "accounting_expense_workflow",
-            "Open Collective expense workflow for creating, editing, deleting, and processing expenses (archive/restore/mark-as-paid/invoice) from one structured action tool.",
+            "Open Collective expense workflow for creating, editing, deleting, and processing expenses (archive/restore/mark-as-paid/invoice) from one structured action tool. For CREATE: first confirm the collective with accounting_collective_search or accounting_collective_list, then confirm the payee with accounting_payee_list; create missing entities with accounting_collective_create or accounting_payee_create before filing.",
             OpenCollectiveExpenseWorkflowArgs,
             expense_workflow,
+        )
+        async def collective_list(validated: OpenCollectiveCollectiveListArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.collective_list(validated)
+            logged_in = data.get("loggedInAccount", {}) if isinstance(data, dict) else {}
+            member_of = logged_in.get("memberOf", {}) if isinstance(logged_in, dict) else {}
+            result_count = member_of.get("totalCount") if isinstance(member_of, dict) else None
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_collective_list",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL loggedInAccount.memberOf query",
+                result_count=result_count if isinstance(result_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_collective_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def collective_create(validated: OpenCollectiveCollectiveCreateArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.collective_create(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_collective_create",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL createCollective mutation",
+                result_count=1 if isinstance(data.get("collective"), dict) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_collective_create", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def payee_list(validated: OpenCollectivePayeeListArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.payee_list(validated)
+            accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
+            result_count = accounts.get("totalCount") if isinstance(accounts, dict) else None
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_payee_list",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL accounts query (INDIVIDUAL/ORGANIZATION/VENDOR)",
+                result_count=result_count if isinstance(result_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_payee_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def payee_view(validated: OpenCollectivePayeeViewArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.payee_view(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_payee_view",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL account query",
+                result_count=1 if isinstance(data.get("account"), dict) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_payee_view", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        async def payee_create(validated: OpenCollectivePayeeCreateArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.payee_create(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_payee_create",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL createVendor mutation",
+                result_count=1 if isinstance(data.get("vendor"), dict) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_payee_create", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
+        self._register(
+            "accounting_collective_list",
+            "List Open Collective collectives accessible to the authenticated user. Call this first when the user wants to manage expenses but hasn't confirmed which collective to use — list and confirm before proceeding.",
+            OpenCollectiveCollectiveListArgs,
+            collective_list,
+        )
+        self._register(
+            "accounting_collective_create",
+            "Create a new Open Collective collective. Call after accounting_collective_search or accounting_collective_list confirms the collective does not exist and the user approves creation.",
+            OpenCollectiveCollectiveCreateArgs,
+            collective_create,
+        )
+        self._register(
+            "accounting_payee_list",
+            "List payee accounts (INDIVIDUAL, ORGANIZATION, VENDOR) on Open Collective. Use before creating an expense to confirm the payee exists; offer accounting_payee_create if the payee is absent.",
+            OpenCollectivePayeeListArgs,
+            payee_list,
+        )
+        self._register(
+            "accounting_payee_view",
+            "Retrieve the full profile, legal name, and saved payout methods for a single payee by slug.",
+            OpenCollectivePayeeViewArgs,
+            payee_view,
+        )
+        self._register(
+            "accounting_payee_create",
+            "Create a new vendor payee under a fiscal host. Call after accounting_payee_list confirms the payee is absent and the user approves creation.",
+            OpenCollectivePayeeCreateArgs,
+            payee_create,
         )
         self._register(
             "accounting_expense_list",
