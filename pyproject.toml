@@ -31,3 +31,6 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.vercel]
+entrypoint = "app.main:app"
