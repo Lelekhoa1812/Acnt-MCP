@@ -26,6 +26,7 @@ from app.tool.accounting import (
     OpenCollectiveExpenseUpdateArgs,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectiveHostListArgs,
     OpenCollectivePayeeCreateArgs,
     OpenCollectivePayeeListArgs,
     OpenCollectivePayeeViewArgs,
@@ -491,6 +492,22 @@ class ToolRegistry:
             OpenCollectiveExpenseWorkflowArgs,
             expense_workflow,
         )
+        async def host_list(validated: OpenCollectiveHostListArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.host_list(validated)
+            hosts = data.get("hosts", {}) if isinstance(data, dict) else {}
+            result_count = hosts.get("totalCount") if isinstance(hosts, dict) else None
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_host_list",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL hosts query",
+                result_count=result_count if isinstance(result_count, int) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_host_list", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
         async def collective_list(validated: OpenCollectiveCollectiveListArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.collective_list(validated)
             accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
@@ -572,8 +589,14 @@ class ToolRegistry:
             collective_list,
         )
         self._register(
+            "accounting_host_list",
+            "List available Open Collective fiscal hosts. Call this before accounting_collective_create to discover valid host slugs — pass the chosen slug as host.slug when creating a collective.",
+            OpenCollectiveHostListArgs,
+            host_list,
+        )
+        self._register(
             "accounting_collective_create",
-            "Create a new Open Collective collective. Call after accounting_collective_search or accounting_collective_list confirms the collective does not exist and the user approves creation.",
+            "Create a new Open Collective collective under a fiscal host. Call accounting_host_list first to find a valid host slug, then call this after accounting_collective_search confirms the collective does not exist and the user approves creation.",
             OpenCollectiveCollectiveCreateArgs,
             collective_create,
         )

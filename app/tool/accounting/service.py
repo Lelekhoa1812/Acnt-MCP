@@ -30,6 +30,7 @@ from app.tool.accounting.model import (
     OpenCollectiveExpenseUpdateArgs,
     OpenCollectiveExpenseWorkflowArgs,
     OpenCollectiveFinancialSnapshotArgs,
+    OpenCollectiveHostListArgs,
     OpenCollectivePayeeCreateArgs,
     OpenCollectivePayeeListArgs,
     OpenCollectivePayeeViewArgs,
@@ -189,10 +190,15 @@ query FinancialSnapshot(
         id
         type
         status
-        amount
-        currency
+        amountV2 { ...OCAmountFields }
         description
         createdAt
+        tags
+        payee {
+          id
+          slug
+          name
+        }
         account {
           id
           slug
@@ -334,6 +340,22 @@ mutation CreateOrganization($organization: OrganizationCreateInput!) {
 """.strip()
 
 
+_HOSTS_LIST_QUERY = """
+query HostList($limit: Int!, $offset: Int!, $searchTerm: String) {
+  hosts(limit: $limit, offset: $offset, searchTerm: $searchTerm) {
+    totalCount
+    nodes {
+      id
+      slug
+      name
+      description
+      type
+    }
+  }
+}
+""".strip()
+
+
 class AccountingService:
     def __init__(self, settings: Settings, key_value_store: AppKeyValueStore, logger: logging.Logger) -> None:
         self.settings = settings
@@ -381,6 +403,13 @@ class AccountingService:
     async def collective_create(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], str, list[str]]:
         data, notes = await self._collective_create_payload(args)
         return data, "live", notes
+
+    async def host_list(self, args: OpenCollectiveHostListArgs) -> tuple[dict[str, object], str, list[str]]:
+        return await self._cached(
+            "accounting_host_list",
+            args.model_dump(mode="json", exclude_none=True),
+            lambda: self._hosts_list_payload(args),
+        )
 
     async def payee_list(self, args: OpenCollectivePayeeListArgs) -> tuple[dict[str, object], str, list[str]]:
         return await self._cached(
@@ -489,6 +518,34 @@ class AccountingService:
             "tool": "accounting_collective_create",
             "query": args.model_dump(mode="json", exclude_none=True),
             "collective": collective if isinstance(collective, dict) else None,
+            "raw": payload,
+        }, notes
+
+    async def _hosts_list_payload(self, args: OpenCollectiveHostListArgs) -> tuple[dict[str, object], list[str]]:
+        payload = await self._post_graphql(
+            _HOSTS_LIST_QUERY,
+            {
+                "limit": args.limit,
+                "offset": args.offset,
+                "searchTerm": args.search_term,
+            },
+        )
+        hosts = payload.get("hosts")
+        notes: list[str] = []
+        if isinstance(hosts, dict):
+            total = hosts.get("totalCount", 0)
+            nodes = hosts.get("nodes") or []
+            if total == 0:
+                notes.append("No fiscal hosts found. Contact Open Collective support or use a known public host such as 'opensource'.")
+            else:
+                slugs = [n.get("slug") for n in nodes if isinstance(n, dict) and n.get("slug")]
+                notes.append(
+                    f"Found {total} fiscal host(s). Pass one of these slugs as host.slug in accounting_collective_create: {', '.join(slugs)}."
+                )
+        return {
+            "tool": "accounting_host_list",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "hosts": hosts if isinstance(hosts, dict) else None,
             "raw": payload,
         }, notes
 
@@ -902,13 +959,9 @@ query BudgetLookup($slug: String!) {
                     error_type = self._categorize_graphql_error(errors)
                     error_msg = json.dumps(errors, ensure_ascii=False)
 
-                    # Try to return partial data if available
-                    data = payload.get("data")
-                    if isinstance(data, dict) and data:
-                        self.logger.warning(f"GraphQL {error_type} but returning partial data: {error_msg}")
-                        return data
-
-                    # Auth errors: don't retry
+                    # Auth/permission errors: always raise, even when partial data is present.
+                    # Returning partial data for these hides missing scopes and produces silently
+                    # incomplete results (e.g. account found but expenses: null due to missing scope).
                     if error_type == "AUTH":
                         raise UpstreamServiceError(
                             401,
@@ -916,7 +969,6 @@ query BudgetLookup($slug: String!) {
                             request="POST /graphql/v2"
                         )
 
-                    # Scope errors: don't retry; the token is valid but missing a required scope.
                     if error_type == "SCOPE_MISSING":
                         scope = self._extract_missing_scope(errors) or "(unknown)"
                         raise UpstreamServiceError(
@@ -930,13 +982,18 @@ query BudgetLookup($slug: String!) {
                             request="POST /graphql/v2"
                         )
 
-                    # Generic permission errors: don't retry
                     if error_type == "PERMISSION":
                         raise UpstreamServiceError(
                             403,
                             f"Open Collective permission denied: {error_msg}",
                             request="POST /graphql/v2"
                         )
+
+                    # For transient errors, return partial data if available
+                    data = payload.get("data")
+                    if isinstance(data, dict) and data:
+                        self.logger.warning(f"GraphQL {error_type} but returning partial data: {error_msg}")
+                        return data
 
                     # For transient errors, retry with backoff
                     if error_type in ("TIMEOUT", "RATE_LIMIT", "SERVER_ERROR"):
@@ -1201,9 +1258,21 @@ query BudgetLookup($slug: String!) {
     def _sum_amounts(self, nodes: list[dict[str, Any]]) -> float:
         total = 0.0
         for node in nodes:
+            # amountV2 is the current Amount object field (value in dollars, valueInCents in cents)
+            amount_v2 = node.get("amountV2")
+            if isinstance(amount_v2, dict):
+                cents = amount_v2.get("valueInCents")
+                if isinstance(cents, (int, float)):
+                    total += float(cents) / 100.0
+                    continue
+                value = amount_v2.get("value")
+                if isinstance(value, (int, float)):
+                    total += float(value)
+                    continue
+            # Legacy amount field: Int (cents) on Expense, or Amount dict on Transaction
             amount = node.get("amount")
             if isinstance(amount, (int, float)):
-                total += float(amount)
+                total += float(amount) / 100.0
                 continue
             if isinstance(amount, dict):
                 cents = amount.get("valueInCents")

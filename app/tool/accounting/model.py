@@ -103,8 +103,19 @@ class CollectiveCreateInput(BaseModel):
 
 class OpenCollectiveCollectiveCreateArgs(BaseModel):
     collective: CollectiveCreateInput = Field(..., description="Collective payload to create.")
-    host: AccountReferenceInput = Field(..., description="Host collective that will approve this application.")
+    host: AccountReferenceInput = Field(..., description="Host collective that will approve this application. Use accounting_host_list to discover available host slugs.")
     message: str | None = Field(None, description="Application message sent to the host admins.")
+
+
+class OpenCollectiveHostListArgs(BaseModel):
+    limit: int = Field(10, ge=1, le=50, description="Maximum hosts to return.")
+    offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
+    search_term: str | None = Field(None, description="Optional keyword filter for host name or description.")
+
+    @field_validator("search_term")
+    @classmethod
+    def _strip_search_term(cls, value: str | None) -> str | None:
+        return _strip_text(value)
 
 class OpenCollectivePayeeListArgs(BaseModel):
     limit: int = Field(20, ge=1, le=100, description="Maximum payees to return.")
