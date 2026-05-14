@@ -14,6 +14,7 @@ from app.mcp.tool import McpToolNameMap, is_mcp_safe_tool_name
 from app.schemas import ToolDefinition, ToolResult, ToolTrace
 from app.tool.accounting import (
     AccountingService,
+    OpenCollectiveAccountSearchArgs,
     OpenCollectiveBudgetLookupArgs,
     OpenCollectiveCollectiveCreateArgs,
     OpenCollectiveCollectiveListArgs,
@@ -464,11 +465,12 @@ class ToolRegistry:
             )
             return ToolResult(tool="accounting_expense_process", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
+        # Root Cause vs Logic: alias tooling historically named accounting_account_search; reuse collective_search handler to keep behavior consistent without duplicating logic.
         self._register(
             "accounting_account_search",
             "Open Collective client search for resolving human labels, ambiguous client names, closest-match candidates, and create-or-confirm decisions before ledger actions.",
             OpenCollectiveAccountSearchArgs,
-            account_search,
+            collective_search,
             visible=False,
         )
         self._register(
