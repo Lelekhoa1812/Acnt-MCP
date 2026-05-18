@@ -19,6 +19,7 @@ from app.tool.accounting import (
     OpenCollectiveCollectiveCreateArgs,
     OpenCollectiveCollectiveListArgs,
     OpenCollectiveCollectiveSearchArgs,
+    OpenCollectiveCollectiveUpdateArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
@@ -608,6 +609,20 @@ class ToolRegistry:
             )
             return ToolResult(tool="accounting_collective_create", data=data, llm_content=data, normalization_notes=notes, trace=trace)
 
+        async def collective_update(validated: OpenCollectiveCollectiveUpdateArgs, thought: str) -> ToolResult:
+            data, cache_status, notes = await self.accounting_service.collective_update(validated)
+            trace = ToolTrace(
+                thought=thought,
+                tool="accounting_collective_update",
+                args=validated.model_dump(exclude_none=True),
+                status="ok",
+                cache_status=cache_status,
+                source_data="opencollective -> GraphQL editCollective mutation",
+                result_count=1 if isinstance(data.get("collective"), dict) else None,
+                normalization_notes=notes,
+            )
+            return ToolResult(tool="accounting_collective_update", data=data, llm_content=data, normalization_notes=notes, trace=trace)
+
         async def payee_list(validated: OpenCollectivePayeeListArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.payee_list(validated)
             accounts = data.get("accounts", {}) if isinstance(data, dict) else {}
@@ -669,6 +684,12 @@ class ToolRegistry:
             "Create a new Open Collective collective under a fiscal host. Call accounting_host_list first to find a valid host slug, then call this after accounting_collective_search confirms the collective does not exist and the user approves creation.",
             OpenCollectiveCollectiveCreateArgs,
             collective_create,
+        )
+        self._register(
+            "accounting_collective_update",
+            "Update an existing Open Collective collective's settings — including native currency, name, and description. Use accounting_collective_search first to confirm the slug/id, then call this with the fields to change. Changing currency updates the collective's default accounting currency going forward.",
+            OpenCollectiveCollectiveUpdateArgs,
+            collective_update,
         )
         self._register(
             "accounting_payee_list",

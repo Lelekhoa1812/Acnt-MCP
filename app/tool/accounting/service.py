@@ -23,6 +23,7 @@ from app.tool.accounting.model import (
     OpenCollectiveCollectiveCreateArgs,
     OpenCollectiveCollectiveListArgs,
     OpenCollectiveCollectiveSearchArgs,
+    OpenCollectiveCollectiveUpdateArgs,
     OpenCollectiveExpenseCreateArgs,
     OpenCollectiveExpenseDeleteArgs,
     OpenCollectiveExpenseListArgs,
@@ -355,6 +356,19 @@ query HostList($limit: Int!, $offset: Int!, $searchTerm: String) {
 }
 """.strip()
 
+_EDIT_COLLECTIVE_MUTATION = """
+mutation EditCollective($collective: CollectiveUpdateInput!) {
+  editCollective(collective: $collective) {
+    id
+    slug
+    name
+    description
+    currency
+    updatedAt
+  }
+}
+""".strip()
+
 
 class AccountingService:
     def __init__(self, settings: Settings, key_value_store: AppKeyValueStore, logger: logging.Logger) -> None:
@@ -405,6 +419,10 @@ class AccountingService:
 
     async def collective_create(self, args: OpenCollectiveCollectiveCreateArgs) -> tuple[dict[str, object], str, list[str]]:
         data, notes = await self._collective_create_payload(args)
+        return data, "live", notes
+
+    async def collective_update(self, args: OpenCollectiveCollectiveUpdateArgs) -> tuple[dict[str, object], str, list[str]]:
+        data, notes = await self._collective_update_payload(args)
         return data, "live", notes
 
     async def host_list(self, args: OpenCollectiveHostListArgs) -> tuple[dict[str, object], str, list[str]]:
@@ -519,6 +537,24 @@ class AccountingService:
             )
         return {
             "tool": "accounting_collective_create",
+            "query": args.model_dump(mode="json", exclude_none=True),
+            "collective": collective if isinstance(collective, dict) else None,
+            "raw": payload,
+        }, notes
+
+    async def _collective_update_payload(self, args: OpenCollectiveCollectiveUpdateArgs) -> tuple[dict[str, object], list[str]]:
+        payload = await self._post_graphql(
+            _EDIT_COLLECTIVE_MUTATION,
+            {"collective": args.collective.model_dump(mode="json", exclude_none=True)},
+        )
+        collective = payload.get("editCollective")
+        notes: list[str] = []
+        if isinstance(collective, dict):
+            currency = collective.get("currency")
+            slug = collective.get("slug")
+            notes.append(f"Collective '{slug}' updated successfully. Currency is now '{currency}'.")
+        return {
+            "tool": "accounting_collective_update",
             "query": args.model_dump(mode="json", exclude_none=True),
             "collective": collective if isinstance(collective, dict) else None,
             "raw": payload,

@@ -107,6 +107,42 @@ class OpenCollectiveCollectiveCreateArgs(BaseModel):
     message: str | None = Field(None, description="Application message sent to the host admins.")
 
 
+class CollectiveUpdateInput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str | None = Field(None, description="Public account ID (e.g. acc_xxx).")
+    slug: str | None = Field(None, description="Current URL slug of the collective to update.")
+    currency: str | None = Field(None, description="New ISO 4217 currency code (e.g. 'AUD', 'EUR'). Changes the collective's native currency.")
+    name: str | None = Field(None, description="New display name.")
+    description: str | None = Field(None, description="New short description.")
+    tags: list[str] | None = Field(None, description="New categorisation tags.")
+    website: str | None = Field(None, description="New website URL.")
+
+    @model_validator(mode="after")
+    def _require_identifier(self) -> "CollectiveUpdateInput":
+        if not self.id and not self.slug:
+            raise ValueError("provide at least one of 'id' or 'slug' to identify the collective.")
+        return self
+
+    @field_validator("currency")
+    @classmethod
+    def _normalize_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        return cleaned or None
+
+
+class OpenCollectiveCollectiveUpdateArgs(BaseModel):
+    collective: CollectiveUpdateInput = Field(
+        ...,
+        description=(
+            "Collective update payload. Must include 'id' or 'slug' to identify the collective, "
+            "plus any fields to change (e.g. currency='AUD'). "
+            "Use accounting_collective_search first to confirm the slug/id."
+        ),
+    )
+
+
 class OpenCollectiveHostListArgs(BaseModel):
     limit: int = Field(10, ge=1, le=50, description="Maximum hosts to return.")
     offset: int = Field(0, ge=0, le=10_000, description="Offset into the result set.")
