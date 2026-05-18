@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Any
 
@@ -282,20 +283,117 @@ class ExpenseItemCreateInput(BaseModel):
                 values["url"] = attachment
         return values
 
+    @field_validator("incurredAt", mode="before")
+    @classmethod
+    def _normalize_incurred_at(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        s = value.strip()
+        if not s:
+            return None
+        # Date-only (YYYY-MM-DD) → midnight UTC, full ISO-8601 with millis.
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            return f"{s}T00:00:00.000Z"
+        return s
+
+
+class PayoutMethodType(str, Enum):
+    OTHER = "OTHER"
+    PAYPAL = "PAYPAL"
+    BANK_ACCOUNT = "BANK_ACCOUNT"
+    ACCOUNT_BALANCE = "ACCOUNT_BALANCE"
+    CREDIT_CARD = "CREDIT_CARD"
+    STRIPE = "STRIPE"
+
+
+_PAYOUT_METHOD_ALIASES: dict[str, PayoutMethodType] = {
+    "card": PayoutMethodType.CREDIT_CARD,
+    "credit": PayoutMethodType.CREDIT_CARD,
+    "creditcard": PayoutMethodType.CREDIT_CARD,
+    "debit": PayoutMethodType.CREDIT_CARD,
+    "debitcard": PayoutMethodType.CREDIT_CARD,
+    "bank": PayoutMethodType.BANK_ACCOUNT,
+    "bankaccount": PayoutMethodType.BANK_ACCOUNT,
+    "banktransfer": PayoutMethodType.BANK_ACCOUNT,
+    "wire": PayoutMethodType.BANK_ACCOUNT,
+    "wiretransfer": PayoutMethodType.BANK_ACCOUNT,
+    "ach": PayoutMethodType.BANK_ACCOUNT,
+    "transfer": PayoutMethodType.BANK_ACCOUNT,
+    "eft": PayoutMethodType.BANK_ACCOUNT,
+    "paypal": PayoutMethodType.PAYPAL,
+    "stripe": PayoutMethodType.STRIPE,
+    "balance": PayoutMethodType.ACCOUNT_BALANCE,
+    "accountbalance": PayoutMethodType.ACCOUNT_BALANCE,
+    "cash": PayoutMethodType.OTHER,
+    "manual": PayoutMethodType.OTHER,
+    "other": PayoutMethodType.OTHER,
+}
+
 
 class PayoutMethodInput(BaseModel):
     model_config = ConfigDict(extra="allow")
-    type: str = Field(..., description="Payout method type (PayPal, OTHER, etc.).")
+    type: PayoutMethodType = Field(
+        ...,
+        description=(
+            "Payout method type. Must be one of OTHER, PAYPAL, BANK_ACCOUNT, "
+            "ACCOUNT_BALANCE, CREDIT_CARD, STRIPE. Colloquial aliases like "
+            "'card', 'bank', 'wire', 'cash' are normalised. For real-world "
+            "card payments use CREDIT_CARD; for cash / manual / out-of-band "
+            "use OTHER and record details in `name`."
+        ),
+    )
     publicId: str | None = Field(None, description="Existing payout method public id.")
     name: str | None = Field(None, description="Friendly payout method name.")
     data: dict[str, object] | None = Field(None, description="Payout-method specific data.")
     isSaved: bool | None = Field(None, description="Whether to save the payout method.")
 
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_payout_type(cls, value: Any) -> Any:
+        if isinstance(value, PayoutMethodType):
+            return value
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("payoutMethod.type must not be empty.")
+        upper = cleaned.upper()
+        if upper in PayoutMethodType.__members__:
+            return PayoutMethodType[upper]
+        alias_key = re.sub(r"[\s_\-]+", "", cleaned).lower()
+        aliased = _PAYOUT_METHOD_ALIASES.get(alias_key)
+        if aliased is not None:
+            return aliased
+        valid = ", ".join(m.value for m in PayoutMethodType)
+        raise ValueError(
+            f"payoutMethod.type '{value}' is not a valid Open Collective payout "
+            f"type. Valid values: {valid}. Use OTHER for cash / manual."
+        )
+
+
+class ExpenseType(str, Enum):
+    INVOICE = "INVOICE"
+    RECEIPT = "RECEIPT"
+    GRANT = "GRANT"
+    CHARGE = "CHARGE"
+    SETTLEMENT = "SETTLEMENT"
+    UNCLASSIFIED = "UNCLASSIFIED"
+    FUNDING_REQUEST = "FUNDING_REQUEST"
+
 
 class ExpenseCreateInput(BaseModel):
     model_config = ConfigDict(extra="allow")
     description: str = Field(..., description="Expense description.")
-    type: str = Field(..., description="Expense type (INVOICE, RECEIPT, etc.).")
+    type: ExpenseType = Field(
+        ...,
+        description=(
+            "Expense type. Use INVOICE when the payee is billing for services "
+            "and no receipt image is available — items do NOT need `url`. "
+            "Use RECEIPT only when reimbursing a purchase and EVERY item carries "
+            "a public `url` linking to the receipt file (PDF/image). Open "
+            "Collective rejects RECEIPT expenses whose items lack a `url`."
+        ),
+    )
     payee: AccountReferenceInput = Field(..., description="Account receiving the funds.")
     payoutMethod: PayoutMethodInput = Field(..., description="How the payee gets paid.")
     currency: str | None = Field(None, description="Payout currency (defaults to account currency).")
@@ -306,6 +404,20 @@ class ExpenseCreateInput(BaseModel):
     accountingCategory: dict[str, object] | None = Field(None, description="Accounting category reference.")
     invoiceInfo: str | None = Field(None, description="Custom invoice information.")
     items: list[ExpenseItemCreateInput] | None = Field(None, description="Line items contributing to the total.")
+
+    @model_validator(mode="after")
+    def _validate_receipt_items(self) -> "ExpenseCreateInput":
+        if self.type == ExpenseType.RECEIPT and self.items:
+            missing = [i for i, item in enumerate(self.items) if not item.url]
+            if missing:
+                raise ValueError(
+                    f"type=RECEIPT requires every item to include a `url` "
+                    f"pointing to the receipt file. Items missing url "
+                    f"(0-indexed): {missing}. Either provide a public URL for "
+                    f"each item, or switch to type=INVOICE if no receipt image "
+                    f"is available."
+                )
+        return self
 
 
 class ExpenseUpdateInput(ExpenseCreateInput):
@@ -405,6 +517,23 @@ class OpenCollectiveExpenseWorkflowArgs(BaseModel):
                     f"CREATE expense payload missing required fields: {', '.join(missing)}. "
                     "Provide description, type (INVOICE|RECEIPT), payee:{slug|id}, payoutMethod:{type,...}."
                 )
+            # When `expense` was passed as a raw dict the nested ExpenseCreateInput
+            # validator never runs, so mirror its RECEIPT/url check here so the
+            # MCP fails fast instead of waiting for OC to reject the request.
+            if expense_payload.get("type") == ExpenseType.RECEIPT.value:
+                items = expense_payload.get("items") or []
+                missing_urls = [
+                    i for i, item in enumerate(items)
+                    if not (isinstance(item, dict) and item.get("url"))
+                ]
+                if missing_urls:
+                    raise ValueError(
+                        f"type=RECEIPT requires every item to include a `url` "
+                        f"pointing to the receipt file. Items missing url "
+                        f"(0-indexed): {missing_urls}. Either provide a public "
+                        f"URL for each item, or switch to type=INVOICE if no "
+                        f"receipt image is available."
+                    )
         elif self.action == ExpenseWorkflowAction.EDIT:
             if not expense_payload.get("id"):
                 raise ValueError("EDIT expense payload requires 'id'.")
@@ -421,7 +550,15 @@ class OpenCollectiveExpenseWorkflowArgs(BaseModel):
     def _expense_as_dict(self) -> dict[str, Any]:
         if isinstance(self.expense, BaseModel):
             return self.expense.model_dump(mode="json", exclude_none=True)
-        return dict(self.expense or {})
+        payload = dict(self.expense or {})
+        # When CREATE is invoked with a raw dict the union accepts it as-is,
+        # bypassing ExpenseCreateInput's normalisation (payoutMethod aliasing,
+        # incurredAt ISO coercion, RECEIPT/url cross-check). Route it through
+        # ExpenseCreateInput now so the GraphQL payload carries canonical values.
+        if self.action == ExpenseWorkflowAction.CREATE and payload:
+            normalised = ExpenseCreateInput.model_validate(payload)
+            return normalised.model_dump(mode="json", exclude_none=True)
+        return payload
 
     def expense_payload(self) -> dict[str, Any]:
         """Return the expense payload as a plain dict suitable for GraphQL variables."""

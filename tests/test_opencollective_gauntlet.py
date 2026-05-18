@@ -30,7 +30,12 @@ from app.tool.accounting import (
     OpenCollectiveTransactionAllArgs,
     OrganizationCreateInput,
 )
-from app.tool.accounting.model import ExpenseItemCreateInput
+from app.tool.accounting.model import (
+    ExpenseCreateInput,
+    ExpenseItemCreateInput,
+    PayoutMethodInput,
+    PayoutMethodType,
+)
 
 
 def _settings() -> Settings:
@@ -220,7 +225,7 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
                 "description": "Accessibility sprint GPU grant",
                 "type": "INVOICE",
                 "payee": {"slug": "river-labs"},
-                "payoutMethod": {"type": "BANK_TRANSFER", "name": "Manual transfer", "data": {"content": "ANZ-001"}},
+                "payoutMethod": {"type": "BANK_ACCOUNT", "name": "Manual transfer", "data": {"content": "ANZ-001"}},
             },
             privateComment="Please attach the invoice and confirm the payout window.",
         )
@@ -242,7 +247,7 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
                 "description": "Travel stipend for community maintainer",
                 "type": "INVOICE",
                 "payee": {"slug": "river-labs"},
-                "payoutMethod": {"type": "BANK_TRANSFER", "name": "Manual transfer", "data": {"content": "ANZ-001"}},
+                "payoutMethod": {"type": "BANK_ACCOUNT", "name": "Manual transfer", "data": {"content": "ANZ-001"}},
             },
             privateComment="Attach receipts before the payout window opens.",
         )
@@ -254,7 +259,7 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
                 "description": "Travel stipend for community maintainer - updated",
                 "type": "INVOICE",
                 "payee": {"slug": "river-labs"},
-                "payoutMethod": {"type": "BANK_TRANSFER"},
+                "payoutMethod": {"type": "BANK_ACCOUNT"},
             }
         )
     )
@@ -350,3 +355,143 @@ def test_expense_item_unknown_fields_are_stripped() -> None:
     item = ExpenseItemCreateInput(description="Receipt", bogusField="should-be-dropped")  # type: ignore[call-arg]
     dumped = item.model_dump(mode="json", exclude_none=True)
     assert "bogusField" not in dumped
+
+
+# --- PayoutMethodType enum validation + normalisation ---------------------
+
+
+@pytest.mark.parametrize("canonical", [m.value for m in PayoutMethodType])
+def test_payout_method_accepts_canonical_values(canonical: str) -> None:
+    pm = PayoutMethodInput(type=canonical)
+    assert pm.type == PayoutMethodType(canonical)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("card", PayoutMethodType.CREDIT_CARD),
+        ("CARD", PayoutMethodType.CREDIT_CARD),
+        ("Credit Card", PayoutMethodType.CREDIT_CARD),
+        ("debit", PayoutMethodType.CREDIT_CARD),
+        ("bank", PayoutMethodType.BANK_ACCOUNT),
+        ("bank transfer", PayoutMethodType.BANK_ACCOUNT),
+        ("BANK_TRANSFER", PayoutMethodType.BANK_ACCOUNT),
+        ("wire", PayoutMethodType.BANK_ACCOUNT),
+        ("ach", PayoutMethodType.BANK_ACCOUNT),
+        ("paypal", PayoutMethodType.PAYPAL),
+        ("cash", PayoutMethodType.OTHER),
+        ("manual", PayoutMethodType.OTHER),
+        ("balance", PayoutMethodType.ACCOUNT_BALANCE),
+        ("stripe", PayoutMethodType.STRIPE),
+    ],
+)
+def test_payout_method_normalises_aliases(raw: str, expected: PayoutMethodType) -> None:
+    pm = PayoutMethodInput(type=raw)
+    assert pm.type == expected
+    dumped = pm.model_dump(mode="json", exclude_none=True)
+    assert dumped["type"] == expected.value
+
+
+def test_payout_method_rejects_unknown_value_with_valid_list() -> None:
+    with pytest.raises(ValueError) as exc:
+        PayoutMethodInput(type="FROBNICATE")
+    msg = str(exc.value)
+    assert "FROBNICATE" in msg
+    for member in PayoutMethodType:
+        assert member.value in msg
+
+
+# --- RECEIPT requires items[].url ------------------------------------------
+
+
+def _valid_expense_kwargs(**overrides):
+    base = dict(
+        description="Test expense",
+        type="RECEIPT",
+        payee={"slug": "river-labs"},
+        payoutMethod={"type": "CREDIT_CARD"},
+        items=[{"description": "Coffee", "amountV2": {"valueInCents": 500, "currency": "USD"}}],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_expense_create_receipt_without_item_url_raises() -> None:
+    with pytest.raises(ValueError) as exc:
+        ExpenseCreateInput(**_valid_expense_kwargs())
+    msg = str(exc.value)
+    assert "url" in msg
+    assert "INVOICE" in msg
+    assert "0" in msg  # missing item index
+
+
+def test_expense_create_invoice_without_item_url_succeeds() -> None:
+    expense = ExpenseCreateInput(**_valid_expense_kwargs(type="INVOICE"))
+    assert expense.type.value == "INVOICE"
+
+
+def test_expense_create_receipt_with_item_url_succeeds() -> None:
+    expense = ExpenseCreateInput(
+        **_valid_expense_kwargs(
+            items=[
+                {
+                    "description": "Coffee",
+                    "amountV2": {"valueInCents": 500, "currency": "USD"},
+                    "url": "https://example.com/receipt.pdf",
+                }
+            ]
+        )
+    )
+    assert expense.type.value == "RECEIPT"
+
+
+def test_workflow_create_receipt_dict_without_item_url_raises() -> None:
+    with pytest.raises(ValueError) as exc:
+        OpenCollectiveExpenseWorkflowArgs(
+            action="CREATE",
+            account={"slug": "aurora-oss"},
+            expense={
+                "description": "Sprint receipts",
+                "type": "RECEIPT",
+                "payee": {"slug": "river-labs"},
+                "payoutMethod": {"type": "card"},
+                "items": [
+                    {"description": "Coffee", "amountV2": {"valueInCents": 500, "currency": "USD"}}
+                ],
+            },
+        )
+    assert "RECEIPT" in str(exc.value)
+
+
+def test_workflow_create_invoice_with_card_payout_succeeds() -> None:
+    args = OpenCollectiveExpenseWorkflowArgs(
+        action="CREATE",
+        account={"slug": "aurora-oss"},
+        expense={
+            "description": "Sprint invoice",
+            "type": "INVOICE",
+            "payee": {"slug": "river-labs"},
+            "payoutMethod": {"type": "card"},
+        },
+    )
+    payload = args.expense_payload()
+    assert payload["type"] == "INVOICE"
+    assert payload["payoutMethod"]["type"] == "CREDIT_CARD"
+
+
+# --- incurredAt ISO-8601 normalisation -------------------------------------
+
+
+def test_expense_item_incurred_at_date_only_is_normalised() -> None:
+    item = ExpenseItemCreateInput(description="Coffee", incurredAt="2026-05-18")
+    assert item.incurredAt == "2026-05-18T00:00:00.000Z"
+
+
+def test_expense_item_incurred_at_full_iso_is_preserved() -> None:
+    item = ExpenseItemCreateInput(description="Coffee", incurredAt="2026-05-18T12:34:56Z")
+    assert item.incurredAt == "2026-05-18T12:34:56Z"
+
+
+def test_expense_item_incurred_at_empty_string_becomes_none() -> None:
+    item = ExpenseItemCreateInput(description="Coffee", incurredAt="   ")
+    assert item.incurredAt is None

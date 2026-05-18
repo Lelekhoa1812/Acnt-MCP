@@ -559,7 +559,25 @@ class ToolRegistry:
         )
         self._register(
             "accounting_expense_workflow",
-            "Open Collective expense workflow for creating, editing, deleting, and processing expenses (archive/restore/mark-as-paid/invoice) from one structured action tool. For CREATE: first confirm the collective with accounting_collective_search or accounting_collective_list, then confirm the payee with accounting_payee_list; create missing entities with accounting_collective_create or accounting_payee_create before filing.",
+            (
+                "Open Collective expense workflow (CREATE / EDIT / DELETE / PROCESS). "
+                "CREATE preconditions: resolve the collective via accounting_collective_search "
+                "(then accounting_collective_list / accounting_collective_create if absent), and "
+                "resolve the payee via accounting_payee_list (or accounting_payee_create). "
+                "CREATE payload rules (Open Collective): "
+                "(1) expense.type — use INVOICE when no receipt image is available; items do NOT "
+                "need a `url`. Use RECEIPT only when every item carries a public `url` linking to the "
+                "receipt file (PDF/image); RECEIPT items without a URL are rejected upstream. "
+                "(2) expense.payoutMethod.type must be one of "
+                "OTHER | PAYPAL | BANK_ACCOUNT | ACCOUNT_BALANCE | CREDIT_CARD | STRIPE. "
+                "For real-world card payments use CREDIT_CARD; for cash / manual / out-of-band use "
+                "OTHER and record context in payoutMethod.name. Colloquial aliases (card, bank, wire, "
+                "cash, paypal, …) are normalised automatically. "
+                "(3) items[].incurredAt should be ISO-8601 (e.g. 2026-05-18T00:00:00Z); date-only "
+                "strings are accepted and normalised. "
+                "File attachments: this connector does NOT upload binary files. If a receipt image "
+                "exists, pass its public URL in items[].url. Otherwise prefer type=INVOICE."
+            ),
             OpenCollectiveExpenseWorkflowArgs,
             expense_workflow,
         )
