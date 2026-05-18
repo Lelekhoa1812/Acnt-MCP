@@ -617,7 +617,7 @@ class ToolRegistry:
                 args=validated.model_dump(exclude_none=True),
                 status="ok",
                 cache_status=cache_status,
-                source_data="opencollective -> GraphQL editCollective mutation",
+                source_data="opencollective -> GraphQL editAccount mutation",
                 result_count=1 if isinstance(data.get("collective"), dict) else None,
                 normalization_notes=notes,
             )
@@ -687,7 +687,7 @@ class ToolRegistry:
         )
         self._register(
             "accounting_collective_update",
-            "Update an existing Open Collective collective's settings — including native currency, name, and description. Use accounting_collective_search first to confirm the slug/id, then call this with the fields to change. Changing currency updates the collective's default accounting currency going forward.",
+            "Update an existing Open Collective collective's settings — including native currency, name, slug, and description. Use accounting_collective_search first to confirm the id, then call this with the fields to change. Pass 'id' (acc_xxx) for reliable identification; use 'new_slug' to rename the slug.",
             OpenCollectiveCollectiveUpdateArgs,
             collective_update,
         )

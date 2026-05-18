@@ -356,9 +356,9 @@ query HostList($limit: Int!, $offset: Int!, $searchTerm: String) {
 }
 """.strip()
 
-_EDIT_COLLECTIVE_MUTATION = """
-mutation EditCollective($collective: CollectiveUpdateInput!) {
-  editCollective(collective: $collective) {
+_EDIT_ACCOUNT_MUTATION = """
+mutation EditAccount($account: AccountUpdateInput!) {
+  editAccount(account: $account) {
     id
     slug
     name
@@ -543,11 +543,37 @@ class AccountingService:
         }, notes
 
     async def _collective_update_payload(self, args: OpenCollectiveCollectiveUpdateArgs) -> tuple[dict[str, object], list[str]]:
-        payload = await self._post_graphql(
-            _EDIT_COLLECTIVE_MUTATION,
-            {"collective": args.collective.model_dump(mode="json", exclude_none=True)},
-        )
-        collective = payload.get("editCollective")
+        c = args.collective
+
+        # editAccount requires the account id (acc_xxx). Resolve from slug if id not provided.
+        account_id = c.id
+        if not account_id:
+            if c.slug:
+                account_id = await self._fetch_account_id_by_slug(c.slug)
+            if not account_id:
+                raise UpstreamServiceError(
+                    404,
+                    f"Could not resolve account id for slug '{c.slug}'. "
+                    "Use accounting_collective_search to find the correct collective and pass its id.",
+                    request="collective_update",
+                )
+
+        gql_input: dict[str, Any] = {"id": account_id}
+        if c.name is not None:
+            gql_input["name"] = c.name
+        if c.new_slug is not None:
+            gql_input["slug"] = c.new_slug
+        if c.currency is not None:
+            gql_input["currency"] = c.currency
+        if c.description is not None:
+            gql_input["description"] = c.description
+        if c.tags is not None:
+            gql_input["tags"] = c.tags
+        if c.website is not None:
+            gql_input["website"] = c.website
+
+        payload = await self._post_graphql(_EDIT_ACCOUNT_MUTATION, {"account": gql_input})
+        collective = payload.get("editAccount")
         notes: list[str] = []
         if isinstance(collective, dict):
             currency = collective.get("currency")
@@ -559,6 +585,16 @@ class AccountingService:
             "collective": collective if isinstance(collective, dict) else None,
             "raw": payload,
         }, notes
+
+    async def _fetch_account_id_by_slug(self, slug: str) -> str | None:
+        result = await self._post_graphql(
+            "query GetAccountId($slug: String!) { account(slug: $slug, throwIfMissing: false) { id } }",
+            {"slug": slug},
+        )
+        account = result.get("account")
+        if isinstance(account, dict):
+            return account.get("id")
+        return None
 
     async def _hosts_list_payload(self, args: OpenCollectiveHostListArgs) -> tuple[dict[str, object], list[str]]:
         payload = await self._post_graphql(

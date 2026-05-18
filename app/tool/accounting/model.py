@@ -109,8 +109,9 @@ class OpenCollectiveCollectiveCreateArgs(BaseModel):
 
 class CollectiveUpdateInput(BaseModel):
     model_config = ConfigDict(extra="allow")
-    id: str | None = Field(None, description="Public account ID (e.g. acc_xxx).")
-    slug: str | None = Field(None, description="Current URL slug of the collective to update.")
+    id: str | None = Field(None, description="Public account ID (e.g. acc_xxx). Preferred identifier — pass this if available.")
+    slug: str | None = Field(None, description="Current URL slug of the collective (used to resolve the account id when 'id' is not provided).")
+    new_slug: str | None = Field(None, description="New URL slug to assign to the collective (e.g. 'harmonise-stock').")
     currency: str | None = Field(None, description="New ISO 4217 currency code (e.g. 'AUD', 'EUR'). Changes the collective's native currency.")
     name: str | None = Field(None, description="New display name.")
     description: str | None = Field(None, description="New short description.")
