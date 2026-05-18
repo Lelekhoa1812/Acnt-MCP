@@ -387,9 +387,12 @@ class AccountingService:
         return await self.collective_search(args)
 
     async def financial_snapshot(self, args: OpenCollectiveFinancialSnapshotArgs) -> tuple[dict[str, object], str, list[str]]:
+        # Exclude display_currency from the cache key — the OC data is the same regardless of
+        # which display currency was requested; conversion is applied after the cache hit.
+        cache_args = {k: v for k, v in args.model_dump(mode="json", exclude_none=True).items() if k != "display_currency"}
         return await self._cached(
             "accounting_financial_snapshot",
-            args.model_dump(mode="json", exclude_none=True),
+            cache_args,
             lambda: self._financial_snapshot_payload(args),
         )
 
@@ -1245,11 +1248,18 @@ query BudgetLookup($slug: String!) {
             for node in expense_nodes
             if isinstance(node.get("status"), str) and node["status"].upper() in open_liability_statuses
         ]
+        stats = account.get("stats")
+        native_currency: str | None = None
+        if isinstance(stats, dict):
+            balance = stats.get("balance")
+            if isinstance(balance, dict):
+                native_currency = balance.get("currency") if isinstance(balance.get("currency"), str) else None
         return {
             "expense_count": expenses.get("totalCount") if isinstance(expenses, dict) else None,
             "transaction_count": transactions.get("totalCount") if isinstance(transactions, dict) else None,
             "open_liability_count": len(open_liabilities),
             "open_liability_amount_total": self._sum_amounts(open_liabilities),
+            "open_liability_currency": native_currency,
             "open_liabilities": open_liabilities,
             "recent_expenses": expense_nodes,
             "recent_transactions": transaction_nodes,

@@ -180,6 +180,73 @@ class ToolRegistry:
             data_schema = spec.output_model.model_json_schema()
         return build_envelope_output_schema(data_schema, compact=self.compact_envelope)
 
+    async def _convert_snapshot_for_display(
+        self,
+        data: dict[str, Any],
+        display_currency: str,
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Convert financial snapshot stat amounts to display_currency at today's FX rate."""
+        account = data.get("account")
+        if not isinstance(account, dict):
+            return data, []
+        stats = account.get("stats")
+        if not isinstance(stats, dict):
+            return data, []
+        balance = stats.get("balance")
+        native_currency = balance.get("currency") if isinstance(balance, dict) else None
+        if not isinstance(native_currency, str) or not native_currency:
+            return data, []
+
+        target = display_currency.upper()
+        if native_currency.upper() == target:
+            return data, [f"Amounts are already in {target} — no conversion applied."]
+
+        try:
+            rate_result, _, rate_notes = await self.currency_service.convert(
+                CurrencyConvertArgs(from_code=native_currency, to=target, amount=1.0)
+            )
+            rate = (rate_result.get("info") or {}).get("rate") if isinstance(rate_result, dict) else None
+            if not isinstance(rate, (int, float)) or rate <= 0:
+                return data, [f"FX rate not available for {native_currency} → {target}."]
+        except Exception as exc:
+            return data, [f"FX conversion to {target} failed: {exc}"]
+
+        def _apply_rate(amount_obj: object) -> dict[str, Any] | None:
+            if not isinstance(amount_obj, dict):
+                return None
+            v = amount_obj.get("value")
+            if not isinstance(v, (int, float)):
+                return None
+            cents = amount_obj.get("valueInCents")
+            result: dict[str, Any] = {"value": round(v * rate, 2), "currency": target}
+            if isinstance(cents, (int, float)):
+                result["valueInCents"] = round(cents * rate)
+            return result
+
+        stat_keys = ("balance", "yearlyBudget", "monthlySpending", "totalAmountReceived", "totalAmountSpent")
+        display_stats = {k: _apply_rate(stats.get(k)) for k in stat_keys}
+        display_stats = {k: v for k, v in display_stats.items() if v is not None}
+
+        summary = data.get("summary")
+        display_summary: dict[str, Any] = {}
+        if isinstance(summary, dict):
+            total = summary.get("open_liability_amount_total")
+            if isinstance(total, (int, float)):
+                display_summary["open_liability_amount_total"] = round(total * rate, 2)
+                display_summary["open_liability_currency"] = target
+
+        converted: dict[str, Any] = {
+            **data,
+            "display_currency": target,
+            "display_stats": display_stats,
+        }
+        if display_summary:
+            converted["display_summary"] = display_summary
+
+        notes = [f"Amounts converted from {native_currency} to {target} at rate {float(rate):.6f} (today's rate)."]
+        notes.extend(rate_notes)
+        return converted, notes
+
     def _register_currency(self) -> None:
         async def symbols(validated: CurrencySymbolsArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.currency_service.symbols(validated)
@@ -363,6 +430,9 @@ class ToolRegistry:
 
         async def financial_snapshot(validated: OpenCollectiveFinancialSnapshotArgs, thought: str) -> ToolResult:
             data, cache_status, notes = await self.accounting_service.financial_snapshot(validated)
+            if validated.display_currency and isinstance(data, dict):
+                data, extra_notes = await self._convert_snapshot_for_display(data, validated.display_currency)
+                notes = list(notes) + extra_notes
             summary = data.get("summary", {}) if isinstance(data, dict) else {}
             expense_count = summary.get("expense_count") if isinstance(summary, dict) else None
             transaction_count = summary.get("transaction_count") if isinstance(summary, dict) else None
@@ -482,7 +552,7 @@ class ToolRegistry:
         )
         self._register(
             "accounting_financial_snapshot",
-            "Open Collective financial snapshot for a reconciled view of client balance, paid-to-date, recent expenses, bank transactions, and open liabilities in one call.",
+            "Open Collective financial snapshot for a reconciled view of client balance, paid-to-date, recent expenses, bank transactions, and open liabilities in one call. Pass display_currency (e.g. 'AUD') to also receive all stat amounts converted to that currency at today's FX rate alongside the collective's native amounts.",
             OpenCollectiveFinancialSnapshotArgs,
             financial_snapshot,
         )

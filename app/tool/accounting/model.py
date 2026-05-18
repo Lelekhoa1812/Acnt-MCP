@@ -165,11 +165,27 @@ class OpenCollectiveFinancialSnapshotArgs(_OpenCollectiveBaseArgs):
     expense_search_term: str | None = Field(None, description="Optional search filter for expenses.")
     transaction_search_term: str | None = Field(None, description="Optional search filter for transactions.")
     include_open_liabilities: bool = Field(True, description="Include derived open-liability summaries.")
+    display_currency: str | None = Field(
+        None,
+        description=(
+            "Optional ISO 4217 target currency for display (e.g. 'AUD', 'GBP'). "
+            "When set, all stat amounts are also reported in this currency at today's FX rate "
+            "under 'display_stats' and 'display_summary'. Native amounts are always included."
+        ),
+    )
 
     @field_validator("expense_search_term", "transaction_search_term")
     @classmethod
     def _strip_optional_search(cls, value: str | None) -> str | None:
         return _strip_text(value)
+
+    @field_validator("display_currency")
+    @classmethod
+    def _normalize_display_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        return cleaned or None
 
 
 class ExpenseWorkflowAction(str, Enum):
