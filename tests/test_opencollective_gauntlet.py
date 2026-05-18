@@ -30,6 +30,7 @@ from app.tool.accounting import (
     OpenCollectiveTransactionAllArgs,
     OrganizationCreateInput,
 )
+from app.tool.accounting.model import ExpenseItemCreateInput
 
 
 def _settings() -> Settings:
@@ -326,3 +327,26 @@ async def test_opencollective_gauntlet_exercises_all_accounting_tools() -> None:
     assert "mutation CreateOrganization" in observed_queries
 
     await service.close()
+
+
+def test_expense_item_attachment_field_is_mapped_to_url() -> None:
+    """OC API rejects 'attachment'; the model must remap it to 'url' and drop it."""
+    item = ExpenseItemCreateInput(description="Receipt", attachment="https://example.com/receipt.pdf")  # type: ignore[call-arg]
+    dumped = item.model_dump(mode="json", exclude_none=True)
+    assert dumped["url"] == "https://example.com/receipt.pdf"
+    assert "attachment" not in dumped
+
+
+def test_expense_item_url_wins_over_attachment() -> None:
+    """When both 'url' and 'attachment' are provided, 'url' takes precedence."""
+    item = ExpenseItemCreateInput(description="Receipt", url="https://example.com/url.pdf", attachment="https://example.com/attach.pdf")  # type: ignore[call-arg]
+    dumped = item.model_dump(mode="json", exclude_none=True)
+    assert dumped["url"] == "https://example.com/url.pdf"
+    assert "attachment" not in dumped
+
+
+def test_expense_item_unknown_fields_are_stripped() -> None:
+    """Unknown fields must not leak through to the OC GraphQL payload."""
+    item = ExpenseItemCreateInput(description="Receipt", bogusField="should-be-dropped")  # type: ignore[call-arg]
+    dumped = item.model_dump(mode="json", exclude_none=True)
+    assert "bogusField" not in dumped

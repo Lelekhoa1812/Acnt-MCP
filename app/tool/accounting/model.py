@@ -266,11 +266,21 @@ class AmountInput(BaseModel):
 
 
 class ExpenseItemCreateInput(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="ignore")
     description: str = Field(..., description="Line-item description.")
     amountV2: AmountInput | None = Field(None, description="Amount for the line item.")
     incurredAt: str | None = Field(None, description="ISO timestamp when the expense occurred.")
-    url: str | None = Field(None, description="Optional URL for receipts or metadata.")
+    url: str | None = Field(None, description="Optional URL for receipts or metadata. Also accepts 'attachment' as an alias.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_attachment(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "attachment" in values:
+            values = dict(values)
+            attachment = values.pop("attachment")
+            if attachment and not values.get("url"):
+                values["url"] = attachment
+        return values
 
 
 class PayoutMethodInput(BaseModel):
