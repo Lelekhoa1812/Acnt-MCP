@@ -360,19 +360,24 @@ def test_expense_item_unknown_fields_are_stripped() -> None:
 # --- PayoutMethodType enum validation + normalisation ---------------------
 
 
-@pytest.mark.parametrize("canonical", [m.value for m in PayoutMethodType])
+@pytest.mark.parametrize(
+    "canonical",
+    [PayoutMethodType.OTHER.value, PayoutMethodType.PAYPAL.value,
+     PayoutMethodType.BANK_ACCOUNT.value, PayoutMethodType.ACCOUNT_BALANCE.value],
+)
 def test_payout_method_accepts_canonical_values(canonical: str) -> None:
-    pm = PayoutMethodInput(type=canonical)
+    pm = PayoutMethodInput(type=canonical, name="x")
     assert pm.type == PayoutMethodType(canonical)
 
 
 @pytest.mark.parametrize(
     "raw, expected",
     [
-        ("card", PayoutMethodType.CREDIT_CARD),
-        ("CARD", PayoutMethodType.CREDIT_CARD),
-        ("Credit Card", PayoutMethodType.CREDIT_CARD),
-        ("debit", PayoutMethodType.CREDIT_CARD),
+        # "card" is a payment note, not a real OC payout type — must map to OTHER.
+        ("card", PayoutMethodType.OTHER),
+        ("CARD", PayoutMethodType.OTHER),
+        ("Credit Card", PayoutMethodType.OTHER),
+        ("debit", PayoutMethodType.OTHER),
         ("bank", PayoutMethodType.BANK_ACCOUNT),
         ("bank transfer", PayoutMethodType.BANK_ACCOUNT),
         ("BANK_TRANSFER", PayoutMethodType.BANK_ACCOUNT),
@@ -382,11 +387,10 @@ def test_payout_method_accepts_canonical_values(canonical: str) -> None:
         ("cash", PayoutMethodType.OTHER),
         ("manual", PayoutMethodType.OTHER),
         ("balance", PayoutMethodType.ACCOUNT_BALANCE),
-        ("stripe", PayoutMethodType.STRIPE),
     ],
 )
 def test_payout_method_normalises_aliases(raw: str, expected: PayoutMethodType) -> None:
-    pm = PayoutMethodInput(type=raw)
+    pm = PayoutMethodInput(type=raw, name="Paid by card")
     assert pm.type == expected
     dumped = pm.model_dump(mode="json", exclude_none=True)
     assert dumped["type"] == expected.value
@@ -401,6 +405,45 @@ def test_payout_method_rejects_unknown_value_with_valid_list() -> None:
         assert member.value in msg
 
 
+def test_payout_method_credit_card_is_rejected_with_remap_hint() -> None:
+    with pytest.raises(ValueError) as exc:
+        PayoutMethodInput(type="CREDIT_CARD")
+    msg = str(exc.value)
+    assert "CREDIT_CARD" in msg
+    assert "OTHER" in msg
+
+
+def test_payout_method_stripe_is_rejected_with_settlement_hint() -> None:
+    with pytest.raises(ValueError) as exc:
+        PayoutMethodInput(type="STRIPE")
+    msg = str(exc.value)
+    assert "STRIPE" in msg
+    assert "SETTLEMENT" in msg
+
+
+def test_payout_method_other_autofills_data_content_from_name() -> None:
+    pm = PayoutMethodInput(type="OTHER", name="Paid by card — reimburse manually")
+    assert pm.data is not None
+    assert pm.data["content"] == "Paid by card — reimburse manually"
+
+
+def test_payout_method_other_autofills_data_content_default_when_blank() -> None:
+    pm = PayoutMethodInput(type="OTHER")
+    assert pm.data is not None
+    assert isinstance(pm.data["content"], str) and pm.data["content"].strip()
+
+
+def test_payout_method_other_preserves_explicit_data_content() -> None:
+    pm = PayoutMethodInput(type="OTHER", name="ignored", data={"content": "ANZ-001"})
+    assert pm.data["content"] == "ANZ-001"
+
+
+def test_payout_method_publicId_skips_other_data_requirement() -> None:
+    # When referencing a saved method, OC resolves data server-side.
+    pm = PayoutMethodInput(type="OTHER", publicId="pm_abc123")
+    assert pm.data is None
+
+
 # --- RECEIPT requires items[].url ------------------------------------------
 
 
@@ -409,7 +452,7 @@ def _valid_expense_kwargs(**overrides):
         description="Test expense",
         type="RECEIPT",
         payee={"slug": "river-labs"},
-        payoutMethod={"type": "CREDIT_CARD"},
+        payoutMethod={"type": "OTHER", "name": "Paid by card"},
         items=[{"description": "Coffee", "amountV2": {"valueInCents": 500, "currency": "USD"}}],
     )
     base.update(overrides)
@@ -471,12 +514,16 @@ def test_workflow_create_invoice_with_card_payout_succeeds() -> None:
             "description": "Sprint invoice",
             "type": "INVOICE",
             "payee": {"slug": "river-labs"},
-            "payoutMethod": {"type": "card"},
+            "payoutMethod": {"type": "card", "name": "Paid by card"},
         },
     )
     payload = args.expense_payload()
     assert payload["type"] == "INVOICE"
-    assert payload["payoutMethod"]["type"] == "CREDIT_CARD"
+    # 'card' must normalise to OTHER (CREDIT_CARD is not a valid expense
+    # payout type on Open Collective), and data.content must be auto-filled
+    # so OC does not silently reject the expense.
+    assert payload["payoutMethod"]["type"] == "OTHER"
+    assert payload["payoutMethod"]["data"]["content"] == "Paid by card"
 
 
 # --- incurredAt ISO-8601 normalisation -------------------------------------

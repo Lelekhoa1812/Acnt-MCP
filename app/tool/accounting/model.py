@@ -306,12 +306,18 @@ class PayoutMethodType(str, Enum):
     STRIPE = "STRIPE"
 
 
+# Aliases an AI agent typically emits. Note: CREDIT_CARD and STRIPE exist in
+# Open Collective's enum but are NOT valid payout types for a normal
+# reimbursement — CREDIT_CARD is an *incoming* payment method, and STRIPE is
+# gated to SETTLEMENT/PLATFORM_BILLING expenses. "Paid by card" means the
+# real-world purchase was on the user's card; the reimbursement payout is
+# out-of-band, which OC models as type=OTHER with data.content describing it.
 _PAYOUT_METHOD_ALIASES: dict[str, PayoutMethodType] = {
-    "card": PayoutMethodType.CREDIT_CARD,
-    "credit": PayoutMethodType.CREDIT_CARD,
-    "creditcard": PayoutMethodType.CREDIT_CARD,
-    "debit": PayoutMethodType.CREDIT_CARD,
-    "debitcard": PayoutMethodType.CREDIT_CARD,
+    "card": PayoutMethodType.OTHER,
+    "credit": PayoutMethodType.OTHER,
+    "creditcard": PayoutMethodType.OTHER,
+    "debit": PayoutMethodType.OTHER,
+    "debitcard": PayoutMethodType.OTHER,
     "bank": PayoutMethodType.BANK_ACCOUNT,
     "bankaccount": PayoutMethodType.BANK_ACCOUNT,
     "banktransfer": PayoutMethodType.BANK_ACCOUNT,
@@ -326,6 +332,9 @@ _PAYOUT_METHOD_ALIASES: dict[str, PayoutMethodType] = {
     "accountbalance": PayoutMethodType.ACCOUNT_BALANCE,
     "cash": PayoutMethodType.OTHER,
     "manual": PayoutMethodType.OTHER,
+    "outofband": PayoutMethodType.OTHER,
+    "reimbursement": PayoutMethodType.OTHER,
+    "reimburse": PayoutMethodType.OTHER,
     "other": PayoutMethodType.OTHER,
 }
 
@@ -367,8 +376,53 @@ class PayoutMethodInput(BaseModel):
         valid = ", ".join(m.value for m in PayoutMethodType)
         raise ValueError(
             f"payoutMethod.type '{value}' is not a valid Open Collective payout "
-            f"type. Valid values: {valid}. Use OTHER for cash / manual."
+            f"type. Valid values: {valid}. Use OTHER for cash / card / manual "
+            f"reimbursements."
         )
+
+    @model_validator(mode="after")
+    def _validate_payout_shape(self) -> "PayoutMethodInput":
+        # If the user is referencing a saved payout method via publicId we
+        # don't need inline data — OC will resolve the saved record.
+        if self.publicId:
+            return self
+
+        # CREDIT_CARD: enum member but NOT a valid payout type for expenses
+        # (it's an incoming payment method). OC silently rejects expenses
+        # filed with this type; fail fast with the actionable remap.
+        if self.type == PayoutMethodType.CREDIT_CARD:
+            raise ValueError(
+                "payoutMethod.type=CREDIT_CARD is not a valid Open Collective "
+                "expense payout method (credit cards are an incoming payment "
+                "method, not a reimbursement channel). If the real-world "
+                "purchase was on a card, use type=OTHER and describe it in "
+                "data.content (e.g. {'type': 'OTHER', 'data': {'content': "
+                "'Paid by card — reimburse manually'}})."
+            )
+
+        # OC's createExpense rejects STRIPE unless the expense is a SETTLEMENT
+        # or PLATFORM_BILLING (internal types). Surface that locally.
+        if self.type == PayoutMethodType.STRIPE:
+            raise ValueError(
+                "payoutMethod.type=STRIPE is only allowed for SETTLEMENT / "
+                "PLATFORM_BILLING expenses on Open Collective. Use type=OTHER "
+                "for manual reimbursements, or type=PAYPAL / BANK_ACCOUNT "
+                "when the host has those integrations connected."
+            )
+
+        # OTHER requires data.content to be a non-empty string, otherwise OC
+        # silently fails the expense (see opencollective/opencollective#3537).
+        # Auto-populate from `name` if the caller supplied a free-text note,
+        # so AI callers that pass {'type': 'OTHER', 'name': 'Paid by card'}
+        # don't get stuck. Only raise if we genuinely have nothing.
+        if self.type == PayoutMethodType.OTHER:
+            data = dict(self.data) if isinstance(self.data, dict) else {}
+            content = data.get("content")
+            if not isinstance(content, str) or not content.strip():
+                fallback = (self.name or "").strip() or "Manual / out-of-band reimbursement"
+                data["content"] = fallback
+                self.data = data
+        return self
 
 
 class ExpenseType(str, Enum):
